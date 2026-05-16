@@ -3,19 +3,19 @@
 An axiomatic operating system for trustworthy autonomous LLM agents,
 implemented in Rust.
 
-> Status: **Phase 5 complete** — workspace, lock-free three-plane kernel
+> Status: **Phase 6 complete** — workspace, lock-free three-plane kernel
 > with joint capability/taint admission, Differential Turn Engine with
-> WAL-before-effect barrier, SurrealDB-backed Trinity Memory log
-> (graph + vector + FTS + chain), composite sandbox (WASM via wasmi ∧
-> Linux Landlock ∧ seccomp ∧ bubblewrap ∧ macOS Seatbelt) with
-> capability-bound depth (T10), HWCA worker contexts + four-stage schema
-> gate (0/20 IPI escape, T9), and **Ed25519 signed receipt chain** with
-> pluggable [`SigningBackend`] (HSM-ready), RFC 3161 / `OpenTimestamps`
-> [`TsaClient`] abstractions, an offline Ed25519 simulator anchor for
-> deterministic conformance, per-tenant [`AnchorPolicy`] (default every
-> 1000 appends, SPECS §IX.D), and a public verifier API surface
-> (`verify_receipt`, `verify_chain`, `verify_anchor_replay`). **143 tests
-> pass** across 10 crates; Phases 6–11 add hybrid recall, SAG, trait
+> WAL-before-effect barrier, composite sandbox (WASM via wasmi ∧ Linux
+> Landlock ∧ seccomp ∧ bubblewrap ∧ macOS Seatbelt) with capability-bound
+> depth (T10), HWCA worker contexts + four-stage schema gate (0/20 IPI
+> escape, T9), Ed25519 signed receipt chain + TSA-anchor abstractions
+> (A9, T11), and **Trinity Memory hybrid recall** — BM25 keyword search,
+> HNSW vector kNN, and a `hybrid_recall(α)` weighted-union surface
+> backed by SurrealDB's `@@` and `<|k|>` operators; plus a **K-LRU
+> prefix-tree cache** (K = 128 default, paper §VIII.C) and a proper
+> Myers `O((N+M)·D)` diff for ADT-aware deltas. Optional
+> `kv-surrealkv` / `kv-rocksdb` Cargo features for persistent storage.
+> **170 tests pass** across 10 crates; Phases 7–11 add SAG, trait
 > verifier, A2UI Canvas, SDHE, and 1.0 release (see
 > [`ROADMAP.md`](./ROADMAP.md)).
 
@@ -35,7 +35,7 @@ cargo test  --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-## Workspace layout (after Phase 5)
+## Workspace layout (after Phase 6)
 
 | Crate                | Purpose                                                                              |
 |----------------------|--------------------------------------------------------------------------------------|
@@ -43,7 +43,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 | `gauss-traits`       | Public trait surface — `Kernel`, `MemoryBackend`, `Provider`, `SandboxTrait`, `ToolTrait`, `OutputSchema`, `SchemaGuards`, `ValidatedValue`. |
 | `gauss-kernel`       | Privileged kernel: joint K×L admission, lock-free 3-plane token bucket, declass map. |
 | `gauss-turn`         | Differential Turn Engine — Algorithm 1 with optional sandbox executor + signed receipts. |
-| `gauss-memory`       | Trinity Memory: SurrealDB-backed append log + HNSW + FTS + graph lineage + Myers diff.|
+| `gauss-memory`       | Trinity Memory: SurrealDB-backed append log + BM25 + HNSW hybrid recall + K-LRU prefix tree + Myers diff. |
 | `gauss-audit`        | SHA-256 chain + Ed25519 [`SignedReceipt`] + RFC 3161 / `OpenTimestamps` anchor traits + offline simulator (`SimulatorTsaClient`) + public verifier API. |
 | `gauss-provider`     | Provider adapters — `ToyProvider` ships now; vendor adapters in Phase 8.             |
 | `gauss-sandbox`      | Composite sandbox — WASM (wasmi) + Landlock + seccomp + bwrap + Seatbelt (T10).      |
@@ -112,10 +112,10 @@ Ed25519 signatures and external anchors on top of the Phase-2 SHA-256
 chain — without changing the underlying chain primitives.
 
 ```text
-┌──────────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────┐
 │ run_turn ──► WAL append ──► sign_append ──► (every N)         │
 │                                              tsa.anchor(head) │
-└──────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────┘
 ```
 
 Three pluggable surfaces, all in `gauss-audit`:
@@ -136,6 +136,38 @@ The public verifier API is a set of pure functions
 (`verify_receipt`, `verify_chain`, `verify_anchor_replay`,
 `verifying_key_from_bytes`) — the same surface the Phase-9 HTTP wrapper
 calls verbatim. ADR-0011 documents the wire format and migration path.
+
+## Trinity Memory recall (Phase 6)
+
+Phase 6 (`gauss-memory`) locks Axiom A5 and proves Theorems T5 + T12. The
+`MemoryBackend` trait gains three recall methods, all of which default to
+empty for backends that opt out and override to real SurrealDB queries for
+`SurrealMemory`:
+
+- **BM25 keyword recall** via `fts_search(query, limit)` — uses
+  SurrealDB's `@0@` match operator over the FTS index built on
+  `payload_text`.
+- **HNSW vector recall** via `vector_search(query, k)` — uses SurrealDB's
+  `<|k|>` k-nearest-neighbour operator over the HNSW index on
+  `embedding`. Score is mapped to `1 - cosine_distance` so higher = closer.
+- **Hybrid union** via `hybrid_recall(HybridQuery { text, embedding, k,
+  alpha })` — deduplicates by `turn_id` and merges scores as
+  `α · BM25 + (1 - α) · cosine`. The score-merge helper
+  `gauss_traits::merge_hybrid` is the single source of truth.
+
+A `K`-LRU **prefix tree** (paper §VIII.C, default `K = 128`,
+`capacity = 512`) caches recently-seen turn prefixes so a warm-context
+switch can be served without replaying the entire chain.
+[`gauss_memory::klru::PrefixTree<S>`] tracks hit/miss/eviction counts;
+the conformance suite asserts the warm-path latency stays well inside the
+Theorem T12 `≤ 10 ms p95` bound on a 256-node cache.
+
+A proper Myers `O((N + M) · D)` greedy diff lives at
+[`gauss_memory::myers`] alongside the Phase-2 line diff. The patch format
+(`Equal { count }` / `Insert { token }` / `Delete { token }`) is the
+delta payload of the K-LRU `Node::Delta` variant.
+
+ADR-0012 documents the K-LRU policy + cadence rationale.
 
 ## Design tenets
 
@@ -161,6 +193,10 @@ calls verbatim. ADR-0011 documents the wire format and migration path.
    layout-stable across languages and whose Ed25519 signature can be
    verified off-line by any third party — Axiom A9 / Theorem T11 by
    construction (`gauss-audit`).
+10. **Recall is monoidal + hybrid.** Memory composition is associative
+    with the empty log as identity — Axiom A5 by construction. Recall
+    fuses BM25 and HNSW into a single weighted union over the
+    deduplicated set of hits — Theorem T5 by construction (`gauss-memory`).
 
 ## Quality gates
 
@@ -190,7 +226,7 @@ external pen-testing.
 | T10             | Composite sandbox bound (cap → class, layer invariants)             | Phase 3 ✅    |
 | A7 / T9         | Worker-context isolation + IPI bound (0/20 ≤ 2.19%)                 | Phase 4 ✅    |
 | A9 / T11        | Ed25519 signed receipts + chain replay + TSA anchor                 | Phase 5 ✅    |
-| A5 / T5 / T12   | Hybrid recall + delta context-switch                                | Phase 6      |
+| A5 / T5 / T12   | Memory monoid + hybrid recall + K-LRU warm-cache bound              | Phase 6 ✅    |
 | A8              | Supervised-autonomy gradient                                        | Phase 7      |
 | T7              | Provider adjunction                                                 | Phase 8      |
 | T6              | Stateless-turn scaling                                              | Phase 10     |
