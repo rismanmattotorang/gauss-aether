@@ -1,0 +1,27 @@
+[package]
+name        = "gauss-attest"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+description = "TEE attestation traits + software simulator (Phase 10 / Theorem T10 L4)."
+
+[lints]
+workspace = true
+
+[dependencies]
+gauss-core    = { workspace = true }
+async-trait   = { workspace = true }
+ed25519-dalek = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+sha2          = { workspace = true }
+thiserror     = { workspace = true }
+zeroize       = { workspace = true }
+hex           = { workspace = true }
+tracing       = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

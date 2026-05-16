@@ -1,0 +1,21 @@
+[package]
+name        = "gauss-gateway"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+description = "Gateway wire types — REST / WS / SSE shapes + OpenAI-compatible proxy schema (Phase 9)."
+
+[lints]
+workspace = true
+
+[dependencies]
+gauss-core   = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

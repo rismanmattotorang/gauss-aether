@@ -1,0 +1,24 @@
+[package]
+name        = "gauss-chaos"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+description = "Chaos-engineering harness — deterministic kill / partition / clock-skew injectors (Phase 10)."
+
+[lints]
+workspace = true
+
+[dependencies]
+gauss-core   = { workspace = true }
+async-trait  = { workspace = true }
+parking_lot  = { workspace = true }
+serde        = { workspace = true }
+thiserror    = { workspace = true }
+tokio        = { workspace = true, features = ["sync", "time"] }
+tracing      = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "test-util", "time"] }
