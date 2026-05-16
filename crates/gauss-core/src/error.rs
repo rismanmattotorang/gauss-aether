@@ -81,6 +81,18 @@ pub enum GaussError {
     #[error("receipt signature verification failed")]
     ReceiptVerify,
 
+    /// Cryptographic signature did not verify, with operator-readable reason.
+    #[error("signature invalid: {reason}")]
+    SignatureInvalid {
+        /// Human-readable reason (payload digest mismatch, public key
+        /// mismatch, raw EC verify failure, …).
+        reason: String,
+    },
+
+    /// Receipt-chain anchor (RFC 3161 / `OpenTimestamps`) failed.
+    #[error("audit anchor failed: {0}")]
+    AnchorFailed(String),
+
     /// A worker recursion depth bound was exceeded (default 8).
     #[error("worker recursion depth exceeded (limit={limit})")]
     WorkerDepthExceeded {

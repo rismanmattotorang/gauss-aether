@@ -15,7 +15,7 @@
 
 pub mod engine;
 
-pub use engine::{TurnEngine, TurnOutcome, TurnSummary};
+pub use engine::{DynSigningBackend, TurnEngine, TurnOutcome, TurnSummary};
 
 use gauss_core::{GaussError, GaussResult, Observation, TurnId};
 
@@ -81,6 +81,7 @@ impl Turn<state::Generate> {
             id: self.input.id,
             action_count: 0,
             chain_head: gauss_traits::ChainHeadSnapshot::GENESIS,
+            receipt: None,
         })
     }
 }
