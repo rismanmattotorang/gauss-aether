@@ -6,13 +6,29 @@ rust-version.workspace = true
 license.workspace      = true
 repository.workspace   = true
 authors.workspace      = true
-description = "Trinity Memory Substrate — append log, FTS, HNSW, K-LRU prefix tree."
+description = "Trinity Memory Substrate — SurrealDB-backed append log + FTS + HNSW + graph lineage."
 
 [lints]
 workspace = true
 
+[features]
+default = ["surrealdb-embedded"]
+# Enable the embedded SurrealDB engine (kv-mem for tests; surrealkv/rocksdb
+# behind subsequent features in later phases).
+surrealdb-embedded = ["dep:surrealdb"]
+
 [dependencies]
-gauss-core = { workspace = true }
-serde      = { workspace = true }
-thiserror  = { workspace = true }
-tracing    = { workspace = true }
+gauss-core   = { workspace = true }
+gauss-traits = { workspace = true }
+async-trait  = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+sha2         = { workspace = true }
+thiserror    = { workspace = true }
+tokio        = { workspace = true }
+tracing      = { workspace = true }
+
+surrealdb    = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
