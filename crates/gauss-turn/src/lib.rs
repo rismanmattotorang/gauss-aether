@@ -1,29 +1,32 @@
 //! `gauss-turn` — Differential Turn Engine (DTE).
 //!
-//! Phase 0 ships the type-level state machine for a turn (`Ingest` →
-//! `Generate` → `Commit`). The actual provider streaming, WAL barrier, and
-//! receipt signing are filled in across Phases 2/4/5.
+//! Phase 2 ships:
 //!
-//! The state machine is encoded with the type-state pattern so that calling
-//! `commit` before `generate` is a compile error.
+//! * A real [`TurnEngine`] generic over a [`Kernel`](gauss_traits::Kernel), a
+//!   [`MemoryBackend`](gauss_traits::MemoryBackend), and a
+//!   [`Provider`](gauss_traits::Provider).
+//! * Algorithm 1 of the paper, minus HWCA isolation (Phase 4) and signed
+//!   receipts (Phase 5). The WAL-before-effect barrier (Axiom A1) is wired
+//!   in now and exercised by the conformance suite.
+//! * The Phase-0 type-state shell ([`Turn`], [`run_turn`]) is retained as a
+//!   compile-time guard so the lifecycle ordering is unambiguous.
+//!
+//! See `SPECS.md` §5 for the normative description.
+
+pub mod engine;
+
+pub use engine::{TurnEngine, TurnOutcome, TurnSummary};
 
 use gauss_core::{GaussError, GaussResult, Observation, TurnId};
 
 /// Input to a turn — the observation plus the session it belongs to.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TurnInput {
-    /// Turn identifier (Phase 2 assigns via ULID).
+    /// Turn identifier (Phase 2 callers assign these explicitly; Phase 6 ULID
+    /// generation lands with the snapshot subsystem).
     pub id: TurnId,
     /// Triggering observation.
     pub obs: Observation,
-}
-
-/// The outcome of a committed turn. Phase 5 attaches the signed receipt;
-/// Phase 2 attaches the record body and post-state.
-#[derive(Debug)]
-pub struct TurnOutcome {
-    /// The turn that was committed.
-    pub id: TurnId,
 }
 
 /// State markers for the type-state DTE.
@@ -50,15 +53,14 @@ pub struct Turn<S> {
 impl Turn<state::Ingest> {
     /// Start a new turn in the `Ingest` phase.
     #[must_use]
-    pub fn new(input: TurnInput) -> Self {
+    pub const fn new(input: TurnInput) -> Self {
         Self {
             input,
             _state: core::marker::PhantomData,
         }
     }
 
-    /// Advance to `Generate`. Phase 2 will run the policy here; Phase 0
-    /// simply moves the type-state.
+    /// Advance to `Generate`.
     pub fn generate(self) -> Turn<state::Generate> {
         Turn {
             input: self.input,
@@ -68,27 +70,32 @@ impl Turn<state::Ingest> {
 }
 
 impl Turn<state::Generate> {
-    /// Advance to `Commit`. Phase 2 will append the WAL entry; Phase 0
-    /// returns the outcome directly.
-    pub fn commit(self) -> GaussResult<TurnOutcome> {
+    /// Advance to `Commit` without invoking a provider — Phase-0 compat shim.
+    ///
+    /// # Errors
+    /// Currently infallible; kept as `Result` for symmetry with the real
+    /// [`TurnEngine::run_turn`] path.
+    pub fn commit(self) -> GaussResult<TurnSummary> {
         tracing::trace!(turn_id = ?self.input.id, "phase-0 commit (no-op)");
-        Ok(TurnOutcome { id: self.input.id })
+        Ok(TurnSummary {
+            id: self.input.id,
+            action_count: 0,
+            chain_head: gauss_traits::ChainHeadSnapshot::GENESIS,
+        })
     }
 }
 
-/// Drive a fresh turn end-to-end. Convenience wrapper; the real
-/// `TurnEngine::run_turn` lands in Phase 2.
-pub fn run_turn(input: TurnInput) -> GaussResult<TurnOutcome> {
+/// Drive a fresh turn end-to-end **without** invoking the real engine.
+/// Convenience wrapper retained for Phase-0 conformance; use
+/// [`TurnEngine::run_turn`] for the real Algorithm 1 path.
+pub fn run_turn(input: TurnInput) -> GaussResult<TurnSummary> {
     Turn::<state::Ingest>::new(input).generate().commit()
 }
 
 /// Type-state guard: the engine MUST be polled from the `Ingest` start state.
-/// This function is here purely to assert the `Generate`-to-`Commit` ordering
-/// at the type level; calling `commit` directly on an `Ingest`-state `Turn`
-/// is a compile error, which is the invariant we want.
+/// Calling `commit` directly on an `Ingest`-state `Turn` is a compile error.
 #[doc(hidden)]
 pub fn typestate_proof() -> GaussResult<()> {
-    // The lines below would fail to compile if the type-state were broken.
     let t = Turn::<state::Ingest>::new(TurnInput {
         id: TurnId::new(0),
         obs: dummy_observation(),
@@ -115,19 +122,21 @@ pub type Error = GaussError;
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn turn_drives_to_completion() {
-        let input = TurnInput {
-            id: TurnId::new(7),
-            obs: dummy_observation(),
-        };
-        let outcome = run_turn(input).expect("phase-0 commit always succeeds");
-        assert_eq!(outcome.id, TurnId::new(7));
-    }
+    use gauss_core::TurnId;
 
     #[test]
     fn typestate_proof_holds() {
         typestate_proof().unwrap();
+    }
+
+    #[test]
+    fn shim_run_turn_returns_zero_actions() {
+        let summary = run_turn(TurnInput {
+            id: TurnId::new(123),
+            obs: dummy_observation(),
+        })
+        .unwrap();
+        assert_eq!(summary.id, TurnId::new(123));
+        assert_eq!(summary.action_count, 0);
     }
 }

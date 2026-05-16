@@ -1,25 +1,24 @@
 [package]
-name        = "gauss-turn"
+name = "gauss-provider"
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true
 repository.workspace   = true
 authors.workspace      = true
-description = "Differential Turn Engine — orchestrates a single turn lifecycle."
+description = "Provider adapters — Phase 2 ships a toy provider; vendor adapters arrive in Phase 8."
 
 [lints]
 workspace = true
 
 [dependencies]
 gauss-core   = { workspace = true }
-gauss-kernel = { workspace = true }
 gauss-traits = { workspace = true }
+async-trait  = { workspace = true }
+serde        = { workspace = true }
 serde_json   = { workspace = true }
 thiserror    = { workspace = true }
 tracing      = { workspace = true }
 
 [dev-dependencies]
-gauss-memory   = { workspace = true }
-gauss-provider = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
