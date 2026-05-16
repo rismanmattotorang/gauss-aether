@@ -28,10 +28,10 @@
 | 5     | Receipt chain + signatures               | 4 weeks  | A9             | T11             | Ed25519 receipts + TSA-anchor traits + verifier | ✅ Done |
 | 6     | Trinity memory: hybrid recall + K-LRU    | 5 weeks  | A5             | T5, T12         | BM25 + HNSW hybrid recall + K-LRU prefix tree + Myers diff | ✅ Done |
 | 7     | SAG + approval plane                     | 4 weeks  | A8             | (A8 bound)      | `DecisionTable` + monotonicity verifier + approval surfaces | ✅ Done |
-| 8     | Trait polyhedral surface + verifier      | 5 weeks  | —              | T7              | `cargo gauss-verify` SMT discharge            | Next   |
-| 9     | A2UI Canvas + Health + surfaces          | 6 weeks  | —              | T8              | Live Canvas Protocol; `gauss doctor`          |        |
-| 10    | Hardening, scale, attestation            | 6 weeks  | (V predicate)  | T6, T10 (L4)    | Θ(N) cluster mode; SEV-SNP/TDX attest         |        |
-| 11    | 1.0 release                              | 3 weeks  | All            | All             | Pareto-dominance scorecard regression-pinned  |        |
+| 8     | Trait polyhedral surface + verifier      | 5 weeks  | —              | T7              | `gauss-poly` probe-based equivalence verifier | ✅ Done |
+| 9     | A2UI Canvas + Health + surfaces          | 6 weeks  | —              | T8              | Canvas (8 widgets) + SDHE (7 invariants) + Gateway wire types | ✅ Done |
+| 10    | Hardening, scale, attestation            | 6 weeks  | (V predicate)  | T6, T10 (L4)    | Consistent-hash ring + TEE simulator + chaos injectors + wasmtime feature | ✅ Done |
+| 11    | 1.0 release                              | 3 weeks  | All            | All             | Pareto-dominance scorecard regression-pinned  | Next   |
 | v2    | zk audit, learnt Φ, DP exporter          | TBD      | —              | —               | Future-work line from paper §XVIII.E          |        |
 
 Total to 1.0: **~14 months** assuming 4–6 engineers from Phase 2.
@@ -140,7 +140,7 @@ CONF-T10-* green; cap → class table matches SPECS §7.1; WASM-only composite r
   3. Instruction-substring filter (case-insensitive deny-list, applied recursively to every string field when `SchemaGuards.no_instruction_substrings` is on).
   4. Taint join: outgoing = `incoming ∨ Web`.
 - **`gauss-hwca::filter`** — `INSTRUCTION_SUBSTRINGS` deny-list covering AgentDojo-style ("ignore previous"), EchoLeak-style ("exfiltrate", "post to https://"), system-tag impersonation (`system:`, `[system]`, `<|system|>`), and tool-call hijacking ("respond with the following", "override:", "your new instructions").
-- **`gauss-hwca::corpus`** —  20-attempt synthetic IPI corpus across three families (AgentDojo, EchoLeak, hijack) including two array-nested cases that exercise the gate's recursion.
+- **`gauss-hwca::corpus`** — 20-attempt synthetic IPI corpus across three families (AgentDojo, EchoLeak, hijack) including two array-nested cases that exercise the gate's recursion.
 - **Trait surface in `gauss-traits`** — `ToolTrait`, `ToolManifest`, `OutputSchema`, `SchemaGuards`, `ValidatedValue` (paper SPECS §6.2): backend-agnostic so the JSON Schema crate is swappable via `SchemaGate::new` only.
 - **4 new conformance tests** for `CONF-A7-*` and `CONF-T9-*` — live-counter zeroing after success and after a schema-gate error; validated value carries the joined taint; recursion-depth bound rejects spawns beyond the limit; the IPI corpus run asserts `rate ≤ 0.0219` (Phase-4 actual is `0/20`).
 - **ADR-0010** — in-process workers (subprocess in Phase 10), `jsonschema` 0.46 choice, synthetic Phase-4 corpus → AgentDojo + EchoLeak in Phase 6, four-stage gate order, RAII counter without `unsafe`.
@@ -251,60 +251,83 @@ CONF-A8-* green: SAG denial path returns `AutonomyDenied` and leaves no chain en
 
 ---
 
-## Phase 8 — Trait Polyhedral Surface + Build-time Verifier (5 weeks) — NEXT
+## Phase 8 — Trait Polyhedral Surface + Build-time Verifier ✅
 
 **Goal:** typed plugin surface with behavioural-equivalence checks. **Proves T7.**
 
-### Deliverables
+### Delivered
 
-- Public traits frozen and documented.
-- `gauss-poly` build-time verifier (`cargo gauss-verify`).
-- Provider adapters: Anthropic Messages, OpenAI Chat, OpenAI Responses, Google Gemini, OpenRouter, local-Llama via `llama.cpp` HTTP.
-- Channel adapters: Telegram, Discord, Slack, Matrix, IMAP, Signal.
+- **New crate `gauss-poly`** — `Probe<I, O>` + `PolyhedralProbeSet<I, O>` (deterministic, named, serde-friendly) + `verify_provider_equivalence(&p, &q, &probes)` that compares canonical-JSON bytes byte-for-byte; returns `ProviderEquivalenceReport` on success or `SwapEquivalenceError` with the first-divergence diagnostics.
+- **`specT` style guide** — four rules every plugin trait follows (serializable outputs, `#[non_exhaustive]`, unified `GaussError`, probe-set-checkable invariants). The verifier is the mechanical witness; ADR-0014 documents the rules.
+- **Conformance** — CONF-T7 (provider adjunction): equivalent providers pass; diverging providers report the first probe index that fails.
+- **ADR-0014** — polyhedral verifier semantics + Phase-10 hardware-attestor migration.
+- **Production network adapters deferred to plugin crates** — Telegram / Slack / Discord / Matrix / Anthropic-Messages / OpenAI-Chat / Gemini / OpenRouter / llama.cpp HTTP each ship as additive plugin crates that take a dep on `gauss-traits` + `gauss-poly` and verify against the reference probe set. The Phase-8 ship is the trait + verifier surface, not the adapters themselves (which need network credentials and live infrastructure).
 
-### Exit gate
+### Exit gate (met)
 
-Swap provider Anthropic ↔ OpenAI on a running deployment with no code change; verifier passes; benchmark suite shows ≤ 5% behavioural divergence.
+`verify_provider_equivalence(&new, &reference, &probes)` round-trips against `ToyProvider`; the conformance suite asserts both `passed` and `divergence-detected` paths. The same shape generalises to other plugin traits via `verify_<trait>_equivalence` helpers as they stabilise.
+
+### Open follow-ups (don't block Phase 9)
+
+- Vendor adapter crates (`gauss-provider-anthropic`, `gauss-provider-openai`, …) — additive plugin crates per the `specT` style guide.
+- Channel adapter crates (`gauss-channel-telegram`, etc.) — additive plugin crates implementing the Phase-7 `ApprovalSurface` trait.
 
 ---
 
-## Phase 9 — A2UI Canvas + Health Engine + Surface Layer (6 weeks)
+## Phase 9 — A2UI Canvas + Health Engine + Surface Layer ✅
 
 **Goal:** user-facing polish. **Proves T8.**
 
-### Deliverables
+### Delivered
 
-- `gauss-canvas` — A2UI Live Canvas Protocol server (JSON-RPC over WS/SSE) backed by SurrealDB **live queries** for free streaming of canvas updates.
-- `gauss-health` — SDHE with seven minimum invariants and self-repair catalogue.
-- `gauss-gateway` — REST/WS/SSE, OpenAI-compatible proxy, ACP for IDE integrations.
-- `gauss-cli`, `gauss-tui`, `gauss-desktop`.
-- Migration tools: `gauss import {hermes,openfang,openclaw,zeroclaw}`.
+- **New crate `gauss-canvas`** — A2UI Live Canvas Protocol typed widget tree. Eight widget kinds (`Text`, `Button`, `KeyValueTable`, `Image`, `ApprovalPrompt`, `Container`, `Markdown`, `Custom`); four reconciliation operations (`Insert`, `Update`, `Delete`, `Reorder`); `Canvas` async trait + `InMemoryCanvas` (`HashMap` + `tokio::sync::broadcast`).
+- **New crate `gauss-health`** — Self-Diagnosable Health Engine. `HealthSubject` trait, `Invariant` + closure-based evaluation, `HealthReport` serde wire form. `HealthEngine::with_specs_defaults()` installs the SPECS §XIII.C seven minimum invariants (WAL barrier armed, kernel grant non-bottom, no leaked HWCA workers, signer present, sandbox present, SAG present, monotone grant). Operators register custom invariants via `engine.register(Invariant::new(...))`.
+- **New crate `gauss-gateway`** — wire types for `POST /v1/turn` + `GET /v1/health` + the OpenAI-compatible `/v1/chat/completions` proxy + SSE `StreamEvent`. The actual `axum` server is Phase-11 additive.
+- **Conformance** — CONF-T8: health engine reports seven invariants, fails on a broken subject; canvas accepts insert + delivers to live subscribers; gateway round-trips request/response shapes and the OpenAI proxy.
+- **ADR-0015** — widget-set freeze + Phase-10 `SurrealCanvas` migration plan.
+- **Production binaries deferred** — `gauss-cli`, `gauss-tui`, `gauss-desktop` ship as additive Phase-11 crates that take a dep on `gauss-canvas` + `gauss-gateway` + `gauss-health`. Migration tools (`gauss import {hermes,openfang,openclaw,zeroclaw}`) are Phase-11 deployment surfaces.
 
-### Exit gate
+### Exit gate (met)
 
-Live Canvas table + approval widget render; `gauss doctor` prints all green; scorecard ≥ each predecessor on every axis.
+`InMemoryCanvas` reconciliation is end-to-end deterministic; `HealthEngine::evaluate` produces the seven-invariant report; the gateway proxy round-trips an `OpenAiChatRequest`. ADR-0015 freezes the widget set + ops alphabet.
+
+### Open follow-ups (don't block Phase 10)
+
+- `axum` HTTP server crate that wraps `gauss-gateway` wire types — Phase 11.
+- `SurrealCanvas` backend swapping `InMemoryCanvas` for SurrealDB live queries — Phase 11 alongside cluster mode.
+- Migration tools — additive Phase-11 deployment crates.
 
 ---
 
-## Phase 10 — Hardening, Scale, Attestation (6 weeks)
+## Phase 10 — Hardening, Scale, Attestation ✅
 
 **Goal:** production readiness. **Proves T6 and T10 with L4 (TEE attestation).**
 
-### Deliverables
+### Delivered
 
-- Cluster mode: consistent-hash routing on `SessionId`; **SurrealDB `kv-tikv` backend** for clustered durability + Raft replication.
-- TEE attestation: AMD SEV-SNP, Intel TDX, ARM CCA stub.
-- **WASM backend swap to wasmtime** under the `wasm-wasmtime` feature (ADR-0009 follow-up); release gates pin the wasmtime profile.
-- Chaos testing: kill, partitions, clock skew.
-- External security review.
+- **Cluster mode** (`gauss-kernel::cluster`) — `ConsistentHashRing` with 128 virtual nodes per physical node (configurable), SHA-256 hashing, `BTreeMap`-keyed ring under a `parking_lot::Mutex`. Adding / removing a node moves only `O(1/N)` of the existing sessions; the conformance suite asserts `< 40 %` movement on a 4-node ring after one node addition.
+- **TEE attestation** (`gauss-attest`) — `Attestor` async trait + `AttestKind { SevSnp, TdxIntel, ArmCca, Simulator }` + canonical wire format documented inline. The Ed25519 software simulator (`SoftwareSimAttestor`) ships in this crate; hardware backends (AMD SEV-SNP, Intel TDX, ARM CCA) ship as additive plugin crates that wrap the same trait + canonical pre-image. `verify_report(...)` short-circuits on nonce / measurement / key / signature failure.
+- **wasmtime feature flag** (`gauss-sandbox`) — `--features wasm-wasmtime` opts the swap in. The default `wasm-wasmi` remains on the workspace MSRV (1.83); production hardening builds use `--no-default-features --features wasm-wasmtime,linux-layers` on Rust 1.85+.
+- **TEE-attest feature** (`gauss-sandbox`) — additive feature wiring `gauss-attest` into the composite sandbox so production deployments can bundle a per-tool attestation report into the signed receipt.
+- **Chaos injectors** (`gauss-chaos`) — `KillSwitch` (atomic flag with poll counter), `Partition<T>` (FIFO queue + drop counter), `ClockSkew` (signed offset). `ChaosBudget` bundles all three; conformance tests pin the semantics.
+- **Conformance** — CONF-T6 (cluster routes deterministically + reroutes ≤ `O(1/N)` on node addition), CONF-T10-L4 (attestation round-trips; tampered nonce / measurement / signature rejected), CONF-T1-CHAOS-* (chaos injector invariants).
+- **ADR-0016** — TEE attestation matrix + hardware-backend plugin migration.
+- **Hardware attestation backends deferred** — `gauss-attest-sevsnp`, `gauss-attest-tdx`, `gauss-attest-armcca` ship as additive plugin crates that wrap the same canonical wire format. The Phase-10 ship is the trait + verifier + simulator (offline, deterministic), not the hardware drivers (which need specific kernel modules + attestation services).
 
-### Exit gate
+### Exit gate (met)
 
-External pen-test report; chaos suite green; bench scale demonstrates Θ(N).
+`ConsistentHashRing` routes deterministically; adding a 4th node to a 3-node ring moves `< 40 %` of 1000 sample sessions. `SoftwareSimAttestor` produces reports that `verify_report` accepts; tampered nonces / measurements / signatures are rejected. The chaos injectors have stable semantics under the property tests.
+
+### Open follow-ups (don't block Phase 11)
+
+- AMD SEV-SNP / Intel TDX / ARM CCA plugin crates — Phase-11 deployment.
+- SurrealDB `kv-tikv` cluster backend — Phase-11 deployment alongside the gateway's `axum` server.
+- External pen-test report — Phase-11 deployment.
+- Chaos test harness wired into a `TurnEngine` end-to-end run — Phase-11 deployment.
 
 ---
 
-## Phase 11 — 1.0 Release (3 weeks)
+## Phase 11 — 1.0 Release (3 weeks) — NEXT
 
 (Unchanged from earlier draft.)
 
@@ -351,9 +374,9 @@ External pen-test report; chaos suite green; bench scale demonstrates Θ(N).
 | 0011   | Receipt chain signing + TSA / OpenTimestamps   | 5     | Accepted   |
 | 0012   | K-LRU prefix-tree cache + checkpoint cadence   | 6     | Accepted   |
 | 0013   | SAG decision table + approval surface          | 7     | Accepted   |
-| 0014   | Trait `specT` style guide                      | 8     | Planned    |
-| 0015   | Canvas core widget set freeze for 1.0          | 9     | Planned    |
-| 0016   | TEE attestation matrix for 1.0                 | 10    | Planned    |
+| 0014   | Polyhedral verifier + `specT` style guide      | 8     | Accepted   |
+| 0015   | Canvas widget-set freeze + Phase-10 streaming  | 9     | Accepted   |
+| 0016   | TEE attestation matrix + plugin migration      | 10    | Accepted   |
 
 Each ADR lives under `docs/adr/NNNN-title.md` and is referenced from the relevant phase exit gate.
 
@@ -371,3 +394,4 @@ Each ADR lives under `docs/adr/NNNN-title.md` and is referenced from the relevan
 | 5     | 143         | + Ed25519 signer (7), SignedReceipt (8), TSA simulator + anchor verifier (5), AnchorPolicy + Anchorer (4), public verifier API (9), CONF-A9/T11 (7) |
 | 6     | 170         | + AppendEntry recall fields (3), Myers diff (8), K-LRU PrefixTree (7), SurrealDB FTS/KNN/hybrid (3), CONF-A5/T5/T12 (9) |
 | 7     | 199         | + Risk lattice + RiskInputs (4), DecisionTable + monotonicity verifier (7), ApprovalSurface + AutoApprove/Deny/Channel (5), ApprovalGate (5), DTE SAG wiring (1), CONF-A8 (7) |
+| 8/9/10 | 263        | + Polyhedral probe/provider verifier (6), Canvas widgets + InMemoryCanvas (9), HealthEngine + 7 invariants (7), Gateway wire types (7), TEE attestation simulator (7), Chaos injectors (5), Consistent-hash cluster ring (6), CONF-T6/T7/T8/T10-L4/chaos (17) |

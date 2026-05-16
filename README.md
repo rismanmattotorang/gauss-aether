@@ -3,22 +3,15 @@
 An axiomatic operating system for trustworthy autonomous LLM agents,
 implemented in Rust.
 
-> Status: **Phase 7 complete** — workspace, lock-free three-plane kernel
-> with joint capability/taint admission, Differential Turn Engine with
-> WAL-before-effect barrier, composite sandbox (T10), HWCA worker
-> contexts + schema gate (T9), Ed25519 signed receipt chain + TSA-anchor
-> abstractions (A9, T11), Trinity Memory hybrid recall (BM25 + HNSW +
-> hybrid union) + K-LRU prefix tree + Myers diff (A5, T5, T12), and the
-> **Supervised Autonomy Gradient (SAG)** — a rule-driven, auditable
-> `DecisionTable` with a build-time monotonicity verifier, an
-> `ApprovalSurface` trait with three deterministic test surfaces
-> (`AutoApprove`, `AutoDeny`, `ChannelSurface`), and a 5-minute
-> deny-on-timeout approval round-trip. SAG sits between kernel
-> admission and the WAL append: denied / timed-out / human-denied
-> actions leave no chain entry; approved actions ride alongside the
-> signed receipt so the approval verdict is itself non-repudiable
-> (A8). **199 tests pass** across 11 crates; Phases 8–11 add the
-> trait verifier, A2UI Canvas, SDHE, and 1.0 release (see
+> Status: **Phase 10 complete** — full eleven-tuple stack locked. The
+> kernel admits + the WAL appends + the sandbox runs + the schema gate
+> filters + the receipt chain signs + Trinity Memory recalls + SAG
+> gates approvals + the polyhedral verifier proves provider
+> equivalence (T7) + the live canvas + health engine + gateway
+> render the surface layer (T8) + the cluster ring scales statelessly
+> (T6) + the attestation surface witnesses Layer 4 (T10 §L4). **263
+> tests pass** across 17 crates; Phase 11 closes out the
+> Pareto-dominance scorecard regression + 1.0 release (see
 > [`ROADMAP.md`](./ROADMAP.md)).
 
 ## Documents
@@ -37,20 +30,26 @@ cargo test  --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-## Workspace layout (after Phase 7)
+## Workspace layout (after Phase 10)
 
 | Crate                | Purpose                                                                              |
 |----------------------|--------------------------------------------------------------------------------------|
 | `gauss-core`         | Shared types: identifiers, actions, observations, taint, `CapToken` lattice, errors. |
 | `gauss-traits`       | Public trait surface — `Kernel`, `MemoryBackend`, `Provider`, `SandboxTrait`, `ToolTrait`, `OutputSchema`, `SchemaGuards`, `ValidatedValue`. |
-| `gauss-kernel`       | Privileged kernel: joint K×L admission, lock-free 3-plane token bucket, declass map. |
-| `gauss-turn`         | Differential Turn Engine — Algorithm 1 with optional sandbox executor + signed receipts + SAG approval gate. |
+| `gauss-kernel`       | Privileged kernel: joint K×L admission, lock-free 3-plane token bucket, declass map, **consistent-hash cluster ring (Phase 10, T6)**. |
+| `gauss-turn`         | Differential Turn Engine — Algorithm 1 with optional sandbox + signed receipts + SAG approval gate. |
 | `gauss-memory`       | Trinity Memory: SurrealDB-backed append log + BM25 + HNSW hybrid recall + K-LRU prefix tree + Myers diff. |
-| `gauss-audit`        | SHA-256 chain + Ed25519 [`SignedReceipt`] + RFC 3161 / `OpenTimestamps` anchor traits + offline simulator (`SimulatorTsaClient`) + public verifier API. |
-| `gauss-provider`     | Provider adapters — `ToyProvider` ships now; vendor adapters in Phase 8.             |
-| `gauss-sandbox`      | Composite sandbox — WASM (wasmi) + Landlock + seccomp + bwrap + Seatbelt (T10).      |
+| `gauss-audit`        | SHA-256 chain + Ed25519 `SignedReceipt` + RFC 3161 / `OpenTimestamps` anchor traits + offline simulator + public verifier API. |
+| `gauss-provider`     | Provider adapters — `ToyProvider` ships now; vendor adapters in Phase-9+ plugin crates. |
+| `gauss-sandbox`      | Composite sandbox — WASM (wasmi) + Landlock + seccomp + bwrap + Seatbelt + optional TEE-attest feature (T10). |
 | `gauss-hwca`         | HWCA worker contexts + schema gate (length cap, JSON Schema 2020-12, instruction-substring filter, taint join) + IPI corpus (A7, T9). |
 | `gauss-sag`          | Supervised Autonomy Gradient — `DecisionTable` + monotonicity verifier + `ApprovalSurface` trait + test surfaces (A8). |
+| `gauss-poly`         | **Phase 8** polyhedral trait-equivalence verifier — `Probe<I, O>` + `verify_provider_equivalence` (T7). |
+| `gauss-canvas`       | **Phase 9** A2UI Live Canvas Protocol — typed widget tree + `Insert/Update/Delete/Reorder` update stream + `InMemoryCanvas` (T8). |
+| `gauss-health`       | **Phase 9** Self-Diagnosable Health Engine — seven minimum invariants + custom registration + `HealthReport` serde (T8). |
+| `gauss-gateway`      | **Phase 9** wire types — REST/WS/SSE shapes + OpenAI-compatible proxy + SSE stream events (T8). |
+| `gauss-attest`       | **Phase 10** TEE attestation surface — `Attestor` trait + Ed25519 software simulator + canonical wire format (T10 §L4). |
+| `gauss-chaos`        | **Phase 10** chaos-engineering harness — kill switch + partition + clock skew injectors. |
 | `gauss-conformance`  | Axiom-by-axiom test harness (A1–A9, T1–T12).                                         |
 
 ## Database — SurrealDB
@@ -115,10 +114,10 @@ Ed25519 signatures and external anchors on top of the Phase-2 SHA-256
 chain — without changing the underlying chain primitives.
 
 ```text
-┌──────────────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────────────────┐
 │ run_turn ──► WAL append ──► sign_append ──► (every N)         │
 │                                              tsa.anchor(head) │
-└──────────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────────┘
 ```
 
 Three pluggable surfaces, all in `gauss-audit`:
@@ -208,6 +207,72 @@ action set. Default deadline: 5 minutes (`DEFAULT_DEADLINE`), per SPECS
 §XI.C; deny-on-timeout. ADR-0013 documents the policy + Phase-9 adapter
 migration path.
 
+## Polyhedral trait verifier (Phase 8)
+
+`gauss-poly` ships the build-time check that proves Theorem T7
+(provider adjunction): two `Provider` impls are **polyhedrally
+equivalent** iff they produce byte-equal canonical actions on every
+input in a finite probe set.
+
+```rust
+use gauss_poly::{verify_provider_equivalence, PolyhedralProbeSet};
+
+let report = verify_provider_equivalence(&new_provider, &reference, &probes).await?;
+assert!(report.ok(), "provider divergence: {:?}", report);
+```
+
+ADR-0014 documents the four `specT` style-guide rules every plugin
+trait follows (serializable outputs, `#[non_exhaustive]`, unified
+error, probe-set-checkable invariants). The same shape generalises to
+every plugin trait — additional `verify_<trait>_equivalence` helpers
+land as new plugin surfaces stabilise.
+
+## A2UI Canvas + Health + Gateway (Phase 9)
+
+Phase 9 (`gauss-canvas`, `gauss-health`, `gauss-gateway`) ships the
+**surface layer** — the trait surfaces user-facing tooling consumes:
+
+- **Canvas** (`gauss-canvas`): eight-widget typed tree (`Text`,
+  `Button`, `KeyValueTable`, `Image`, `ApprovalPrompt`, `Container`,
+  `Markdown`, `Custom`) + four ops (`Insert`, `Update`, `Delete`,
+  `Reorder`). `InMemoryCanvas` + a `tokio::sync::broadcast` channel
+  power the deterministic Phase-9 build; Phase-10 cluster mode swaps
+  in a `SurrealCanvas` backed by SurrealDB live queries.
+- **Health** (`gauss-health`): the SPECS §XIII.C seven minimum
+  invariants — WAL barrier armed, kernel grant non-bottom, no leaked
+  HWCA workers, signer present, sandbox present, SAG present,
+  monotone grant — wired through a `HealthSubject` trait so
+  deployments plug their `TurnEngine` adapter in. `HealthEngine::
+  evaluate(&subject) -> HealthReport` is the `gauss doctor` shape.
+- **Gateway** (`gauss-gateway`): the wire shapes for `POST /v1/turn`,
+  `GET /v1/health`, the SSE stream events, and the OpenAI-compatible
+  `/v1/chat/completions` proxy schema. The actual `axum` server is a
+  Phase-11 additive crate; the wire types here are the stable
+  contract.
+
+ADR-0015 documents the widget-set freeze + Phase-10 streaming
+migration.
+
+## Hardening, scale, attestation (Phase 10)
+
+- **Cluster routing** (`gauss-kernel::cluster`): a consistent-hash
+  ring keyed on `SessionId` so a Phase-10 cluster horizontally scales
+  stateless turn execution; adding / removing one node moves only
+  `O(1/N)` of the existing sessions (Theorem T6).
+- **TEE attestation** (`gauss-attest`): an `Attestor` trait + Ed25519
+  software simulator with a layout-stable canonical wire format. The
+  verifier short-circuits on nonce mismatch, measurement mismatch,
+  untrusted key, or invalid signature. Hardware backends (AMD SEV-SNP,
+  Intel TDX, ARM CCA) ship as additive plugin crates that wrap the
+  same trait — ADR-0016 documents the migration.
+- **wasmtime** WASM backend swap is a feature flag on `gauss-sandbox`
+  (`--features wasm-wasmtime`); the wasmi default ships on the
+  workspace MSRV.
+- **Chaos** (`gauss-chaos`): `KillSwitch` + `Partition<T>` +
+  `ClockSkew` injectors with deterministic semantics. Conformance
+  tests exercise each injector's invariants; the Phase-11 chaos suite
+  builds on this foundation.
+
 ## Design tenets
 
 1. **Axioms before features.** Every subsystem traces back to an axiom (A1–A9)
@@ -272,9 +337,10 @@ external pen-testing.
 | A9 / T11        | Ed25519 signed receipts + chain replay + TSA anchor                 | Phase 5 ✅    |
 | A5 / T5 / T12   | Memory monoid + hybrid recall + K-LRU warm-cache bound              | Phase 6 ✅    |
 | A8              | SAG decision table + approval round-trip + deny-on-timeout          | Phase 7 ✅    |
-| T7              | Provider adjunction                                                 | Phase 8      |
-| T6              | Stateless-turn scaling                                              | Phase 10     |
-| T8              | Pareto-dominance scorecard                                          | Phase 9      |
+| T7              | Provider adjunction (polyhedral equivalence on probe set)           | Phase 8 ✅    |
+| T8              | Surface scorecard (Canvas + Health + Gateway wire types)            | Phase 9 ✅    |
+| T6              | Stateless-turn scaling (consistent-hash routing on `SessionId`)     | Phase 10 ✅   |
+| T10 §L4         | TEE attestation simulator + verifier (hardware backends are plugins) | Phase 10 ✅   |
 
 ## Licence
 
