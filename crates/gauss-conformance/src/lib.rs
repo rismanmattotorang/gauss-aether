@@ -15,7 +15,7 @@
 //! | A6 | Information-flow lattice + antitone declass                         | Phase 1            |
 //! | A7 | Worker-context isolation                                            | Phase 4            |
 //! | A5 | Memory monoid (associativity / identity / hash homomorphism)        | Phase 6            |
-//! | A8 | Supervised-autonomy gradient                                        | Phase 7 (planned)  |
+//! | A8 | Supervised-autonomy gradient + approval round-trip                  | Phase 7            |
 //! | A9 | EUF-CMA receipts + TSA anchor                                       | Phase 5            |
 //! | T1 | Crash atomicity (WAL discipline + replay)                           | Phase 2            |
 //! | T2 | Capability non-interference (cap meet on disjoint sets)             | Phase 1            |
@@ -1155,6 +1155,276 @@ mod theorem_t12_delta_warm_switch {
         let stats = tree.stats();
         assert!(stats.evictions >= 900);
         assert!(stats.len <= 100);
+    }
+}
+
+#[cfg(test)]
+mod axiom_a8_sag_approval {
+    //! CONF-A8-* — Supervised Autonomy Gradient + approval round-trip.
+    //!
+    //! Phase 7 ships:
+    //!
+    //! * CONF-A8-1 — the default `DecisionTable` is monotone over the
+    //!   canonical cap × taint × reversibility grid (paper §XI.B, Theorem
+    //!   A8). Independently from the `gauss-sag` unit-test, the
+    //!   conformance harness re-runs the verifier here so a regression in
+    //!   the default table is caught from the cross-crate vantage point.
+    //! * CONF-A8-2 — a `RequireApproval`-banded action denied by the
+    //!   surface causes the engine to return
+    //!   `GaussError::AutonomyDenied` and NO chain entry is appended.
+    //! * CONF-A8-3 — a `RequireApproval`-banded action that times out
+    //!   returns `GaussError::AutonomyApprovalTimeout`.
+    //! * CONF-A8-4 — a `RequireApproval`-banded action that is approved
+    //!   commits a chain entry whose canonical payload covers BOTH the
+    //!   action set AND the `SagDecisionRecord` (so the Phase-5 signed
+    //!   receipt covers the approval verdict, paper §XI.D).
+    //! * CONF-A8-5 — a `Deny`-banded action (e.g. adversarial taint) is
+    //!   refused without calling the approval surface.
+    //! * CONF-A8-6 — text-only turns skip SAG entirely and produce the
+    //!   same Phase-2 chain head an unsagged engine would.
+
+    use std::sync::Arc;
+
+    use gauss_core::{
+        Action, CapToken, GaussError, Observation, ObservationSource, TaintLabel, TextAction,
+        ToolAction, ToolId, TurnId,
+    };
+    use gauss_kernel::PrivilegedKernel;
+    use gauss_memory::SurrealMemory;
+    use gauss_provider::ToyProvider;
+    use gauss_sag::{
+        default_decision_table, verify_monotonicity, ApprovalDecision, ApprovalGate, AutoApprove,
+        AutoDeny, ChannelSurface, DecisionTable, Predicate, Risk, Rule,
+    };
+    use gauss_traits::MemoryBackend;
+    use gauss_turn::{TurnEngine, TurnInput};
+
+    fn obs(taint: TaintLabel) -> Observation {
+        Observation::new(
+            ObservationSource::User {
+                channel: "phase7".into(),
+            },
+            taint,
+            serde_json::Value::Null,
+        )
+    }
+
+    fn non_reversible_network_post() -> Action {
+        Action::Tool(ToolAction::new(
+            ToolId("send_email".into()),
+            serde_json::Value::Null,
+            CapToken::NETWORK_POST,
+            /* reversible */ false,
+        ))
+    }
+
+    #[test]
+    fn default_decision_table_is_monotone_from_conformance_vantage() {
+        verify_monotonicity(&default_decision_table()).unwrap();
+    }
+
+    /// Build a custom decision table that maps `NETWORK_POST` → Deny so we
+    /// can exercise the SAG-deny path independently of kernel admission.
+    /// The kernel-admission path (which denies adversarial-tainted actions
+    /// before the gate ever sees them) is already covered by CONF-A1-* and
+    /// CONF-A6-* and is not the responsibility of this test.
+    fn deny_network_post_table() -> DecisionTable {
+        DecisionTable::new(
+            vec![Rule::new(
+                Predicate::ContainsCap {
+                    cap: CapToken::NETWORK_POST,
+                },
+                Risk::Deny,
+                "test_deny_network_post",
+            )],
+            Risk::Auto,
+        )
+    }
+
+    #[tokio::test]
+    async fn human_deny_returns_autonomy_denied_and_leaves_no_chain_entry() {
+        let memory = Arc::new(SurrealMemory::open_in_memory().await.unwrap());
+        // Trusted taint so the kernel admits the action and SAG is the only
+        // gate left between the action and the WAL append.
+        let kernel = Arc::new(PrivilegedKernel::new(CapToken::TOP));
+        let provider = Arc::new(ToyProvider::new(
+            vec![vec![non_reversible_network_post()]],
+            true,
+        ));
+        let gate = Arc::new(ApprovalGate::new(
+            default_decision_table(),
+            AutoDeny::new("operator", Some("policy".into())),
+        ));
+        let engine =
+            TurnEngine::new(kernel, Arc::clone(&memory), provider).with_sag(Arc::clone(&gate));
+
+        let err = engine
+            .run_turn(TurnInput {
+                id: TurnId::new(1),
+                obs: obs(TaintLabel::Trusted),
+            })
+            .await
+            .expect_err("SAG must deny");
+        assert!(matches!(err, GaussError::AutonomyDenied));
+        // No chain entry — the WAL append is downstream of the gate.
+        assert_eq!(memory.len().await.unwrap(), 0);
+    }
+
+    #[tokio::test(start_paused = true, flavor = "current_thread")]
+    async fn approval_timeout_returns_autonomy_approval_timeout() {
+        let memory = Arc::new(SurrealMemory::open_in_memory().await.unwrap());
+        let kernel = Arc::new(PrivilegedKernel::new(CapToken::TOP));
+        let provider = Arc::new(ToyProvider::new(
+            vec![vec![non_reversible_network_post()]],
+            true,
+        ));
+        let (surface, _rx) = ChannelSurface::new(1);
+        let gate = Arc::new(
+            ApprovalGate::new(default_decision_table(), surface)
+                .with_deadline(core::time::Duration::from_millis(20)),
+        );
+        let engine =
+            TurnEngine::new(kernel, Arc::clone(&memory), provider).with_sag(Arc::clone(&gate));
+
+        let fut = engine.run_turn(TurnInput {
+            id: TurnId::new(2),
+            obs: obs(TaintLabel::Trusted),
+        });
+        // Drive past the deadline.
+        tokio::time::advance(core::time::Duration::from_millis(100)).await;
+        let err = fut.await.expect_err("SAG must time out");
+        assert!(matches!(err, GaussError::AutonomyApprovalTimeout));
+        assert_eq!(memory.len().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn approve_then_execute_commits_chain_entry_with_sag_record() {
+        let memory = Arc::new(SurrealMemory::open_in_memory().await.unwrap());
+        let kernel = Arc::new(PrivilegedKernel::new(CapToken::TOP));
+        let provider = Arc::new(ToyProvider::new(
+            vec![vec![non_reversible_network_post()]],
+            true,
+        ));
+        let gate = Arc::new(ApprovalGate::new(
+            default_decision_table(),
+            AutoApprove::new("operator"),
+        ));
+        let engine =
+            TurnEngine::new(kernel, Arc::clone(&memory), provider).with_sag(Arc::clone(&gate));
+
+        let summary = engine
+            .run_turn(TurnInput {
+                id: TurnId::new(3),
+                obs: obs(TaintLabel::Trusted),
+            })
+            .await
+            .unwrap();
+        // The chain advanced.
+        assert_eq!(summary.chain_head.length, 1);
+        assert_eq!(memory.len().await.unwrap(), 1);
+        // The SAG decision was bundled into the summary (and therefore the
+        // canonical signed payload).
+        assert_eq!(summary.sag_decisions.len(), 1);
+        let r = &summary.sag_decisions[0];
+        assert_eq!(r.tool, "send_email");
+        assert_eq!(r.risk, Risk::RequireApproval);
+        assert!(r.proceeded);
+        assert_eq!(r.approver.as_deref(), Some("operator"));
+    }
+
+    #[tokio::test]
+    async fn classifier_deny_short_circuits_without_calling_surface() {
+        let memory = Arc::new(SurrealMemory::open_in_memory().await.unwrap());
+        let kernel = Arc::new(PrivilegedKernel::new(CapToken::TOP));
+        let provider = Arc::new(ToyProvider::new(
+            vec![vec![non_reversible_network_post()]],
+            true,
+        ));
+        // Custom table maps NETWORK_POST → Deny. The surface would
+        // auto-approve anything that reached it; the test asserts that the
+        // gate refuses BEFORE calling the surface.
+        let gate = Arc::new(ApprovalGate::new(
+            deny_network_post_table(),
+            AutoApprove::new("would-approve"),
+        ));
+        let engine =
+            TurnEngine::new(kernel, Arc::clone(&memory), provider).with_sag(Arc::clone(&gate));
+
+        let err = engine
+            .run_turn(TurnInput {
+                id: TurnId::new(4),
+                obs: obs(TaintLabel::Trusted),
+            })
+            .await
+            .expect_err("SAG must deny");
+        assert!(matches!(err, GaussError::AutonomyDenied));
+        assert_eq!(memory.len().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn text_only_turns_skip_sag() {
+        let memory = Arc::new(SurrealMemory::open_in_memory().await.unwrap());
+        let kernel = Arc::new(PrivilegedKernel::new(CapToken::TOP));
+        let provider = Arc::new(ToyProvider::new(
+            vec![vec![Action::Text(TextAction::new("hello"))]],
+            true,
+        ));
+        // Even an `AutoDeny` surface is fine — text actions never reach SAG.
+        let gate = Arc::new(ApprovalGate::new(
+            default_decision_table(),
+            AutoDeny::new("would-deny", None),
+        ));
+        let engine =
+            TurnEngine::new(kernel, Arc::clone(&memory), provider).with_sag(Arc::clone(&gate));
+
+        let summary = engine
+            .run_turn(TurnInput {
+                id: TurnId::new(5),
+                obs: obs(TaintLabel::Trusted),
+            })
+            .await
+            .unwrap();
+        assert_eq!(summary.chain_head.length, 1);
+        assert!(summary.sag_decisions.is_empty(), "text actions skip SAG");
+    }
+
+    #[tokio::test]
+    async fn channel_surface_round_trips_an_explicit_decision() {
+        let memory = Arc::new(SurrealMemory::open_in_memory().await.unwrap());
+        let kernel = Arc::new(PrivilegedKernel::new(CapToken::TOP));
+        let provider = Arc::new(ToyProvider::new(
+            vec![vec![non_reversible_network_post()]],
+            true,
+        ));
+        let (surface, mut req_rx) = ChannelSurface::new(4);
+        let sender = surface.sender();
+        let gate = Arc::new(ApprovalGate::new(default_decision_table(), surface));
+        let engine =
+            TurnEngine::new(kernel, Arc::clone(&memory), provider).with_sag(Arc::clone(&gate));
+
+        let operator = tokio::spawn(async move {
+            let req = req_rx.recv().await.expect("operator receives request");
+            assert_eq!(req.action.tool.0, "send_email");
+            sender
+                .send(ApprovalDecision::Approved {
+                    approver: "ops-on-call".into(),
+                })
+                .await
+                .unwrap();
+        });
+        let summary = engine
+            .run_turn(TurnInput {
+                id: TurnId::new(6),
+                obs: obs(TaintLabel::Trusted),
+            })
+            .await
+            .unwrap();
+        operator.await.unwrap();
+        assert_eq!(summary.chain_head.length, 1);
+        assert_eq!(
+            summary.sag_decisions[0].approver.as_deref(),
+            Some("ops-on-call")
+        );
     }
 }
 
