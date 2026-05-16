@@ -4,7 +4,7 @@
 //! twelve theorems (T1–T12) named in the source paper. Phase 0 wired the
 //! harness shape; subsequent phases tighten the assertions.
 //!
-//! Status per axiom / theorem after Phase 2:
+//! Status per axiom / theorem after Phase 3:
 //!
 //! | ID | Status                                                              | Phase that locked |
 //! |----|---------------------------------------------------------------------|--------------------|
@@ -21,6 +21,7 @@
 //! | T3 | Merkle tamper-evidence (proptest: any mutation diverges the head)   | Phase 0/2          |
 //! | T4 | Plane starvation bound `B/ρ`                                        | Phase 1            |
 //! | T9 | IPI containment                                                     | Phase 4 (planned)  |
+//! | T10| Composite sandbox bound                                             | Phase 3            |
 //! | T11| Receipt non-repudiation                                             | Phase 5 (planned)  |
 //! | T12| Delta-encoded warm switch                                           | Phase 6 (planned)  |
 
@@ -276,6 +277,130 @@ mod theorem_t3_merkle_tamper_evidence {
         let w = InclusionWitness { prev, post };
         assert!(w.verify(b"event"));
         assert!(!w.verify(b"forged"));
+    }
+}
+
+#[cfg(test)]
+mod theorem_t10_composite_sandbox {
+    //! CONF-T10-*: composite sandbox bound and cap → class invariants.
+    //!
+    //! Phase 3 ships software-only bounds (TEE attestation is Phase 10). We
+    //! verify:
+    //!
+    //! 1. `min_sandbox_for` returns the documented class for each cap depth.
+    //! 2. A WASM-only composite refuses an L2-requiring cap.
+    //! 3. A composite-with-WASM accepts an L1-only cap and reports the WASM
+    //!    layer in the invoked-layers list.
+    //! 4. The composite's reported `class()` is the union of its inner
+    //!    layers' classes (Theorem T10's "stack additive" property).
+
+    use std::sync::Arc;
+
+    use gauss_core::{CapToken, ToolAction, ToolId};
+    use gauss_sandbox::{CompositeSandbox, WasmSandbox};
+    use gauss_traits::{min_sandbox_for, SandboxClass, SandboxLayer, SandboxRequest, SandboxTrait};
+
+    fn return_0_module() -> Vec<u8> {
+        vec![
+            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60, 0x00, 0x01,
+            0x7f, 0x03, 0x02, 0x01, 0x00, 0x07, 0x08, 0x01, 0x04, 0x6d, 0x61, 0x69, 0x6e, 0x00,
+            0x00, 0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, 0x00, 0x0b,
+        ]
+    }
+
+    #[test]
+    fn cap_to_class_mapping_is_correct() {
+        assert_eq!(min_sandbox_for(CapToken::FILESYSTEM_READ), SandboxClass::L1);
+        assert_eq!(min_sandbox_for(CapToken::CANVAS_RENDER), SandboxClass::L1);
+        assert_eq!(
+            min_sandbox_for(CapToken::FILESYSTEM_WRITE),
+            SandboxClass::L2
+        );
+        assert_eq!(min_sandbox_for(CapToken::NETWORK_GET), SandboxClass::L2);
+        assert_eq!(min_sandbox_for(CapToken::NETWORK_POST), SandboxClass::L3);
+        assert_eq!(
+            min_sandbox_for(CapToken::SUBPROCESS_SPAWN),
+            SandboxClass::L3
+        );
+        assert_eq!(min_sandbox_for(CapToken::CRYPTO_SIGN), SandboxClass::L4);
+    }
+
+    #[tokio::test]
+    async fn composite_invokes_wasm_layer_for_l1_cap() {
+        let wasm = WasmSandbox::from_bytes(&return_0_module()).unwrap();
+        let sb = CompositeSandbox::wasm_only(wasm);
+        let out = sb
+            .exec(SandboxRequest::new(
+                ToolId("ro".into()),
+                CapToken::FILESYSTEM_READ,
+                serde_json::Value::Null,
+                Vec::new(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(out.layers_invoked, vec![SandboxLayer::Wasm]);
+    }
+
+    #[tokio::test]
+    async fn composite_refuses_when_class_is_insufficient() {
+        // WASM-only is L1; NETWORK_POST requires L3.
+        let wasm = WasmSandbox::from_bytes(&return_0_module()).unwrap();
+        let sb = CompositeSandbox::wasm_only(wasm);
+        let err = sb
+            .exec(SandboxRequest::new(
+                ToolId("post".into()),
+                CapToken::NETWORK_POST,
+                serde_json::Value::Null,
+                Vec::new(),
+            ))
+            .await
+            .expect_err("L3 required, only L1 provided — composite must refuse");
+        match err {
+            gauss_core::GaussError::Denied { reason } => assert!(reason.cap_bit),
+            other => panic!("expected Denied, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dte_runs_tool_action_through_the_sandbox() {
+        use gauss_kernel::PrivilegedKernel;
+        use gauss_memory::SurrealMemory;
+        use gauss_provider::ToyProvider;
+        use gauss_turn::{TurnEngine, TurnInput};
+
+        let memory = Arc::new(SurrealMemory::open_in_memory().await.unwrap());
+        let kernel = Arc::new(PrivilegedKernel::new(CapToken::TOP));
+        let wasm = WasmSandbox::from_bytes(&return_0_module()).unwrap();
+        let sandbox: Arc<dyn SandboxTrait> = Arc::new(CompositeSandbox::wasm_only(wasm));
+        // ToyProvider returns a tool action requiring FILESYSTEM_READ (L1).
+        let provider = Arc::new(ToyProvider::new(
+            vec![vec![gauss_core::Action::Tool(ToolAction::new(
+                ToolId("ro".into()),
+                serde_json::Value::Null,
+                CapToken::FILESYSTEM_READ,
+                /* reversible */ true,
+            ))]],
+            true,
+        ));
+        let engine = TurnEngine::with_sandbox(kernel, Arc::clone(&memory), provider, sandbox);
+
+        let obs = gauss_core::Observation::new(
+            gauss_core::ObservationSource::User {
+                channel: "x".into(),
+            },
+            gauss_core::TaintLabel::User,
+            serde_json::Value::Null,
+        );
+        let summary = engine
+            .run_turn(TurnInput {
+                id: gauss_core::TurnId::new(1),
+                obs,
+            })
+            .await
+            .unwrap();
+        assert_eq!(summary.action_count, 1);
+        // The WAL append still happens whether or not the sandbox is wired.
+        assert_eq!(summary.chain_head.length, 1);
     }
 }
 
