@@ -8,6 +8,7 @@ members = [
     "crates/gauss-memory",
     "crates/gauss-audit",
     "crates/gauss-provider",
+    "crates/gauss-sandbox",
     "crates/gauss-conformance",
 ]
 
@@ -28,6 +29,7 @@ gauss-turn      = { path = "crates/gauss-turn",      version = "0.0.1" }
 gauss-memory    = { path = "crates/gauss-memory",    version = "0.0.1" }
 gauss-audit     = { path = "crates/gauss-audit",     version = "0.0.1" }
 gauss-provider  = { path = "crates/gauss-provider",  version = "0.0.1" }
+gauss-sandbox   = { path = "crates/gauss-sandbox",   version = "0.0.1" }
 
 # Async
 async-trait = "0.1"
@@ -53,6 +55,15 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 # Hashing (chain link + record digest); deferred to gauss-audit
 blake3 = "1"
 sha2   = "0.10"
+
+# Composite sandbox — Phase 3. The default WASM layer is wasmi (pure-Rust,
+# fast compile, supports fuel metering). Phase 10 swaps to wasmtime for the
+# production hardening profile; the trait surface is identical (ADR-0009).
+wasmi       = { version = "0.46", default-features = false, features = ["std"] }
+# Linux-only sandbox crates; the gauss-sandbox crate gates them by feature
+# AND by `cfg(target_os = "linux")` so non-Linux builds skip them entirely.
+landlock    = "0.4"
+seccompiler = "0.5"
 
 # Database — SurrealDB embedded.
 # `default-features = false` + only `kv-mem` keeps the dep surface narrow and

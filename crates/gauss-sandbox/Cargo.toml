@@ -1,0 +1,44 @@
+[package]
+name        = "gauss-sandbox"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+description = "Composite sandbox — WASM ∧ Landlock ∧ ns/seccomp ∧ TEE (T10)."
+
+[lints]
+workspace = true
+
+[features]
+default = ["wasm-wasmi", "linux-layers", "macos-layers"]
+# WASM layer (default backend = wasmi; Phase 10 may add a wasmtime backend
+# under `wasm-wasmtime`).
+wasm-wasmi = ["dep:wasmi"]
+# Linux-specific layers. The crate compiles on non-Linux without these but
+# composing them on a Linux build is gated on `cfg(target_os = "linux")` so
+# the feature only opts the deps in; it doesn't change platform behaviour.
+linux-layers = ["dep:landlock", "dep:seccompiler"]
+# macOS Seatbelt layer (sandbox-exec subprocess); pure-subprocess so no extra
+# dep is needed beyond `tokio::process`.
+macos-layers = []
+
+[dependencies]
+gauss-core   = { workspace = true }
+gauss-traits = { workspace = true }
+async-trait  = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+tokio        = { workspace = true, features = ["sync", "rt", "macros", "time", "process", "io-util"] }
+tracing      = { workspace = true }
+
+wasmi       = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock    = { workspace = true, optional = true }
+seccompiler = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
