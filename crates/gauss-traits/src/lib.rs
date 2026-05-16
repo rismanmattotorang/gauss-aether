@@ -43,10 +43,16 @@ pub trait Kernel: Send + Sync {
     fn admit(&self, required: CapToken, taint: TaintLabel) -> GaussResult<()>;
 }
 
-/// Memory monoid surface (Phase 1).
+/// Memory monoid surface (Phase 1, extended in Phase 6).
 ///
 /// Real implementations live in `gauss-memory` (in-memory + `SurrealDB`). The
 /// trait is `async_trait` because `SurrealDB` calls are async.
+///
+/// Phase 6 adds three recall methods — `fts_search`, `vector_search`, and
+/// `hybrid_recall`. All three carry default implementations that return an
+/// empty result so older backends keep compiling unchanged; the
+/// `SurrealMemory` backend overrides them with real BM25 + HNSW + union
+/// dedup logic.
 #[async_trait]
 pub trait MemoryBackend: Send + Sync {
     /// Append a record. The implementation MUST ensure durability before
@@ -64,9 +70,106 @@ pub trait MemoryBackend: Send + Sync {
     async fn is_empty(&self) -> GaussResult<bool> {
         Ok(self.len().await? == 0)
     }
+
+    /// Phase-6 BM25 keyword recall over `payload_text` (default: empty).
+    ///
+    /// `limit` is the maximum number of hits to return. Backends that have
+    /// not enabled FTS return `Ok(vec![])`.
+    ///
+    /// # Errors
+    /// Backend-specific I/O errors are wrapped in
+    /// [`gauss_core::GaussError::Io`].
+    async fn fts_search(&self, _query: &str, _limit: usize) -> GaussResult<Vec<RecallHit>> {
+        Ok(Vec::new())
+    }
+
+    /// Phase-6 HNSW k-nearest-neighbour recall over `embedding` (default:
+    /// empty).
+    ///
+    /// `query` is a normalised vector of `DIMENSION` floats (default 384;
+    /// pinned at deployment time). `k` is the result-set size.
+    ///
+    /// # Errors
+    /// Backend-specific I/O errors are wrapped in
+    /// [`gauss_core::GaussError::Io`].
+    async fn vector_search(&self, _query: &[f32], _k: usize) -> GaussResult<Vec<RecallHit>> {
+        Ok(Vec::new())
+    }
+
+    /// Phase-6 hybrid recall `ρ_hyb = ρ_fts ∪ ρ_vec` deduplicated by
+    /// `turn_id`, with weighted score-merge per `query.alpha`. Default impl
+    /// dispatches to `fts_search` + `vector_search` and applies the merge
+    /// in-process; backends MAY override for a single SurrealDB round-trip.
+    ///
+    /// # Errors
+    /// Propagates the underlying recall errors.
+    async fn hybrid_recall(&self, query: HybridQuery) -> GaussResult<Vec<RecallHit>> {
+        let fts = if let Some(text) = query.text.as_deref() {
+            self.fts_search(text, query.k).await?
+        } else {
+            Vec::new()
+        };
+        let vec = if let Some(embedding) = query.embedding.as_deref() {
+            self.vector_search(embedding, query.k).await?
+        } else {
+            Vec::new()
+        };
+        Ok(merge_hybrid(fts, vec, query.alpha, query.k))
+    }
+}
+
+/// Merge two recall result sets by union-then-score.
+///
+/// `ρ_fts` and `ρ_vec` are combined with weight `alpha` on the FTS score and
+/// `1 - alpha` on the vector score. Hits found only in one source are credited
+/// with `0.0` for the missing channel. The result is truncated to `limit`
+/// hits, sorted by descending merged score. Exposed as a free function so
+/// `MemoryBackend::hybrid_recall` overrides can call it.
+#[must_use]
+pub fn merge_hybrid(
+    fts: Vec<RecallHit>,
+    vec: Vec<RecallHit>,
+    alpha: f32,
+    limit: usize,
+) -> Vec<RecallHit> {
+    use std::collections::HashMap;
+    let alpha = alpha.clamp(0.0, 1.0);
+    let beta = 1.0 - alpha;
+    let cap = fts.len().saturating_add(vec.len());
+    let mut by_turn: HashMap<TurnId, RecallHit> = HashMap::with_capacity(cap);
+    for mut h in fts {
+        h.score *= alpha;
+        h.source = RecallSource::Fts;
+        by_turn.insert(h.turn_id, h);
+    }
+    for h in vec {
+        by_turn
+            .entry(h.turn_id)
+            .and_modify(|existing| {
+                existing.score += h.score * beta;
+                existing.source = RecallSource::Hybrid;
+            })
+            .or_insert_with(|| {
+                let mut h = h;
+                h.score *= beta;
+                h.source = RecallSource::Vector;
+                h
+            });
+    }
+    let mut merged: Vec<RecallHit> = by_turn.into_values().collect();
+    merged.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+    merged.truncate(limit);
+    merged
 }
 
 /// Audit record being appended.
+///
+/// Phase 6 adds two optional, FTS- and HNSW-targeted fields. Backends that do
+/// not have those indices ignore them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct AppendEntry {
@@ -76,16 +179,148 @@ pub struct AppendEntry {
     pub payload: Vec<u8>,
     /// Taint of the record's underlying observation(s).
     pub taint: TaintLabel,
+    /// Optional text payload materialised for BM25 keyword recall (Phase 6).
+    pub payload_text: Option<String>,
+    /// Optional sentence-embedding vector materialised for HNSW vector
+    /// recall (Phase 6). Length MUST match the backend's HNSW dimension
+    /// (`384` for the `SurrealMemory` default).
+    pub embedding: Option<Vec<f32>>,
 }
 
 impl AppendEntry {
-    /// Construct an append entry.
+    /// Construct an append entry without recall enrichment (Phase-1
+    /// compatibility).
     #[must_use]
     pub const fn new(turn_id: TurnId, payload: Vec<u8>, taint: TaintLabel) -> Self {
         Self {
             turn_id,
             payload,
             taint,
+            payload_text: None,
+            embedding: None,
+        }
+    }
+
+    /// Attach a text payload for FTS recall (Phase 6).
+    #[must_use]
+    pub fn with_text(mut self, text: impl Into<String>) -> Self {
+        self.payload_text = Some(text.into());
+        self
+    }
+
+    /// Attach an embedding for vector recall (Phase 6).
+    #[must_use]
+    pub fn with_embedding(mut self, embedding: Vec<f32>) -> Self {
+        self.embedding = Some(embedding);
+        self
+    }
+}
+
+/// One hit from a recall query (Phase 6).
+///
+/// `payload` is the original bytes the turn appended; `payload_text` is the
+/// enriched text the backend used for FTS scoring (handy for highlighting).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct RecallHit {
+    /// Turn that produced this record.
+    pub turn_id: TurnId,
+    /// 0-based position of this record in the chain.
+    pub seq: u64,
+    /// Backend-specific relevance score. BM25 is unbounded; cosine distance
+    /// is mapped into `1.0 - d ∈ [0, 1]` so higher = closer. Hybrid merges
+    /// weight the two channels with the [`HybridQuery::alpha`] parameter.
+    pub score: f32,
+    /// Channel that produced this hit (FTS, vector, or the hybrid merge).
+    pub source: RecallSource,
+    /// Original opaque payload.
+    pub payload: Vec<u8>,
+    /// Materialised text (`payload_text` if it was set on append).
+    pub payload_text: Option<String>,
+    /// Taint of the underlying observation.
+    pub taint: TaintLabel,
+}
+
+impl RecallHit {
+    /// Construct a hit. Provided because the struct is `#[non_exhaustive]`.
+    #[must_use]
+    pub const fn new(
+        turn_id: TurnId,
+        seq: u64,
+        score: f32,
+        source: RecallSource,
+        payload: Vec<u8>,
+        payload_text: Option<String>,
+        taint: TaintLabel,
+    ) -> Self {
+        Self {
+            turn_id,
+            seq,
+            score,
+            source,
+            payload,
+            payload_text,
+            taint,
+        }
+    }
+}
+
+/// Which channel a [`RecallHit`] came from.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum RecallSource {
+    /// BM25 keyword index.
+    Fts,
+    /// HNSW vector index.
+    Vector,
+    /// Union of the two channels.
+    Hybrid,
+}
+
+/// Query against [`MemoryBackend::hybrid_recall`].
+///
+/// At least one of `text` / `embedding` must be present; if both are present
+/// the merged score is `alpha · fts_score + (1 - alpha) · vector_score`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct HybridQuery {
+    /// Optional BM25 keyword query.
+    pub text: Option<String>,
+    /// Optional vector-space query (HNSW-indexed by the backend).
+    pub embedding: Option<Vec<f32>>,
+    /// Result-set size. The backend MAY return fewer hits.
+    pub k: usize,
+    /// Score-merge weight. `1.0` = FTS-only ranking; `0.0` = vector-only.
+    /// `0.5` (the default) gives equal weight.
+    pub alpha: f32,
+}
+
+impl Default for HybridQuery {
+    fn default() -> Self {
+        Self {
+            text: None,
+            embedding: None,
+            k: 16,
+            alpha: 0.5,
+        }
+    }
+}
+
+impl HybridQuery {
+    /// Build a hybrid query.
+    #[must_use]
+    pub const fn new(
+        text: Option<String>,
+        embedding: Option<Vec<f32>>,
+        k: usize,
+        alpha: f32,
+    ) -> Self {
+        Self {
+            text,
+            embedding,
+            k,
+            alpha,
         }
     }
 }
