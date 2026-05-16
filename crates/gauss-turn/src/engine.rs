@@ -19,7 +19,11 @@
 //! crash-injection paths.
 
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use gauss_audit::{
+    chain::ChainHead, sign::ReceiptSigner, sign::SignedReceipt, sign::SigningBackend,
+};
 use gauss_core::{Action, GaussError, GaussResult, TaintLabel, TurnId};
 use gauss_traits::{
     AppendAck, AppendEntry, ChainHeadSnapshot, Kernel, MemoryBackend, Provider, SandboxRequest,
@@ -37,6 +41,10 @@ pub struct TurnSummary {
     pub action_count: usize,
     /// Audit chain head after the turn was committed (Phase 1+).
     pub chain_head: ChainHeadSnapshot,
+    /// Signed receipt produced for this turn — `Some` iff the engine was
+    /// constructed via [`TurnEngine::with_signing`] / [`TurnEngine::with_all`]
+    /// (Phase 5).
+    pub receipt: Option<SignedReceipt>,
 }
 
 /// Outcome of a single turn — alias retained for `SPECS.md` continuity.
@@ -53,6 +61,7 @@ pub struct TurnEngine<K, M, P> {
     memory: Arc<M>,
     provider: Arc<P>,
     sandbox: Option<Arc<dyn SandboxTrait>>,
+    signer: Option<Arc<ReceiptSigner<DynSigningBackend>>>,
 }
 
 impl<K, M, P> core::fmt::Debug for TurnEngine<K, M, P> {
@@ -65,7 +74,33 @@ impl<K, M, P> core::fmt::Debug for TurnEngine<K, M, P> {
                 "sandbox",
                 &self.sandbox.as_ref().map_or("<None>", |_| "<Some>"),
             )
+            .field(
+                "signer",
+                &self.signer.as_ref().map_or("<None>", |_| "<Some>"),
+            )
             .finish()
+    }
+}
+
+/// Type-erased wrapper around a signing backend so the engine doesn't have to
+/// be generic over `B: SigningBackend`. Kept in this crate so the trait
+/// object lives where it's used.
+pub struct DynSigningBackend(Box<dyn SigningBackend>);
+
+impl DynSigningBackend {
+    /// Wrap a concrete `SigningBackend`.
+    pub fn new<B: SigningBackend + 'static>(backend: B) -> Self {
+        Self(Box::new(backend))
+    }
+}
+
+impl SigningBackend for DynSigningBackend {
+    fn public_key(&self) -> [u8; gauss_audit::ED25519_PUBLIC_KEY_LEN] {
+        self.0.public_key()
+    }
+
+    fn sign(&self, message: &[u8]) -> GaussResult<[u8; gauss_audit::ED25519_SIGNATURE_LEN]> {
+        self.0.sign(message)
     }
 }
 
@@ -82,6 +117,7 @@ where
             memory,
             provider,
             sandbox: None,
+            signer: None,
         }
     }
 
@@ -98,6 +134,43 @@ where
             memory,
             provider,
             sandbox: Some(sandbox),
+            signer: None,
+        }
+    }
+
+    /// Construct a turn engine that signs every committed turn into the
+    /// Phase-5 receipt chain. Combine with a sandbox via [`Self::with_all`].
+    #[must_use]
+    pub fn with_signing(
+        kernel: Arc<K>,
+        memory: Arc<M>,
+        provider: Arc<P>,
+        signer: Arc<ReceiptSigner<DynSigningBackend>>,
+    ) -> Self {
+        Self {
+            kernel,
+            memory,
+            provider,
+            sandbox: None,
+            signer: Some(signer),
+        }
+    }
+
+    /// Construct a turn engine with both sandbox and signing (Phase 5+).
+    #[must_use]
+    pub fn with_all(
+        kernel: Arc<K>,
+        memory: Arc<M>,
+        provider: Arc<P>,
+        sandbox: Arc<dyn SandboxTrait>,
+        signer: Arc<ReceiptSigner<DynSigningBackend>>,
+    ) -> Self {
+        Self {
+            kernel,
+            memory,
+            provider,
+            sandbox: Some(sandbox),
+            signer: Some(signer),
         }
     }
 
@@ -126,15 +199,42 @@ where
         // the chain digest depends on the structural content, not on any
         // serialiser non-determinism.
         let payload = canonicalise_actions(&actions)?;
+        // Capture the chain head BEFORE the append so the signed receipt's
+        // `prev_head` is consistent with the chain link the backend produces.
+        let prev_head = self.memory.chain_head().await?;
         let ack: AppendAck = self
             .memory
-            .append(AppendEntry::new(input.id, payload, taint))
+            .append(AppendEntry::new(input.id, payload.clone(), taint))
             .await?;
         tracing::trace!(
             turn_id = ?input.id,
             chain_index = ack.index,
             "wal append committed"
         );
+
+        // -- 4a. Signed receipt (Phase 5) -------------------------------
+        // The receipt covers the exact bytes the memory backend chained and
+        // is signed AFTER the append succeeds — a tampered post-append state
+        // would invalidate either the signature or the chain link.
+        let receipt = if let Some(signer) = &self.signer {
+            let receipt = signer.sign_append(
+                input.id,
+                ack.index,
+                ChainHead::from_bytes(prev_head.digest),
+                &payload,
+                taint,
+                now_ms(),
+            )?;
+            tracing::trace!(
+                turn_id = ?input.id,
+                chain_index = ack.index,
+                public_key = %hex::encode(receipt.public_key),
+                "receipt signed"
+            );
+            Some(receipt)
+        } else {
+            None
+        };
 
         // -- 5. Commit external effects --
         // Phase 3: if a sandbox is wired, every tool action runs through it;
@@ -161,6 +261,7 @@ where
             id: input.id,
             action_count: actions.len(),
             chain_head: ack.head,
+            receipt,
         })
     }
 
@@ -180,6 +281,15 @@ where
 fn canonicalise_actions(actions: &[Action]) -> GaussResult<Vec<u8>> {
     serde_json::to_vec(actions)
         .map_err(|e| GaussError::Internal(format!("canonicalise_actions: {e}")))
+}
+
+#[inline]
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| u64::try_from(d.as_millis()).ok())
+        .unwrap_or(0)
 }
 
 /// Phase-2 placeholder for external-effect commit. Replaced by the composite
