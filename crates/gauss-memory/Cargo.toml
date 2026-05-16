@@ -13,14 +13,17 @@ workspace = true
 
 [features]
 default = ["surrealdb-embedded"]
-# Enable the embedded SurrealDB engine (kv-mem for tests; surrealkv/rocksdb
-# behind subsequent features in later phases).
+# Enable the embedded SurrealDB engine (kv-mem for tests; surrealkv for
+# single-node persistent storage; rocksdb is an additive Phase-10 feature).
 surrealdb-embedded = ["dep:surrealdb"]
+kv-surrealkv = ["surrealdb-embedded", "surrealdb/kv-surrealkv"]
+kv-rocksdb   = ["surrealdb-embedded", "surrealdb/kv-rocksdb"]
 
 [dependencies]
 gauss-core   = { workspace = true }
 gauss-traits = { workspace = true }
 async-trait  = { workspace = true }
+parking_lot  = { workspace = true }
 serde        = { workspace = true }
 serde_json   = { workspace = true }
 sha2         = { workspace = true }

@@ -20,6 +20,7 @@
 use gauss_core::{GaussError, GaussResult, TurnId};
 use std::sync::Mutex;
 
+pub mod klru;
 pub mod schema;
 pub mod snapshot;
 
@@ -29,7 +30,9 @@ pub mod surreal;
 #[cfg(feature = "surrealdb-embedded")]
 pub use surreal::SurrealMemory;
 
+pub use klru::{Node, PrefixTree, Stats as PrefixStats, DEFAULT_CAPACITY, DEFAULT_K};
 pub use schema::{Schema, TURN_RECORD_TABLE};
+pub use snapshot::myers;
 
 /// A single append-log entry. Phase 0 is opaque bytes; Phases 2/5 attach the
 /// receipt + delta.
