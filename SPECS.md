@@ -1,7 +1,7 @@
 # Gauss-Aether — Rust Technical Specification
 
-**Version:** 0.1.0-draft
-**Status:** Pre-implementation (axiomatic specification)
+**Version:** 0.2.0-draft
+**Status:** Phase 2 complete (workspace + kernel + DTE + memory log + chain). Phases 3–11 pending.
 **Source:** *Gauss-Aether: An Axiomatic Operating System for Trustworthy Autonomous Agents*, Gaussian Technologies.
 **License target:** Apache-2.0 / MIT dual.
 
@@ -22,6 +22,17 @@ Reading order:
 
 Conformance keywords (MUST, SHOULD, MAY) follow RFC 2119.
 
+### 0.1 Implementation status (after Phase 2)
+
+| Phase | Status | Highlights |
+|-------|--------|------------|
+| 0     | ✅ Done | Workspace, 24 crates planned, 6 stubs, ADRs 0001–0005, CI, 35 tests. |
+| 1     | ✅ Done | `gauss-traits` crate; lock-free 3-plane sched; joint K×L admission; `PrivilegedKernel` with CAS-protected grant; antitone declass; SurrealDB embedded backend; 51 tests. |
+| 2     | ✅ Done | Real Differential Turn Engine (Algorithm 1, WAL-before-effect); SHA-256 chain replay + inclusion witness; Myers diff snapshot; `ToyProvider`; ADRs 0006–0008; 73 tests. |
+| 3–11  | Planned | Composite sandbox, HWCA, signed receipts, hybrid recall, SAG, trait verifier, Canvas, SDHE, scale-out, 1.0 release. |
+
+See [`ROADMAP.md`](./ROADMAP.md) for phase-by-phase deliverables.
+
 ---
 
 ## 1. Conceptual Foundation
@@ -36,35 +47,35 @@ G = (S, A, O, K, M, F, π, L, Φ, R, V)
 
 where each component is implemented by exactly one Rust type or trait (§14):
 
-| Symbol | Meaning                                  | Rust realisation                     |
-|--------|------------------------------------------|--------------------------------------|
-| `S`    | Turn state space                         | `gauss_kernel::TurnState`            |
-| `A`    | Actions (`Atxt ⊔ Atool`)                 | `gauss_core::Action` enum            |
-| `O`    | Observations                             | `gauss_core::Observation`            |
-| `K`    | Capability lattice                       | `gauss_kernel::cap::CapLattice`      |
-| `M`    | Memory monoid                            | `gauss_memory::MemoryMonoid`         |
-| `F`    | Fairness allocation                      | `gauss_kernel::sched::FairAlloc`     |
-| `π`    | Policy (LLM)                             | `gauss_provider::Policy`             |
-| `L`    | Info-flow lattice (taint)                | `gauss_kernel::flow::TaintLattice`   |
-| `Φ`    | Supervised-autonomy gradient             | `gauss_sag::AutonomyClassifier`      |
-| `R`    | Receipt monoid                           | `gauss_audit::ReceiptMonoid`         |
-| `V`    | TEE attestation predicate                | `gauss_attest::Attestation`          |
+| Symbol | Meaning                                  | Rust realisation                                      |
+|--------|------------------------------------------|--------------------------------------------------------|
+| `S`    | Turn state space                         | `gauss_turn::Turn<_>` + `gauss_memory::surreal` rows   |
+| `A`    | Actions (`Atxt ⊔ Atool`)                 | `gauss_core::Action` enum                              |
+| `O`    | Observations                             | `gauss_core::Observation`                              |
+| `K`    | Capability lattice                       | `gauss_core::cap::CapToken` (re-exported by kernel; ADR-0008) |
+| `M`    | Memory monoid                            | `gauss_traits::MemoryBackend` (impl: `gauss_memory::SurrealMemory`) |
+| `F`    | Fairness allocation                      | `gauss_kernel::sched::Planes`                          |
+| `π`    | Policy (LLM)                             | `gauss_traits::Provider` (Phase 2: `ToyProvider`)      |
+| `L`    | Info-flow lattice (taint)                | `gauss_core::TaintLattice` + `gauss_kernel::DeclassMap`|
+| `Φ`    | Supervised-autonomy gradient             | `gauss_sag::AutonomyClassifier` (Phase 7)              |
+| `R`    | Receipt monoid                           | `gauss_audit::ReceiptChain` (Phase 5 adds Ed25519)     |
+| `V`    | TEE attestation predicate                | `gauss_attest::Attestation` (Phase 10)                 |
 
 ### 1.2 The Nine Axioms (Normative)
 
 Each axiom is encoded as (a) a Rust type-level invariant where feasible, (b) a runtime predicate enforced by the kernel, and (c) a test suite in `crates/gauss-conformance/`.
 
-| ID | Axiom                          | Primary enforcement site                                  |
-|----|--------------------------------|-----------------------------------------------------------|
-| A1 | Turn Idempotency               | `gauss_turn::engine::commit` (WAL-before-effect)          |
-| A2 | Capability Monotonicity        | `gauss_kernel::cap::reserve`                              |
-| A3 | Audit Completeness             | `gauss_audit::chain::append`                              |
-| A4 | Fairness Separation            | `gauss_kernel::sched::Planes` (3 token buckets)           |
-| A5 | Recall Soundness               | `gauss_memory::hybrid::ρ_hyb`                             |
-| A6 | Information-Flow Non-Decreasing| `gauss_kernel::flow::join_label`                          |
-| A7 | Context Isolation              | `gauss_hwca::Worker::spawn` + schema gate                 |
-| A8 | Supervised Autonomy            | `gauss_sag::classify`                                     |
-| A9 | Receipt Non-Repudiation        | `gauss_audit::sign::Ed25519Signer`                        |
+| ID | Axiom                          | Primary enforcement site (post Phase 2)                          |
+|----|--------------------------------|------------------------------------------------------------------|
+| A1 | Turn Idempotency               | `gauss_turn::engine::run_turn` (WAL append BEFORE effect)        |
+| A2 | Capability Monotonicity        | `gauss_kernel::PrivilegedKernel::contract` (CAS, contract-only)  |
+| A3 | Audit Completeness             | `gauss_audit::ReceiptChain::append` + `verify_replay`            |
+| A4 | Fairness Separation            | `gauss_kernel::sched::Planes` (3 independent atomic token buckets)|
+| A5 | Recall Soundness               | `gauss_memory::hybrid::ρ_hyb` (Phase 6)                          |
+| A6 | Information-Flow Non-Decreasing| `gauss_kernel::admit` + `gauss_kernel::DeclassMap` (antitone)    |
+| A7 | Context Isolation              | `gauss_hwca::Worker::spawn` + schema gate (Phase 4)              |
+| A8 | Supervised Autonomy            | `gauss_sag::classify` (Phase 7)                                  |
+| A9 | Receipt Non-Repudiation        | `gauss_audit::sign::Ed25519Signer` (Phase 5)                     |
 
 ### 1.3 The Twelve Theorems (Normative bounds)
 
@@ -76,7 +87,7 @@ Each theorem maps to one *performance/security target* in §14.3.
 
 ## 2. Workspace & Crate Layout
 
-The system is a **Cargo workspace** with strict crate boundaries; the kernel/runtime split mirrors OpenFang but extended to ten subsystems.
+The system is a **Cargo workspace** with strict crate boundaries; the kernel/runtime split mirrors OpenFang but extended to ten subsystems. **`gauss-traits`** owns the public trait surface so plugin authors depend on a stable abstract API rather than the implementation crates.
 
 ```
 gauss-aether/
@@ -84,44 +95,31 @@ gauss-aether/
 ├── rust-toolchain.toml       # pinned channel: stable, MSRV 1.83
 ├── deny.toml                 # cargo-deny config (licences, advisories)
 ├── crates/
-│   ├── gauss-core/           # shared types, error, IDs, traits-of-traits
-│   ├── gauss-kernel/         # PRIVILEGED — capability + flow + sched
-│   │   ├── src/cap/          # K lattice
-│   │   ├── src/flow/         # L lattice + declass
-│   │   ├── src/sched/        # 3 planes (Conv, Daemon, Approval)
-│   │   └── src/attest/       # V predicate
+│   ├── gauss-core/           # shared types, error, IDs, CapToken lattice
+│   ├── gauss-traits/         # PUBLIC trait surface — Kernel, MemoryBackend, Provider, …
+│   ├── gauss-kernel/         # PRIVILEGED — joint K×L admit, lock-free 3-plane sched
 │   ├── gauss-turn/           # Differential Turn Engine (DTE)
-│   ├── gauss-hwca/           # Hierarchical Worker-Context Architecture
-│   ├── gauss-sandbox/        # composite: WASM ∧ Landlock ∧ ns/seccomp ∧ TEE
-│   │   ├── src/wasm/         # wasmtime, fuel+epoch
-│   │   ├── src/landlock/     # Linux 5.13+
-│   │   ├── src/bwrap/        # bubblewrap glue
-│   │   ├── src/seatbelt/     # macOS
-│   │   └── src/seccomp/      # libseccomp-rs
-│   ├── gauss-memory/         # Trinity: append-log + FTS + HNSW + Merkle
-│   │   ├── src/log/          # delta-encoded WAL
-│   │   ├── src/fts/          # tantivy
-│   │   ├── src/vec/          # hnsw_rs
-│   │   ├── src/klru/         # K-LRU + prefix tree
-│   │   └── src/snapshot/     # Myers diff over session ADT
-│   ├── gauss-audit/          # Receipt chain, Ed25519, TSA anchor
-│   ├── gauss-sag/            # Supervised Autonomy Gradient classifier
-│   ├── gauss-provider/       # Provider trait + adapters (Anthropic, OpenAI, Google)
-│   ├── gauss-channel/        # Channel trait + adapters (Telegram, Discord, Slack, …)
-│   ├── gauss-tool/           # Tool trait + MCP bridge
-│   ├── gauss-canvas/         # A2UI Live Canvas Protocol (server side)
-│   ├── gauss-health/         # Self-Diagnostic Health Engine (SDHE)
-│   ├── gauss-gateway/        # three-plane router, REST/WS/SSE, OAI-compat, ACP
-│   ├── gauss-traits/         # public trait surface (re-exports for plugin authors)
-│   ├── gauss-poly/           # polyhedral equivalence verifier (build-time SMT/Z3)
+│   ├── gauss-hwca/           # Hierarchical Worker-Context Architecture (Phase 4)
+│   ├── gauss-sandbox/        # composite: WASM ∧ Landlock ∧ ns/seccomp ∧ TEE (Phase 3+10)
+│   ├── gauss-memory/         # Trinity: SurrealDB-backed log + FTS + HNSW + graph
+│   │   ├── src/schema.rs     # SurrealQL bootstrap DDL
+│   │   ├── src/surreal.rs    # SurrealMemory: MemoryBackend impl
+│   │   └── src/snapshot.rs   # Myers line diff (Phase 6 ADT diff)
+│   ├── gauss-audit/          # SHA-256 chain (Phase 5: Ed25519 + TSA)
+│   ├── gauss-sag/            # Supervised Autonomy Gradient classifier (Phase 7)
+│   ├── gauss-provider/       # Provider trait impls — ToyProvider now, vendors in Phase 8
+│   ├── gauss-channel/        # Channel adapters (Phase 7+)
+│   ├── gauss-tool/           # Tool trait + MCP bridge (Phase 4)
+│   ├── gauss-canvas/         # A2UI Live Canvas Protocol (Phase 9)
+│   ├── gauss-health/         # Self-Diagnostic Health Engine (Phase 9)
+│   ├── gauss-gateway/        # three-plane router, REST/WS/SSE, OAI-compat (Phase 9)
+│   ├── gauss-poly/           # polyhedral equivalence verifier (Phase 8)
 │   ├── gauss-cli/            # `gauss` binary, `gauss doctor`, `gauss import …`
 │   ├── gauss-tui/            # ratatui TUI
 │   ├── gauss-desktop/        # Tauri shell (thin)
 │   ├── gauss-conformance/    # axiom test suite (A1–A9, T1–T12)
 │   └── gauss-bench/          # criterion + scorecard runner
 └── docs/
-    ├── SPECS.md              # (this file)
-    ├── ROADMAP.md
     ├── adr/                  # Architecture Decision Records
     └── proofs/               # Lean/Coq sketches (future)
 ```
@@ -135,73 +133,94 @@ gauss-aether/
 | 2    | provider/channel/tool/canvas/gateway/health/cli/tui/desktop            | normal review                  |
 | 3    | `gauss-conformance`, `gauss-bench`, `gauss-poly`                       | best-effort                    |
 
-**Forbidden cross-crate flows.** `gauss-provider` and `gauss-channel` MUST NOT depend on `gauss-kernel` directly; they consume `gauss-core` types only. The kernel exposes its enforcement surface through `gauss-traits`.
+**Forbidden cross-crate flows.** Implementation crates (`gauss-provider`, `gauss-channel`, …) MUST depend on `gauss-core` + `gauss-traits` only — never on `gauss-kernel` directly. The kernel consumes implementations *through* `gauss-traits`.
 
 ---
 
 ## 3. `gauss-core` — Shared Types
 
-Pure-data crate, `#![no_std]` friendly where possible (uses `alloc`). No I/O.
+Pure-data crate. No I/O.
 
 ### 3.1 Identifier types
 
 ```rust
-pub struct TurnId(pub u128);          // ULID; monotone within session
+pub struct TurnId(pub u128);          // ULID (Phase 6); opaque now
 pub struct SessionId(pub u128);
-pub struct AgentId(pub Uuid);
-pub struct ToolId(pub SmolStr);
+pub struct AgentId(pub String);       // UUID once key-mgmt lands
+pub struct ToolId(pub String);
 pub struct WorkerId(pub u64);
 ```
 
-All IDs `Copy`, `Eq`, `Hash`, `serde::Serialize`. `TurnId` ordering follows ULID lexicographic.
+All numeric IDs `Copy`, `Eq`, `Hash`, `serde::Serialize`.
 
-### 3.2 Action / Observation enums
+### 3.2 Capability lattice `K` (ADR-0008)
 
 ```rust
+pub struct CapToken(u64);            // bitmask over a fixed namespace
+
+impl CapToken {
+    pub const BOTTOM: Self;            // ⊥
+    pub const TOP: Self;               // ⊤
+    pub const FILESYSTEM_READ: Self;   // …
+    pub const NETWORK_GET: Self;
+    pub const NETWORK_POST: Self;
+    pub const SUBPROCESS_SPAWN: Self;
+    pub const CRYPTO_SIGN: Self;
+    pub const CANVAS_RENDER: Self;
+    pub const CANVAS_EMBED: Self;
+    pub const CANVAS_FILE_WRITE: Self;
+
+    pub const fn meet(self, rhs: Self) -> Self;   // ⊓
+    pub const fn join(self, rhs: Self) -> Self;   // ⊔
+    pub const fn leq(self, rhs: Self) -> bool;    // ⪯
+}
+```
+
+`CapToken` lives in `gauss-core` so `Action::Tool::cap_required` can carry it without inducing a cycle on `gauss-kernel` (ADR-0008).
+
+### 3.3 Action / Observation enums
+
+```rust
+#[non_exhaustive]
 pub enum Action {
     Text(TextAction),
     Tool(ToolAction),
 }
 
+#[non_exhaustive]
 pub struct ToolAction {
     pub tool: ToolId,
     pub args: serde_json::Value,
-    pub cap_required: CapToken,
-    pub reversible: bool,        // manifest-declared
+    pub cap_required: CapToken,      // joint-admit input (paper §VI)
+    pub reversible: bool,            // manifest-declared
 }
-```
 
-`Observation` carries the *taint label* explicitly:
-
-```rust
+#[non_exhaustive]
 pub struct Observation {
     pub source: ObservationSource,
-    pub taint: TaintLabel,        // see §4.2
+    pub taint: TaintLabel,
     pub body: serde_json::Value,
-    pub received_at: SystemTime,
 }
 ```
 
-### 3.3 Error model
-
-All public APIs return `Result<T, GaussError>` where `GaussError` is non-exhaustive:
+### 3.4 Error model
 
 ```rust
 #[non_exhaustive]
 pub enum GaussError {
-    CapDenied { needed: CapToken, granted: CapToken },
-    TaintViolation { required: CapToken, declass: CapToken, taint: TaintLabel },
-    AutonomyDenied { class: RiskClass },
+    Denied { reason: RefusalReason },     // (cap_bit, taint_bit)
+    AutonomyDenied,
     AutonomyApprovalTimeout,
-    SandboxFailure(SandboxFailure),
+    SchemaValidation(String),
     AuditChainBroken,
-    ReceiptVerifyFailed,
-    SchemaValidationFailed(String),
-    /* … */
+    ReceiptVerify,
+    WorkerDepthExceeded { limit: u32 },
+    Io(String),
+    Internal(String),
 }
 ```
 
-A `CapDenied`/`TaintViolation` MUST tag the **two-bit refusal reason** `(cap_bit, taint_bit)` for forensic completeness (paper §VI.C).
+`Denied` carries the two-bit refusal reason (paper §VI.C) so the operator can distinguish capability denials from upstream-taint denials.
 
 ---
 
@@ -211,59 +230,54 @@ The privileged authority. Single-process by default; clustering layered via `gau
 
 ### 4.1 Capability Lattice `K` (A2, T2)
 
-Bounded meet-semilattice with explicit `⊥`, `⊤`, `⊓`, `⊔`.
+Defined in `gauss-core` (ADR-0008). The kernel re-exports it (`gauss_kernel::CapToken`) and ships the lattice-law proptest suite. **Invariants** (enforced by `PrivilegedKernel::contract`):
 
-```rust
-pub struct CapLattice { /* poset over CapNode */ }
-
-pub trait Capability: Sealed {
-    fn meet(&self, other: &Self) -> Self;
-    fn join(&self, other: &Self) -> Result<Self, GrantRequired>;
-    fn leq(&self, other: &Self) -> bool;     // ⪯
-}
-```
-
-**Invariants** (enforced in `cap::reserve`):
-
-- I-A2-1: `Kt+1 ⪯ Kt` on every admissible turn.
-- I-A2-2: `⊔` (capability grant) requires an out-of-band signed admin operation; the runtime never elevates implicitly.
-- I-T2-1: Two disjoint capability sets (`K1 ⊓ K2 = ⊥`) share no kernel-mediated channel.
-
-**Default cap namespace**: `Filesystem.{read,write,scoped(p)}`, `Network.{get(d),post(d)}`, `Subprocess.{spawn(c)}`, `Crypto.{sign(key)}`, `Canvas.{render,embed(d),file_write}`.
+- I-A2-1: `K_{t+1} ⪯ K_t` on every admissible turn. `contract()` uses a CAS loop to ensure no implicit escalation.
+- I-A2-2: Growing the grant requires an out-of-band signed admin operation (Phase 5).
+- I-T2-1: Two disjoint capability sets (`K_1 ⊓ K_2 = ⊥`) share no kernel-mediated channel.
 
 ### 4.2 Information-Flow Lattice `L` (A6)
 
-Total chain by default, with extensibility to product lattices:
-
 ```rust
-pub enum TaintLabel { Trusted, User, Web, Adversarial }  // ⊥ → ⊤
-impl TaintLabel { fn join(self, rhs: Self) -> Self; }
-```
+pub enum TaintLabel { Trusted, User, Web, Adversarial }   // ⊥ → ⊤
 
-The `declass: L → K` map is configurable per tenant and stored as a signed manifest. Build-time check: `declass` MUST be **antitone** (paper Axiom 6); see §11 (`gauss-poly`).
-
-Joint admissibility check (paper §VI):
-
-```rust
-fn admit(k: CapToken, ell: TaintLabel, kt: CapToken) -> Result<(), GaussError> {
-    let bound = declass(ell).meet(kt);
-    if k.leq(&bound) { Ok(()) } else { Err(/* tagged (cap_bit, taint_bit) */) }
+pub trait DeclassMap: Send + Sync {
+    fn declass(&self, taint: TaintLabel) -> CapToken;
 }
 ```
 
-### 4.3 Three-Plane Scheduler (A4, T4)
+Stock policies: `DefaultDeclass` (paper §VI.B-style permissive) and `StrictDeclass` (anything above User → BOTTOM). Custom maps are runtime-validated by `verify_antitone`, which inspects all `ℓ_1 ≤ ℓ_2` pairs and reports the first antitone violation.
 
-Three independent **token buckets**:
+### 4.3 Joint admission (paper §VI)
 
-| Plane            | Refill rate `ρ_X`     | Bucket `B_X,max` | Default workload                    |
-|------------------|------------------------|------------------|--------------------------------------|
-| `Conversation`   | configurable (per tenant) | 32                | sync user turns, target <2 s         |
-| `Daemon`         | configurable           | 16               | scheduled autonomous Hands           |
-| `Approval`       | configurable           | 64               | HITL approval round-trips            |
+```rust
+impl Kernel for PrivilegedKernel {
+    fn admit(&self, required: CapToken, taint: TaintLabel) -> GaussResult<()> {
+        let current      = self.current_grant();          // K_t
+        let declass_bound = self.declass.declass(taint);  // declass(ℓ)
+        let cap_ok   = required.leq(current);
+        let taint_ok = required.leq(declass_bound);
+        if cap_ok && taint_ok { return Ok(()); }
+        Err(GaussError::Denied {
+            reason: RefusalReason { cap_bit: !cap_ok, taint_bit: !taint_ok },
+        })
+    }
+}
+```
 
-Worst-case wait `≤ B_X,max / ρ_X` (T4) MUST hold under arbitrary cross-plane demand. Implementation uses lock-free token-bucket per plane (single atomic refill timestamp + saturating subtractions); no cross-plane shared counter.
+### 4.4 Three-Plane Scheduler (A4, T4)
 
-### 4.4 Attestation Predicate `V` (composite sandbox layer 4)
+Three independent **lock-free** token buckets. Each bucket packs `(tokens_fp16.16, epoch_ms)` into one `AtomicU64`; updates are CAS loops with no shared cross-plane state (so starvation freedom holds by construction).
+
+| Plane            | Default capacity `B` | Default refill `ρ` | Workload                              |
+|------------------|----------------------|--------------------|----------------------------------------|
+| `Conversation`   | 32 tokens            | 8 tok/s            | sync user turns, target <2 s          |
+| `Daemon`         | 16 tokens            | 2 tok/s            | scheduled autonomous Hands             |
+| `Approval`       | 64 tokens            | 4 tok/s            | HITL approval round-trips              |
+
+Worst-case wait `≤ B / ρ` (T4) MUST hold under arbitrary cross-plane demand.
+
+### 4.5 Attestation Predicate `V` (Phase 10)
 
 ```rust
 pub trait Attestation {
@@ -272,307 +286,215 @@ pub trait Attestation {
 }
 ```
 
-If `V(s) = 0`, kernel rejects every `Ahigh` action (paper Definition 2(3)). Software fallback is permitted but flagged in receipts.
+If `V(s) = 0`, kernel rejects every `A_high` action (paper Definition 2(3)).
 
 ---
 
 ## 5. `gauss-turn` — Differential Turn Engine (T1, T6, T12)
 
-The DTE implements Algorithm 1 of the paper. Single turn = state machine:
+Phase 2 ships [`TurnEngine<K, M, P>`] implementing Algorithm 1 minus HWCA (Phase 4) and signed receipts (Phase 5):
 
 ```text
-Ingest → Generate → Commit
-  │         │          │
-  │         │          └─ WAL append (chain.append(ρ)) THEN external effect.
-  │         └─ stream provider; for each Atool: HWCA spawn → schema gate → sign.
-  └─ classify plane, join taint, reserve budget, load delta, hybrid recall.
+Ingest → Generate → Admit → WAL → (effect)
+  │         │         │      │         │
+  │         │         │      │         └─ apply_actions_locally (Phase 3: sandbox executor)
+  │         │         │      └─ memory.append(record) — A1 barrier
+  │         │         └─ kernel.admit(cap, taint) for each tool action
+  │         └─ provider.generate(obs) → Vec<Action>
+  └─ join taint of observation sources
 ```
 
 ### 5.1 Lifecycle API
 
 ```rust
-pub struct TurnEngine<K: Kernel, M: Memory, P: Provider> { /* … */ }
+pub struct TurnEngine<K: Kernel, M: MemoryBackend, P: Provider> { /* … */ }
 
-impl TurnEngine<…> {
-    pub async fn run_turn(&self, t: TurnInput) -> Result<TurnOutcome, GaussError>;
+impl<K, M, P> TurnEngine<K, M, P>
+where K: Kernel, M: MemoryBackend, P: Provider {
+    pub fn new(kernel: Arc<K>, memory: Arc<M>, provider: Arc<P>) -> Self;
+    pub async fn run_turn(&self, input: TurnInput) -> GaussResult<TurnSummary>;
 }
 ```
 
-`TurnOutcome` carries `(record r, receipt ρ, post-state s')`.
+`TurnSummary` carries `(id, action_count, chain_head)`. Phase 5 will attach the signed receipt; Phase 4 will attach worker-context isolation provenance.
 
-### 5.2 Crash atomicity (T1)
+### 5.2 Crash atomicity (T1) — see ADR-0007
 
-The WAL barrier is implemented via:
+The WAL barrier is **structural**: `apply_actions_locally(...)` is unreachable until `memory.append(...).await` resolves with `Ok(_)`. No configuration can disable this.
 
-- `MemoryMonoid::append_record(r)` returns only after `fsync` (configurable: `Strict` / `Group` / `Background`; default `Strict` for Tier-0 deployments).
-- Side-effect functions (`commit_effects`) are **idempotent** and re-executable on recovery using `(r, ρ)` as the deterministic input.
+### 5.3 Stateless routing (T6) — Phase 10
 
-### 5.3 Delta loading (T12)
-
-`load_delta(session_id)` returns the warm K-LRU working set; checkpoint cadence default `K = 128` turns. Reconstruction cost `O(|s0|_warm + |W_σ|·|Δ̄|)`.
-
-### 5.4 Stateless routing (T6)
-
-Per-turn state is *fully derivable* from `(s, o, kernel-state, memory)`. Routing uses consistent hashing on `SessionId.0` (Jump-hash, 64-bit). No turn pins to a node.
+Per-turn state is fully derivable from `(s, o, kernel-state, memory)`. Phase 10 wires consistent hashing on `SessionId.0`.
 
 ---
 
 ## 6. `gauss-hwca` — Hierarchical Worker-Context Architecture (A7, T9)
 
-Each tool invocation `a ∈ Atool` runs in a **fresh worker context** `sw`. Only the schema-validated return value `v ∈ Σa` crosses back.
-
-### 6.1 Worker spawn
-
-```rust
-pub struct Worker { /* opaque */ }
-
-impl Worker {
-    pub async fn spawn(
-        parent: &TurnState,
-        action: &ToolAction,
-        taint_in: TaintLabel,
-    ) -> Result<Worker, GaussError>;
-
-    pub async fn invoke(&self) -> Result<ValidatedValue, GaussError>;
-    // sw is dropped at boundary; raw output destroyed.
-}
-```
-
-### 6.2 Schema gate
-
-Each tool publishes a `manifest.toml`:
-
-```toml
-[tool]
-id = "fetch_url"
-reversible = false
-cap_required = "Network.get(*)"
-
-[output_schema]
-kind = "json_schema"
-inline = """ { "type": "object", "properties": { "title": {"type":"string", "maxLength": 280}, "body": {"type":"string", "maxLength": 4096} }, "required": ["title"], "additionalProperties": false } """
-
-[guards]
-no_instruction_substrings = true   # statistical filter on free-text fields
-```
-
-Validation enforces (a) structural conformance (JSON Schema 2020-12 via `jsonschema-rs`), (b) bounded length per field, (c) optional instruction-substring filter, (d) parse into typed Rust ADT.
-
-### 6.3 Recursion depth
-
-Sub-workers are permitted; depth bound default `8` (paper §X.C). Exceeding the bound is logged and surfaces `GaussError::WorkerDepthExceeded`.
-
-### 6.4 IPI bound (T9)
-
-Conformance test asserts empirically that for the standard MCP-tool corpus `|Σa|/|Σ| ≤ 10⁻³`, matching the paper's 2.19% headline ceiling.
+(Phase 4 deliverable; unchanged from earlier drafts.)
 
 ---
 
 ## 7. `gauss-sandbox` — Composite Sandbox (T10)
 
-Four orthogonal layers; capability-bound depth (paper §IX.B).
-
-| Layer | Mechanism                                | Crate / dep                              |
-|-------|------------------------------------------|------------------------------------------|
-| L1    | WASM with fuel + epoch interruption      | `wasmtime` (≥24)                         |
-| L2    | Linux Landlock / macOS Seatbelt          | `landlock` crate, `sandbox-exec`         |
-| L3    | Namespace + seccomp                      | `nix`, `libseccomp-rs`, bubblewrap exec  |
-| L4    | TEE attestation (SEV-SNP / TDX / CCA)    | platform crate (`sev`, `tdx-guest`, …)   |
-
-### 7.1 Capability → minimum sandbox class
-
-```rust
-pub fn min_sandbox(cap: &CapToken) -> SandboxClass {
-    match cap.depth() {
-        Depth::ReadOnly   => SandboxClass::L1,
-        Depth::ScopedFs   => SandboxClass::L1 | SandboxClass::L2,
-        Depth::Subproc    => SandboxClass::L1 | SandboxClass::L2 | SandboxClass::L3,
-        Depth::CryptoSign => SandboxClass::L1 | SandboxClass::L2 | SandboxClass::L3 | SandboxClass::L4,
-    }
-}
-```
-
-### 7.2 Composition bound (T10 numerical target)
-
-With `p_WASM ≤ 10⁻³`, `p_LL ≤ 10⁻²`, `p_NS ≤ 10⁻²`, `p_SC ≤ 10⁻²`, `p_T ≤ 10⁻⁷`:
-
-```text
-Pr[compromise]  ≤  Π pᵢ + p_T  ≤  10⁻⁹ + 10⁻⁷  ≈  1.1 × 10⁻⁷
-```
-
-§14.3 promotes this to a release gate.
-
-### 7.3 Conditional orthogonality
-
-The composition relies on independence given the TCB. To preserve this empirically:
-
-- L1 (wasmtime) MUST be statically linked, signature-verified at build, no `unsafe` host-imports beyond the gauss-defined ABI.
-- L2 and L3 MUST be configured by the kernel, not by tool manifests.
-- Each layer's bypass-event MUST be loggable independently (so we can audit `p_i` post-hoc).
+(Phase 3 / Phase 10 deliverable; unchanged from earlier drafts. Numerical target ≤ 1.1 × 10⁻⁷ with TEE.)
 
 ---
 
 ## 8. `gauss-memory` — Trinity Memory Substrate (T3, T5, T12)
 
-Single append-only event log with three derived indices.
+**Single SurrealDB instance** stores the append-only event log AND every derived index, replacing the Phase-0 SQLite/tantivy/hnsw_rs stack. See ADR-0006 for the rationale.
 
 ### 8.1 Append log
 
-- Storage: SQLite (single-node) or PostgreSQL (clustered) via `sqlx`.
-- Each row = `(turn_id, prev_chain_head, delta_blob, receipt_blob, ts)`.
-- Delta blob computed via Myers diff over the session ADT, encoded with `bincode2` + zstd-19.
-- Checkpoint every `K = 128` turns (configurable per tenant).
+- Storage: **SurrealDB**.
+  - `kv-mem` for unit tests (Phase 1+).
+  - `kv-surrealkv` (single-node persistent) — Phase 6.
+  - `kv-rocksdb` (durable, fsync-on-commit) — Phase 6.
+  - `kv-tikv` (clustered Raft) — Phase 10.
+- Each `turn_record` row: `(turn_id, payload bytes, payload_text option<string>, embedding option<array<float>>, taint string, seq int, prev_head bytes, this_head bytes, recorded_at datetime)`.
+- Per-row constraints: UNIQUE on `turn_id` and `seq`; `taint INSIDE ["trusted","user","web","adversarial"]`.
+- Delta blob will be computed via Myers diff over the session ADT in Phase 6; Phase 2 ships the line-level Myers diff in `gauss_memory::snapshot`.
 
 ### 8.2 FTS index (keyword)
 
-- `tantivy` 0.22+; per-turn incremental indexing.
-- Schema: `body STRING (text)`, `taint U64 (indexed, fast)`, `turn_id U128`.
+```sql
+DEFINE ANALYZER lower_alphanum TOKENIZERS class FILTERS lowercase, ascii;
+DEFINE INDEX turn_record_fts ON turn_record FIELDS payload_text
+    SEARCH ANALYZER lower_alphanum BM25;
+```
+
+Defined up-front at Phase 1; populated by Phase 6.
 
 ### 8.3 HNSW vector index
 
-- `hnsw_rs` (M = 16, ef_construction = 200 by default).
-- Embedding model is pluggable via `EmbeddingTrait` (default: provider-supplied).
+```sql
+DEFINE INDEX turn_record_hnsw ON turn_record FIELDS embedding
+    HNSW DIMENSION 384 TYPE F32 DISTANCE COSINE M 16 EFC 200;
+```
 
-### 8.4 Hybrid recall (T5)
+Dimension 384 (MiniLM default) is overridable per tenant.
 
-`ρ_hyb(q) = ρ_fts(q) ∪ ρ_vec(q)`; conformance suite asserts miss-rate bound `ε_hyb ≤ ε_fts · ε_vec` on the benchmark corpus (default target `≤ 0.015`).
+### 8.4 Graph lineage (paper §VII)
 
-### 8.5 K-LRU prefix tree
+```sql
+DEFINE TABLE derived_from TYPE RELATION FROM turn_record TO turn_record;
+```
 
-Radix tree keyed by token-prefix; nodes carry deltas. K (default 256) most recently accessed deltas pinned in memory; cold deltas spill to mmap-ed disk.
+Each turn that consumes another turn's record emits `RELATE turn:A -> derived_from -> turn:B SET reason = ...`. Enables `SELECT ->derived_from->turn_record FROM turn:X` graph traversal.
 
-### 8.6 Audit chain integration
+### 8.5 Capability grants
 
-Merkle chain head `c_i = H(c_{i-1} ‖ ρ_i)` materialised in `gauss-audit` (§9); `gauss-memory` only stores raw `ρ_i` and exposes `chain_head() -> Hash`.
+```sql
+DEFINE TABLE agent SCHEMAFULL;
+DEFINE TABLE capability_grant TYPE RELATION FROM agent TO capability_grant;
+```
+
+Phase 5 attaches signed-by anchors.
+
+### 8.6 Hybrid recall (T5)
+
+`ρ_hyb(q) = ρ_fts(q) ∪ ρ_vec(q)` — Phase 6 deliverable.
+
+### 8.7 K-LRU prefix tree
+
+Phase 6 deliverable.
+
+### 8.8 Audit chain integration
+
+Merkle chain head `c_i = H(c_{i-1} ‖ ρ_i)` materialised in `gauss-audit` (§9). `gauss-memory` caches the current head in-process (synchronised under the same transaction that writes the row) and exposes it through `MemoryBackend::chain_head()`.
 
 ---
 
 ## 9. `gauss-audit` — Cryptographic Receipt Chain (A3, A9, T3, T11)
 
-### 9.1 Receipt structure
+### 9.1 Phase 2 surface
 
 ```rust
-pub struct Receipt {
-    pub record: RecordHash,        // BLAKE3 of canonical-JSON record
-    pub pubkey: ed25519_dalek::VerifyingKey,
-    pub sig:    ed25519_dalek::Signature,  // Sign(sk, H(record ‖ prev_head))
-    pub ts:     u64,               // monotonic ns since UNIX_EPOCH
+pub struct ChainHead([u8; 32]);
+
+pub fn link(prev: ChainHead, payload: &[u8]) -> ChainHead;
+
+pub struct ReceiptChain { /* head + len */ }
+impl ReceiptChain {
+    pub fn append(&mut self, payload: &[u8]) -> ChainHead;
+    pub fn verify_replay(payloads: &[&[u8]], expected_head: ChainHead) -> Result<(), VerifyError>;
+}
+
+pub struct InclusionWitness { pub prev: ChainHead, pub post: ChainHead }
+impl InclusionWitness {
+    pub fn verify(&self, payload: &[u8]) -> bool;
 }
 ```
 
-- Signature scheme: **Ed25519** (`ed25519-dalek` v2, batch verify enabled).
-- Hash function: **BLAKE3** for record canonicalisation; **SHA-256** for chain links (interop with RFC 3161 / OpenTimestamps).
-- Chain: `c0 = 0^256`, `c_i = SHA-256(c_{i-1} ‖ ρ_i_bytes)`.
+### 9.2 Phase 5 receipts
 
-### 9.2 TSA anchoring
+```rust
+pub struct Receipt {
+    pub record: RecordHash,                 // BLAKE3
+    pub pubkey: ed25519_dalek::VerifyingKey,
+    pub sig:    ed25519_dalek::Signature,   // Sign(sk, H(record ‖ prev_head))
+    pub ts:     u64,
+}
+```
 
-- Default cadence: every `n_anchor = 1000` receipts.
-- Backends: RFC 3161 (`rfc3161-client`) + OpenTimestamps.
-- Anchor proof stored as `AnchorRecord { chain_index, tsa_token, ots_proof }`.
+- Ed25519 (`ed25519-dalek` v2), BLAKE3 record digest, SHA-256 chain link (RFC 3161 interop).
+- Anchor cadence default 1000 receipts to RFC 3161 + OpenTimestamps.
 
-### 9.3 Public verifier API
+### 9.3 Public verifier API (Phase 5)
 
 | Endpoint                    | Returns                                                  |
 |-----------------------------|----------------------------------------------------------|
-| `GET  /audit/head`          | `{cn, n, tn}` (chain head, length, timestamp)            |
+| `GET  /audit/head`          | `{cn, n, tn}`                                            |
 | `GET  /audit/proof/{i}`     | Merkle inclusion proof for `ρi` to current head          |
 | `POST /audit/verify`        | `{ρi}` → `{ok, chain_index, anchor_ref?}`                |
 | `GET  /audit/anchor/{k}`    | TSA receipt for `c_{k·n_anchor}`                         |
 
-Verifier reduces to `VerifypkA(record, sig)` + `H(prev ‖ ρ) == next`.
+### 9.4 Forgery bounds (T11) — Phase 5
 
-### 9.4 Forgery bounds (T11)
-
-- Unforgeability: `≤ AdvΣsig(λ)` under EUF-CMA.
+- Unforgeability: `≤ Adv_Σsig(λ)` under EUF-CMA.
 - Chain tampering: `≤ n · 2^{-λ+1}`.
-- Conformance suite includes a fuzz target attempting both.
 
 ---
 
 ## 10. `gauss-sag` — Supervised Autonomy Gradient (A8)
 
-`Φ : A × K × L → {auto, approve, deny}`. Implemented as a **monotone decision table** per tenant (paper Table VII).
-
-```rust
-pub trait AutonomyClassifier: Send + Sync {
-    fn classify(&self, a: &Action, k: &CapToken, ell: TaintLabel) -> RiskClass;
-}
-
-pub enum RiskClass { Auto, Approve, Deny }
-```
-
-**Monotonicity check (build-time).** `gauss-poly` (§12) enforces that for the *risk preorder* `⊑risk` (capability depth × taint × reversibility) the table is non-decreasing. Z3-discharged.
-
-**Approval routing.** When `RiskClass::Approve`, the kernel enqueues an `ApprovalRequest` onto the Approval plane (§4.3). The channel adapter (Telegram inline-keyboard, Slack interactive, etc.) renders the prompt; the response is itself a *signed receipt* joined to the chain (A9).
-
-**Default deadline.** 5 minutes; on timeout the request transitions to `Deny`.
+(Phase 7 deliverable; unchanged from earlier drafts.)
 
 ---
 
-## 11. `gauss-provider`, `gauss-channel`, `gauss-tool`, `gauss-canvas`, `gauss-health`
+## 11. Trait Polyhedral Plugin Surface (paper §VIII)
 
-These crates carry the public **Trait Polyhedral Plugin Surface** (paper §VIII). The eight required traits:
+The eight required traits — placement after Phase 2:
 
-| Trait              | Crate              | Implementor examples                              |
-|--------------------|--------------------|---------------------------------------------------|
-| `ProviderTrait`    | `gauss-provider`   | Anthropic Messages, OpenAI Chat, Google Gemini    |
-| `ChannelTrait`     | `gauss-channel`    | Telegram, Discord, Slack, Matrix, IMAP, Signal    |
-| `ToolTrait`        | `gauss-tool`       | local fn, MCP server bridge, gRPC tool            |
-| `SandboxTrait`     | `gauss-sandbox`    | WASM/Landlock/Bubblewrap/Seatbelt composite       |
-| `MemoryTrait`      | `gauss-memory`     | SQLite, Postgres, in-mem                          |
-| `VoiceTrait`       | `gauss-voice`      | whisper-rs + piper-rs                             |
-| `ApprovalTrait`    | `gauss-sag`        | channel-based, web canvas, CLI                    |
-| `CanvasTrait`      | `gauss-canvas`     | A2UI server                                       |
+| Trait              | Crate              | Status      | Implementor examples                              |
+|--------------------|--------------------|-------------|---------------------------------------------------|
+| `Kernel`           | `gauss-traits`     | ✅ Phase 1  | `gauss_kernel::PrivilegedKernel`                  |
+| `MemoryBackend`    | `gauss-traits`     | ✅ Phase 1  | `gauss_memory::SurrealMemory`                     |
+| `Provider`         | `gauss-traits`     | ✅ Phase 2  | `gauss_provider::ToyProvider`; Anthropic / `OpenAI` / Google in Phase 8 |
+| `ChannelTrait`     | `gauss-channel`    | Phase 7     | Telegram, Discord, Slack, Matrix, IMAP, Signal    |
+| `ToolTrait`        | `gauss-tool`       | Phase 4     | local fn, MCP server bridge, gRPC tool            |
+| `SandboxTrait`     | `gauss-sandbox`    | Phase 3     | WASM/Landlock/Bubblewrap/Seatbelt composite       |
+| `VoiceTrait`       | `gauss-voice`      | Phase 9+    | whisper-rs + piper-rs                             |
+| `ApprovalTrait`    | `gauss-sag`        | Phase 7     | channel-based, web canvas, CLI                    |
+| `CanvasTrait`      | `gauss-canvas`     | Phase 9     | A2UI server                                       |
 
-### 11.1 Provider adjunction (T7)
+### 11.1 Provider adjunction (T7) — Phase 8
 
-Each `ProviderTrait` impl ships `(σ_i, τ_i)` such that `τ_i ∘ σ_i = id_{A⋆}` on the working subset; verified at build by `gauss-poly` via property tests over a corpus of internal messages.
+Each `Provider` impl ships `(σ_i, τ_i)` such that `τ_i ∘ σ_i = id_{A⋆}` on the working subset; verified at build by `gauss-poly`.
 
-### 11.2 `gauss-canvas` — A2UI Live Canvas Protocol
+### 11.2 `gauss-canvas` — A2UI Live Canvas Protocol — Phase 9
 
-JSON-RPC over WebSocket/SSE. Notification name: `canvas.update`; event: `canvas.event`.
+(Unchanged from earlier drafts.)
 
-Core widget registry (paper Table IX): `text | table | chart | form | approval | map | diagram | embed | file | slider`.
+### 11.3 `gauss-health` — Self-Diagnostic Health Engine — Phase 9
 
-Capability gating:
-
-- `Canvas_Render` for any update.
-- `Canvas_Embed(domain)` for `embed` widget; SSRF allow-list.
-- `Canvas_File_Write` for `file` writes to user downloads.
-
-### 11.3 `gauss-health` — Self-Diagnostic Health Engine
-
-Seven minimum invariants (paper Table X):
-
-```text
-ι_sig     every loaded plugin's signature verifies
-ι_chan    each configured channel has a recent successful round-trip
-ι_anchor  Merkle head was anchored within T_anchor
-ι_cap     every tool declares all caps it uses dynamically
-ι_klru    K-LRU cache hit rate ≥ threshold
-ι_tee     V(s) = 1 on every node serving A_high
-ι_poly    no trait swap violates polyhedral equivalence
-```
-
-Three operating modes: **continuous** (OpenTelemetry), **on-demand** (`gauss doctor`), **reactive** (kernel self-repair per paper Table XI).
+(Unchanged. Seven minimum invariants from paper Table X.)
 
 ---
 
-## 12. `gauss-poly` — Polyhedral Equivalence Verifier
+## 12. `gauss-poly` — Polyhedral Equivalence Verifier — Phase 8
 
-Build-time tool (`cargo gauss-verify`). Two responsibilities:
-
-1. Discharge `specT` (trait relational specification) via SMT (Z3 4.13+ over the `z3` crate or external `z3` binary).
-2. Property-test provider adjunction `τ ∘ σ = id`.
-
-Failure aborts the build. Configuration in `gauss.toml`:
-
-```toml
-[verify]
-solver       = "z3"
-timeout_ms   = 30000
-provider_corpus = "fixtures/provider_messages.json"
-```
+(Unchanged.)
 
 ---
 
@@ -580,20 +502,17 @@ provider_corpus = "fixtures/provider_messages.json"
 
 ### 13.1 Async runtime
 
-Tokio (multi-thread, current-thread for tests). No mixing with `async-std`. All I/O via `tokio::io`; CPU-bound work uses `rayon` via `spawn_blocking`.
+Tokio (ADR-0002).
 
 ### 13.2 Configuration
 
-Layered: TOML file → environment variables (`GAUSS_*`) → CLI flags. Parsed by `figment`. Sensitive material (private keys, API keys) loaded from `keyring` or env only — never from the TOML.
+Layered TOML + env + CLI via `figment` (ADR-0004). Secrets via OS keyring / env; never in TOML.
 
 ### 13.3 Observability
 
-- Logs: `tracing` + `tracing-subscriber`; structured JSON in production.
-- Metrics: OpenTelemetry OTLP exporter (`opentelemetry-otlp`), Prometheus scrape endpoint.
-- Tracing: spans per turn, per worker, per tool call; correlation IDs propagated through the kernel.
-- Audit events: emitted to the receipt chain *and* to OTLP for live monitoring.
+`tracing` + OpenTelemetry (Phase 9 onward).
 
-### 13.4 Cryptography
+### 13.4 Cryptography (ADR-0003)
 
 | Use                  | Algorithm        | Crate                |
 |----------------------|------------------|----------------------|
@@ -604,26 +523,24 @@ Layered: TOML file → environment variables (`GAUSS_*`) → CLI flags. Parsed b
 | TSA timestamp        | RFC 3161         | `rfc3161-client`     |
 | Public timestamp     | OpenTimestamps   | `opentimestamps`     |
 
-No OpenSSL dependency. FIPS profile is a future extension.
-
 ### 13.5 Build & release
 
-- MSRV: Rust 1.83 stable.
-- Targets: `x86_64-unknown-linux-gnu` (Tier 1), `aarch64-unknown-linux-gnu` (Tier 1), `aarch64-apple-darwin` (Tier 2), `x86_64-pc-windows-msvc` (Tier 3).
-- Static binary: musl build for `gauss-cli` (~30–40 MB target).
-- Reproducible builds via `cargo --locked` + `cargo-vet` for dependency audit.
-- SLSA Level 3 provenance (future).
+- MSRV: 1.83.
+- Tier-1 targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`.
+- musl static binary for `gauss-cli`.
+- Reproducible via `--locked` + `cargo-vet`.
 
 ### 13.6 Testing strategy
 
 | Layer              | Mechanism                                                                |
 |--------------------|--------------------------------------------------------------------------|
 | Unit               | `#[cfg(test)]` per crate                                                 |
-| Property           | `proptest` for lattice laws, K-LRU invariants, hash chain integrity      |
-| Fuzz               | `cargo-fuzz` targets: JSON-schema validator, WASM imports, receipt parser |
-| Integration        | `gauss-conformance` crate runs all axiom A1–A9 + theorem T1–T12 scenarios |
-| Bench              | `criterion` in `gauss-bench`; runs the fifteen-axis scorecard            |
-| Security regression| Adversarial prompt corpus from AgentDojo + EchoLeak-style scenarios      |
+| Property           | `proptest` — lattice laws, K-LRU invariants, chain integrity             |
+| Fuzz               | `cargo-fuzz` — JSON-schema validator, WASM imports, receipt parser       |
+| Integration        | `gauss-conformance` — axiom A1–A9 + theorem T1–T12 scenarios             |
+| Bench              | `criterion` in `gauss-bench`; fifteen-axis scorecard regression          |
+| Crash injection    | Engine-drop harness (Phase 2 kv-mem); cross-process replay (Phase 6 rocks)|
+| Security regression| AgentDojo + EchoLeak-style corpus (Phase 4)                              |
 
 ---
 
@@ -631,88 +548,69 @@ No OpenSSL dependency. FIPS profile is a future extension.
 
 ### 14.1 Axiom → crate → module
 
-| Axiom | Primary crate     | Module                          | Conformance test ID |
-|-------|-------------------|---------------------------------|---------------------|
-| A1    | `gauss-turn`      | `engine::commit`                | CONF-A1-*           |
-| A2    | `gauss-kernel`    | `cap::reserve`                  | CONF-A2-*           |
-| A3    | `gauss-audit`     | `chain::append`                 | CONF-A3-*           |
-| A4    | `gauss-kernel`    | `sched::planes`                 | CONF-A4-*           |
-| A5    | `gauss-memory`    | `hybrid::recall`                | CONF-A5-*           |
-| A6    | `gauss-kernel`    | `flow::join_label`              | CONF-A6-*           |
-| A7    | `gauss-hwca`      | `worker::spawn`                 | CONF-A7-*           |
-| A8    | `gauss-sag`       | `classify`                      | CONF-A8-*           |
-| A9    | `gauss-audit`     | `sign::ed25519`                 | CONF-A9-*           |
+| Axiom | Primary crate     | Module                                  | Conformance test ID | Status |
+|-------|-------------------|-----------------------------------------|---------------------|--------|
+| A1    | `gauss-turn`      | `engine::run_turn` (WAL barrier)        | CONF-A1-*           | ✅ Phase 2 |
+| A2    | `gauss-kernel`    | `admit::PrivilegedKernel::{admit,contract}` | CONF-A2-*       | ✅ Phase 1 |
+| A3    | `gauss-audit`     | `ReceiptChain::{append, verify_replay}` | CONF-A3-*           | ✅ Phase 2 |
+| A4    | `gauss-kernel`    | `sched::Planes`                         | CONF-A4-*           | ✅ Phase 1 |
+| A5    | `gauss-memory`    | `hybrid::recall`                        | CONF-A5-*           | Phase 6 |
+| A6    | `gauss-kernel`    | `admit` + `flow::DeclassMap`            | CONF-A6-*           | ✅ Phase 1 |
+| A7    | `gauss-hwca`      | `worker::spawn`                         | CONF-A7-*           | Phase 4 |
+| A8    | `gauss-sag`       | `classify`                              | CONF-A8-*           | Phase 7 |
+| A9    | `gauss-audit`     | `sign::ed25519`                         | CONF-A9-*           | Phase 5 |
 
 ### 14.2 Theorem → enforcement
 
-| Theorem | Subsystem                  | Enforcement mode                                 |
-|---------|----------------------------|--------------------------------------------------|
-| T1      | Differential Turn Engine   | WAL-before-effect; crash-injection test          |
-| T2      | Capability Calculus        | type-level disjoint-cap proof + runtime check    |
-| T3      | Receipt Chain              | hash-collision-bound fuzz                        |
-| T4      | Three-Plane Gateway        | starvation freedom under saturation bench        |
-| T5      | Trinity Memory             | hybrid-recall bench on labelled corpus           |
-| T6      | Stateless-turn Routing     | scale-out bench across N nodes                   |
-| T7      | Provider Adjunction        | property-test `τ∘σ = id`                         |
-| T8      | Whole-system               | fifteen-axis scorecard regression                |
-| T9      | HWCA                       | IPI corpus bound `≤ 2.19%`                       |
-| T10     | Composite Sandbox          | per-layer bypass tests; product bound asserted   |
-| T11     | Receipt Chain              | Ed25519 EUF-CMA test vectors + chain tampering   |
-| T12     | Memory + DTE               | warm/cold context-switch bench                   |
+| Theorem | Subsystem                  | Enforcement mode                                 | Status |
+|---------|----------------------------|--------------------------------------------------|--------|
+| T1      | Differential Turn Engine   | WAL-before-effect; crash-injection test          | ✅ Phase 2 |
+| T2      | Capability Calculus        | type-level disjoint-cap proof + runtime check    | ✅ Phase 1 |
+| T3      | Receipt Chain              | proptest: any payload mutation diverges the head | ✅ Phase 0/2 |
+| T4      | Three-Plane Scheduler      | starvation freedom under saturation              | ✅ Phase 1 |
+| T5      | Trinity Memory             | hybrid-recall bench on labelled corpus           | Phase 6 |
+| T6      | Stateless-turn Routing     | scale-out bench across N nodes                   | Phase 10 |
+| T7      | Provider Adjunction        | property-test `τ∘σ = id`                         | Phase 8 |
+| T8      | Whole-system               | fifteen-axis scorecard regression                | Phase 9 |
+| T9      | HWCA                       | IPI corpus bound `≤ 2.19%`                       | Phase 4 |
+| T10     | Composite Sandbox          | per-layer bypass tests; product bound asserted   | Phase 3+10 |
+| T11     | Receipt Chain              | Ed25519 EUF-CMA test vectors + chain tampering   | Phase 5 |
+| T12     | Memory + DTE               | warm/cold context-switch bench                   | Phase 6 |
 
 ### 14.3 Release gates (quantitative)
 
-A release of `gauss-aether` MUST satisfy:
+A 1.0 release of `gauss-aether` MUST satisfy:
 
 | Metric                            | Target                             | Source theorem |
 |-----------------------------------|------------------------------------|----------------|
-| IPI attack success                | `≤ 2.19%` on AgentDojo+EchoLeak     | T9             |
-| Cold-start (warm cache)           | `≤ 10 ms` p95 single session        | T12            |
-| Composite sandbox bound           | `≤ 1.1 × 10⁻⁷` (TEE) / `≤ 10⁻⁹` (sw)| T10            |
-| Hybrid recall miss                | `≤ 0.015` on benchmark corpus       | T5             |
-| Receipt forgery                   | negl(λ) under λ=128                 | T11            |
-| Approval starvation               | bounded by `B/ρ_A`                  | T4             |
-| Turn-record durability            | zero loss under SIGKILL injection   | T1             |
+| IPI attack success                | `≤ 2.19%` on AgentDojo+EchoLeak    | T9             |
+| Cold-start (warm cache)           | `≤ 10 ms` p95 single session       | T12            |
+| Composite sandbox bound           | `≤ 1.1 × 10⁻⁷` (TEE) / `≤ 10⁻⁹` (sw)| T10           |
+| Hybrid recall miss                | `≤ 0.015` on benchmark corpus      | T5             |
+| Receipt forgery                   | negl(λ) under λ=128                | T11            |
+| Approval starvation               | bounded by `B/ρ_A`                 | T4             |
+| Turn-record durability            | zero loss under SIGKILL injection  | T1             |
 
 ---
 
 ## 15. Non-Goals / Out-of-Scope
 
-Aligned with paper §XVII.E:
-
-- **Model alignment.** Gauss-Aether is structural, not behavioural; it does not constrain *what* the LLM reasons, only what *actions* it can execute.
-- **Direct prompt injection.** A user issuing a malicious prompt to their own agent is upstream of the kernel.
-- **Hardware supply chain.** TEE attestation surfaces but does not solve hardware trust.
-- **GPU scheduling.** Provider inference happens at the provider; local-inference orchestration is a future extension via a new trait, not the core specification.
-- **Multi-region replication.** Single-region clustering is in scope; geo-replication is a v2 effort.
+Aligned with paper §XVII.E. Unchanged.
 
 ---
 
-## Appendix A — Reference Subsystem Diagram
+## Appendix A — Architecture Decision Records
 
-```text
-┌─────────────────────────────────────────────────────────────────────────┐
-│ SURFACES   CLI · TUI · Tauri · REST/WS/SSE · OAI-compat · ACP · 40+ ch  │
-├─────────────────────────────────────────────────────────────────────────┤
-│ GATEWAY    three-plane router (Conversation | Daemon | Approval)        │
-├─────────────────────────────────────────────────────────────────────────┤
-│ KERNEL     K × L lattices  ·  Φ classifier  ·  fairness  ·  V attest    │
-├─────────────────────────────────────────────────────────────────────────┤
-│ TURN ENG.  prompt → stream → schema-gated tool → WAL → effect           │
-├─────────────────────────────────────────────────────────────────────────┤
-│ HWCA       isolated worker per tool call; schema-validated return only  │
-├─────────────────────────────────────────────────────────────────────────┤
-│ SANDBOX    WASM ∧ Landlock ∧ ns/seccomp ∧ TEE (capability-bound depth)  │
-├─────────────────────────────────────────────────────────────────────────┤
-│ TRAITS     provider · channel · tool · memory · sandbox · voice · …     │
-├─────────────────────────────────────────────────────────────────────────┤
-│ MEMORY     append-log + FTS + HNSW + Merkle/Ed25519 + K-LRU prefix tree │
-├─────────────────────────────────────────────────────────────────────────┤
-│ CANVAS     A2UI Live Canvas Protocol (capability-bound widgets)         │
-├─────────────────────────────────────────────────────────────────────────┤
-│ HEALTH     continuous invariant verifier + self-repair                  │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+| ADR | Topic                                            | Phase | Status     |
+|-----|--------------------------------------------------|-------|------------|
+| 0001| Axiom-driven phasing                             | 0     | Accepted   |
+| 0002| Tokio multi-thread runtime                       | 0     | Accepted   |
+| 0003| Ed25519 + BLAKE3 + SHA-256                       | 0     | Accepted   |
+| 0004| Configuration via figment                        | 0     | Accepted   |
+| 0005| Privilege tiers + review policy                  | 0     | Accepted   |
+| 0006| SurrealDB as the Trinity Memory storage engine   | 1     | Accepted   |
+| 0007| WAL barrier semantics for the DTE                | 2     | Accepted   |
+| 0008| Canonical `CapToken` lives in `gauss-core`       | 2     | Accepted   |
 
 ---
 
