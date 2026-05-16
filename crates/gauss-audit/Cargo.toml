@@ -12,11 +12,20 @@ description = "Cryptographic Receipt Chain — append-only audit log over signed
 workspace = true
 
 [dependencies]
-gauss-core = { workspace = true }
-sha2       = { workspace = true }
-serde      = { workspace = true }
-thiserror  = { workspace = true }
-tracing    = { workspace = true }
+gauss-core    = { workspace = true }
+sha2          = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+thiserror     = { workspace = true }
+tracing       = { workspace = true }
+async-trait   = { workspace = true }
+tokio         = { workspace = true, features = ["sync"] }
+ed25519-dalek = { workspace = true }
+rand_core     = { workspace = true }
+zeroize       = { workspace = true }
+hex           = { workspace = true }
+serde-big-array = "0.5"
 
 [dev-dependencies]
 proptest = { workspace = true }
+tokio    = { workspace = true, features = ["macros", "rt"] }

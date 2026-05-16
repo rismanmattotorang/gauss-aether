@@ -70,6 +70,13 @@ seccompiler = "0.5"
 # JSON Schema 2020-12 — HWCA schema gate (Phase 4).
 jsonschema = { version = "0.46", default-features = false }
 
+# Ed25519 signatures — Phase 5. Pure Rust; pinned to the 2.x line for stable
+# semver and Rust 1.83 MSRV. `rand_core` 0.6 matches dalek's expected RNG API.
+ed25519-dalek = { version = "2.1", default-features = false, features = ["std", "rand_core", "zeroize"] }
+rand_core     = { version = "0.6", default-features = false, features = ["std", "getrandom"] }
+zeroize       = { version = "1.7", default-features = false }
+hex           = { version = "0.4", default-features = false, features = ["std"] }
+
 # Database — SurrealDB embedded.
 # `default-features = false` + only `kv-mem` keeps the dep surface narrow and
 # the cold-build cost bounded. Other backends (surrealkv, rocksdb, tikv) are
