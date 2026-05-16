@@ -326,6 +326,162 @@ pub trait SandboxTrait: Send + Sync + core::fmt::Debug {
     async fn exec(&self, request: SandboxRequest) -> GaussResult<SandboxOutcome>;
 }
 
+// =================================================================
+// HWCA + Tool surface (Phase 4) — paper §X, A7, T9.
+// =================================================================
+
+/// Output schema published by a tool's manifest.
+///
+/// The HWCA schema gate validates every raw tool return value against this
+/// schema before the validated payload is allowed to cross the
+/// worker→parent boundary (Axiom A7 / Theorem T9).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct OutputSchema {
+    /// Inline JSON Schema 2020-12 document.
+    pub json_schema: serde_json::Value,
+    /// Per-field length caps; checked before structural validation runs so
+    /// pathological inputs are short-circuited.
+    pub max_string_len: usize,
+}
+
+impl OutputSchema {
+    /// Default cap on free-text field length (paper §X.B). 4096 bytes
+    /// matches a `body ≤ 4096` style manifest.
+    pub const DEFAULT_MAX_STRING_LEN: usize = 4096;
+
+    /// Build an output schema from a JSON Schema document and per-field caps.
+    #[must_use]
+    pub const fn new(json_schema: serde_json::Value, max_string_len: usize) -> Self {
+        Self {
+            json_schema,
+            max_string_len,
+        }
+    }
+
+    /// Build with the default 4096-byte cap.
+    #[must_use]
+    pub const fn with_default_caps(json_schema: serde_json::Value) -> Self {
+        Self::new(json_schema, Self::DEFAULT_MAX_STRING_LEN)
+    }
+}
+
+/// Schema-gate guards on free-text fields. The instruction-substring filter
+/// is the headline guard for paper §X.B's adversarial-input mitigation.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct SchemaGuards {
+    /// If true, raw string field values containing instruction-like
+    /// substrings (e.g. "ignore previous instructions", "system:") are
+    /// rejected at the schema gate before crossing the worker boundary.
+    pub no_instruction_substrings: bool,
+}
+
+impl Default for SchemaGuards {
+    fn default() -> Self {
+        Self {
+            no_instruction_substrings: true,
+        }
+    }
+}
+
+impl SchemaGuards {
+    /// Build with the headline guard enabled.
+    #[must_use]
+    pub const fn strict() -> Self {
+        Self {
+            no_instruction_substrings: true,
+        }
+    }
+
+    /// Build with no guards. **Tests / debug only.**
+    #[must_use]
+    pub const fn permissive() -> Self {
+        Self {
+            no_instruction_substrings: false,
+        }
+    }
+}
+
+/// A tool's manifest — exported by every tool implementation. Phase 4 reads
+/// this at worker spawn to drive the schema gate and the cap admission
+/// decision.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ToolManifest {
+    /// Tool identifier.
+    pub id: ToolId,
+    /// Capability the tool requires before the kernel admits it.
+    pub cap_required: CapToken,
+    /// True iff the tool's external effect is reversible.
+    pub reversible: bool,
+    /// Output schema for the value returned across the worker boundary.
+    pub output_schema: OutputSchema,
+    /// Per-tool schema-gate guards.
+    pub guards: SchemaGuards,
+}
+
+impl ToolManifest {
+    /// Construct a manifest. Required because the struct is `#[non_exhaustive]`.
+    #[must_use]
+    pub const fn new(
+        id: ToolId,
+        cap_required: CapToken,
+        reversible: bool,
+        output_schema: OutputSchema,
+        guards: SchemaGuards,
+    ) -> Self {
+        Self {
+            id,
+            cap_required,
+            reversible,
+            output_schema,
+            guards,
+        }
+    }
+}
+
+/// Tool surface — Phase 4. The HWCA worker invokes the tool's `invoke_raw`
+/// and pipes the result through the schema gate; only the validated
+/// `ValidatedValue` crosses back to the parent context (Axiom A7).
+#[async_trait]
+pub trait ToolTrait: Send + Sync {
+    /// Tool manifest. The HWCA reads this at spawn time.
+    fn manifest(&self) -> &ToolManifest;
+
+    /// Invoke the tool, producing an *unvalidated* raw JSON return value.
+    /// The HWCA schema gate refines this into a [`ValidatedValue`] before
+    /// the parent context sees anything.
+    ///
+    /// # Errors
+    /// Tool-side failures propagate verbatim.
+    async fn invoke_raw(&self, args: serde_json::Value) -> GaussResult<serde_json::Value>;
+}
+
+/// Schema-validated value crossing the worker→parent boundary.
+///
+/// The HWCA boundary discipline is: **only the data described by this
+/// struct survives the worker drop**. The raw tool output, the worker's
+/// intermediate reasoning, and any retrieved content are dropped at turn
+/// boundary (paper §X.A).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ValidatedValue {
+    /// JSON payload that conformed to the tool's `OutputSchema`.
+    pub value: serde_json::Value,
+    /// Taint after the join: incoming taint ∨ `Web` (the default tool-
+    /// output taint until Phase 6 wires the tool's declared source).
+    pub taint: TaintLabel,
+}
+
+impl ValidatedValue {
+    /// Construct. Required because the struct is `#[non_exhaustive]`.
+    #[must_use]
+    pub const fn new(value: serde_json::Value, taint: TaintLabel) -> Self {
+        Self { value, taint }
+    }
+}
+
 /// LLM policy trait `π` (Phase 2).
 ///
 /// A `Provider` consumes an observation history (Phase 2 sees only the most
