@@ -1,0 +1,22 @@
+[package]
+name        = "gauss-kernel"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+description = "Privileged kernel — capability lattice, info-flow, three-plane scheduler."
+
+[lints]
+workspace = true
+
+[dependencies]
+gauss-core  = { workspace = true }
+parking_lot = { workspace = true }
+serde       = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

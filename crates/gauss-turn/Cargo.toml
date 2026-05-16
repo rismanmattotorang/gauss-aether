@@ -1,0 +1,19 @@
+[package]
+name        = "gauss-turn"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+description = "Differential Turn Engine — orchestrates a single turn lifecycle."
+
+[lints]
+workspace = true
+
+[dependencies]
+gauss-core   = { workspace = true }
+gauss-kernel = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+tracing      = { workspace = true }

@@ -1,0 +1,18 @@
+[package]
+name        = "gauss-memory"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+description = "Trinity Memory Substrate — append log, FTS, HNSW, K-LRU prefix tree."
+
+[lints]
+workspace = true
+
+[dependencies]
+gauss-core = { workspace = true }
+serde      = { workspace = true }
+thiserror  = { workspace = true }
+tracing    = { workspace = true }
