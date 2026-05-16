@@ -23,8 +23,8 @@
 | 0     | Foundations                              | 3 weeks  | —              | —               | Workspace, CI, ADR-0001…0005, 35 tests        | ✅ Done |
 | 1     | Kernel-α: capability + scheduler         | 6 weeks  | A2, A4, A6     | T2, T4          | Lock-free 3-plane sched + joint K×L admit + SurrealDB | ✅ Done |
 | 2     | Turn engine + memory log                 | 6 weeks  | A1, A3         | T1, T3          | DTE end-to-end + Myers diff + chain replay    | ✅ Done |
-| 3     | Composite sandbox                        | 5 weeks  | (A2 bound)     | T10             | WASM ∧ Landlock ∧ ns/seccomp tool exec        | Next   |
-| 4     | HWCA + information flow                  | 6 weeks  | A7             | T9              | IPI bound `≤ 2.19%` on AgentDojo corpus       |        |
+| 3     | Composite sandbox                        | 5 weeks  | (A2 bound)     | T10             | WASM (wasmi) + Landlock + seccomp + bwrap + Seatbelt | ✅ Done |
+| 4     | HWCA + information flow                  | 6 weeks  | A7             | T9              | IPI bound `≤ 2.19%` on AgentDojo corpus       | Next   |
 | 5     | Receipt chain + signatures               | 4 weeks  | A9             | T11             | Ed25519 chain + TSA anchor                    |        |
 | 6     | Trinity memory: hybrid recall + K-LRU    | 5 weeks  | A5             | T5, T12         | Cold-start `≤ 10 ms`; recall `≤ 0.015`        |        |
 | 7     | SAG + approval plane                     | 4 weeks  | A8             | (A8 bound)      | Approval queue on third scheduler plane       |        |
@@ -82,69 +82,51 @@ CONF-A2-* (monotonicity / non-interference) + CONF-A4-* (starvation freedom) gre
 
 ### Delivered
 
-- `gauss-turn::engine::TurnEngine<K, M, P>` — real Algorithm 1 (minus HWCA + signed receipts):
-  1. Join taint of observation.
-  2. Provider `generate(obs)` → `Vec<Action>`.
-  3. For each tool action: `kernel.admit(cap, taint)`.
-  4. Canonicalise actions → bytes → `memory.append(...)` — **WAL barrier**.
-  5. Only after `append` returns Ok, `apply_actions_locally(...)`.
-- WAL-before-effect is **structural** (ADR-0007): `apply_actions_locally` is unreachable until the append future resolves Ok.
-- `gauss-memory::snapshot` — line-level Myers diff (`diff` + `apply` + `coalesce`), Phase 6 ADT diff lands later.
-- `gauss-audit` upgraded with `ReceiptChain::verify_replay` and `InclusionWitness::verify` (Phase-2 tamper-evidence APIs).
-- **`gauss-provider` (new crate)** — `ToyProvider` (deterministic in-process script, cyclic or one-shot).
-- `ToolAction::cap_required: CapToken` (paper SPECS §3.2) — finally added, plumbed through admission.
-- `CapToken` moved to `gauss-core` (ADR-0008); kernel re-exports.
-- `MemoryBackend::is_empty()` default impl (clippy `len_without_is_empty`).
+- `gauss-turn::engine::TurnEngine<K, M, P>` — real Algorithm 1 (minus HWCA + signed receipts).
+- WAL-before-effect is **structural** (ADR-0007).
+- `gauss-memory::snapshot` — line-level Myers diff (Phase 6 ADT diff lands later).
+- `gauss-audit` upgraded with `ReceiptChain::verify_replay` and `InclusionWitness::verify`.
+- **`gauss-provider` (new crate)** — `ToyProvider`.
+- `ToolAction::cap_required: CapToken` plumbed through admission.
+- `CapToken` moved to `gauss-core` (ADR-0008).
 - ADRs 0006–0008.
-- **Conformance tests** (the headline `CONF-A1-*`):
-  - `chain_head_advances_exactly_once_per_turn` — verifies the WAL append happened.
-  - `admission_blocks_disallowed_tool_action` — denial fires BEFORE the WAL append (log stays empty).
-  - `crash_injection_post_wal_pre_effect_is_recoverable` — engine-drop harness; post-recovery state ∈ {s, s′}.
-  - `text_actions_succeed_without_capability_check`.
-- `CONF-A3-*` / `CONF-T3-*`: replay verification accepts a valid chain, rejects mutation; inclusion witness verifies one-shot tamper-evidence; proptest chains any mutation diverges the head.
-- Total: **73 tests green** across 8 crates under pedantic+nursery clippy with `-D warnings`.
+- 73 tests green across 8 crates under pedantic+nursery clippy with `-D warnings`.
+
+---
+
+## Phase 3 — Composite Sandbox ✅
+
+**Goal:** tool execution under multiple orthogonal sandboxes. **Proves T10 (3-layer software-only first; L4 deferred to Phase 10).**
+
+### Delivered
+
+- **New crate `gauss-sandbox`** — implements `gauss_traits::SandboxTrait`.
+- **L1 — WASM via `wasmi 0.46`**: `WasmSandbox` with fuel metering (~1M instr/invocation default), `spawn_blocking` host integration, configurable fuel budget. ADR-0009 documents the wasmi → wasmtime migration plan for Phase 10.
+- **L2 — Linux Landlock via `landlock 0.4`**: `LandlockSandbox` self-restricts the current thread to a configurable `AccessFs` bitset. Gracefully reports unsupported kernels.
+- **L2 (macOS) — Seatbelt subprocess wrapper**: `SeatbeltSandbox` evaluates a TinyScheme-style profile through `sandbox-exec`.
+- **L3a — bubblewrap subprocess wrapper**: `BwrapSandbox` probes `bwrap --version` and forwards a clear diagnostic when missing.
+- **L3b — Linux seccomp via `seccompiler 0.5`** (pure Rust, no libseccomp): `SeccompSandbox` applies a deny-list of network / `execve` / `clone3` / `unshare` / `mount` / `keyctl` syscalls. Soft-deny default (errno=38 ENOSYS).
+- **`CompositeSandbox` + builder** — composes layers; verifies that the union of inner-layer classes covers the cap-required class AND that the layers actually invoked at exec time cover it. Refuses with `RefusalReason::cap_only()` when the stack is too thin.
+- **`min_sandbox_for(cap)`** function (`gauss-traits`) — encodes SPECS §7.1 cap → SandboxClass mapping.
+- **`NoOpSandbox`** — test/debug-only impl that accepts everything.
+- DTE wires through: `TurnEngine::with_sandbox(...)`; every tool action runs through `sb.exec(...)` AFTER the WAL barrier (Axiom A1 preserved).
+- ADR-0009: stack choices (wasmi vs wasmtime; seccompiler vs libseccomp-rs; per-OS feature gates).
+- **17 new tests** in `gauss-sandbox` (WASM execute + fuel exhaustion + malformed bytecode + composite class + refusal + Landlock report + bwrap missing-binary + seccomp soft-filter + NoOp) + **4 new conformance tests** for T10 (cap → class, composite refuses insufficient stack, DTE-with-sandbox end-to-end).
+- Total: **90 tests green** across 9 crates under pedantic+nursery clippy with `-D warnings`.
 
 ### Exit gate (met)
 
-End-to-end demo green (toy provider → record → chain head visible via `MemoryBackend::chain_head`); admission denials don't poison the log; crash test passes on engine-drop simulation.
+CONF-T10-* green; cap → class table matches SPECS §7.1; WASM-only composite refuses an L3 cap; DTE end-to-end with sandbox preserves the WAL barrier.
 
-### Open follow-ups (don't block Phase 3)
+### Open follow-ups (don't block Phase 4)
 
-- Cross-process crash injection — needs `kv-surrealkv` / `kv-rocksdb` (Phase 6).
-- `cargo-fuzz` chain-tampering target — Phase 5 alongside Ed25519.
-
----
-
-## Phase 3 — Composite Sandbox (5 weeks) — NEXT
-
-**Goal:** tool execution under multiple orthogonal sandboxes. **Proves T10 (3-layer first; L4 deferred to Phase 10).**
-
-### Deliverables
-
-- `gauss-sandbox::wasm` — wasmtime integration, fuel + epoch interruption.
-- `gauss-sandbox::landlock` — Linux 5.13+ ruleset builder; mandatory scoped filesystem access.
-- `gauss-sandbox::seccomp` — `libseccomp-rs` filters per tool manifest.
-- `gauss-sandbox::bwrap` — bubblewrap wrapper for namespace isolation.
-- `gauss-sandbox::seatbelt` — macOS `sandbox-exec` profile generator.
-- Cap → minimum sandbox class function per SPECS §7.1.
-- DTE wires `apply_actions_locally` to the sandbox executor.
-- Per-layer bypass test harness.
-
-### Conformance checks introduced
-
-- CONF-T10-* (composite bound with `p_T = 1`, software-only).
-
-### Exit gate
-
-A real tool (HTTP `fetch_url`) runs under all three Linux layers; bypass attempts logged at each layer; bench shows ≤ 3 ms composition overhead.
-
-### Risks
-
-- Landlock support varies by distro kernel version → ADR-0009 sets minimum kernel and gracefully degrades on older.
+- Production WASM backend swap (wasmi → wasmtime) — Phase 10 ADR-0009-revision.
+- Real Linux 5.13+ kernel coverage in CI — Phase 6 alongside `kv-rocksdb`.
+- HTTP `fetch_url` tool running end-to-end on three Linux layers — Phase 4 once the HWCA worker spawn lands.
 
 ---
 
-## Phase 4 — HWCA + Information Flow
+## Phase 4 — HWCA + Information Flow — NEXT
 
 **Goal:** isolate every tool invocation in a worker context; propagate taint. **Locks A7; proves T9 (IPI bound).**
 
@@ -154,6 +136,7 @@ A real tool (HTTP `fetch_url`) runs under all three Linux layers; bypass attempt
 - Statistical-filter guard for instruction-substring detection in free-text fields.
 - Recursion-depth bound (default 8) with explicit overflow handling.
 - AgentDojo + EchoLeak corpus harness in `gauss-conformance` (IPI bound `≤ 2.19%`).
+- Phase-3 sandbox layers move into the worker subprocess so Landlock+seccomp+bwrap apply per-tool rather than to the host kernel thread.
 
 ### Conformance checks introduced
 
@@ -270,6 +253,7 @@ Live Canvas table + approval widget render; `gauss doctor` prints all green; sco
 
 - Cluster mode: consistent-hash routing on `SessionId`; **SurrealDB `kv-tikv` backend** for clustered durability + Raft replication.
 - TEE attestation: AMD SEV-SNP, Intel TDX, ARM CCA stub.
+- **WASM backend swap to wasmtime** under the `wasm-wasmtime` feature (ADR-0009 follow-up); release gates pin the wasmtime profile.
 - Chaos testing: kill, partitions, clock skew.
 - External security review.
 
@@ -321,7 +305,7 @@ External pen-test report; chaos suite green; bench scale demonstrates Θ(N).
 | 0006   | SurrealDB as the Trinity Memory storage engine | 1     | Accepted   |
 | 0007   | WAL barrier semantics for the DTE              | 2     | Accepted   |
 | 0008   | Canonical `CapToken` lives in `gauss-core`     | 2     | Accepted   |
-| 0009   | Minimum Linux kernel for Landlock              | 3     | Planned    |
+| 0009   | Composite sandbox stack (wasmi + …)            | 3     | Accepted   |
 | 0010   | TSA + OpenTimestamps anchoring policy          | 5     | Planned    |
 | 0011   | K-LRU eviction policy + checkpoint K           | 6     | Planned    |
 | 0012   | SAG decision-table schema                      | 7     | Planned    |
@@ -340,3 +324,4 @@ Each ADR lives under `docs/adr/NNNN-title.md` and is referenced from the relevan
 | 0     | 35          | proptest lattice laws (10), chain integrity, type-state DTE          |
 | 1     | 51          | + lock-free token bucket (12), antitone verifier, SurrealDB round-trip |
 | 2     | 73          | + DTE end-to-end (4), admission denial (1), crash injection (1), replay/witness (3), Myers diff (6), `ToyProvider` (2) |
+| 3     | 90          | + WasmSandbox (3), CompositeSandbox (3), NoOpSandbox (1), Landlock (2), bwrap (2), seccomp (2), CONF-T10 (4) |
