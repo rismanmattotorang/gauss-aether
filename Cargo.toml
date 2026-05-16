@@ -2,10 +2,12 @@
 resolver = "2"
 members = [
     "crates/gauss-core",
+    "crates/gauss-traits",
     "crates/gauss-kernel",
     "crates/gauss-turn",
     "crates/gauss-memory",
     "crates/gauss-audit",
+    "crates/gauss-provider",
     "crates/gauss-conformance",
 ]
 
@@ -20,10 +22,16 @@ authors = ["Gauss-Aether Contributors"]
 [workspace.dependencies]
 # Internal crates (path deps for the local workspace)
 gauss-core      = { path = "crates/gauss-core",      version = "0.0.1" }
+gauss-traits    = { path = "crates/gauss-traits",    version = "0.0.1" }
 gauss-kernel    = { path = "crates/gauss-kernel",    version = "0.0.1" }
 gauss-turn      = { path = "crates/gauss-turn",      version = "0.0.1" }
 gauss-memory    = { path = "crates/gauss-memory",    version = "0.0.1" }
 gauss-audit     = { path = "crates/gauss-audit",     version = "0.0.1" }
+gauss-provider  = { path = "crates/gauss-provider",  version = "0.0.1" }
+
+# Async
+async-trait = "0.1"
+tokio       = { version = "1", default-features = false, features = ["sync", "rt", "macros", "time"] }
 
 # Error handling
 thiserror = "2"
@@ -45,6 +53,12 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 # Hashing (chain link + record digest); deferred to gauss-audit
 blake3 = "1"
 sha2   = "0.10"
+
+# Database — SurrealDB embedded.
+# `default-features = false` + only `kv-mem` keeps the dep surface narrow and
+# the cold-build cost bounded. Other backends (surrealkv, rocksdb, tikv) are
+# additive crate features layered on in later phases.
+surrealdb = { version = "2", default-features = false, features = ["kv-mem"] }
 
 # Test-only
 proptest = "1"

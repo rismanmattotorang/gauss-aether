@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::cap::CapToken;
 use crate::ids::ToolId;
 
 /// An action emitted by the policy.
@@ -42,8 +43,29 @@ pub struct ToolAction {
     pub tool: ToolId,
     /// Arguments — opaque JSON until schema validation (HWCA, Phase 4).
     pub args: serde_json::Value,
+    /// Capability bundle the tool requires (set in the tool manifest).
+    pub cap_required: CapToken,
     /// Whether this action is reversible (set in the tool manifest).
     pub reversible: bool,
+}
+
+impl ToolAction {
+    /// Construct a tool action. Required because `ToolAction` is
+    /// `#[non_exhaustive]`.
+    #[must_use]
+    pub const fn new(
+        tool: ToolId,
+        args: serde_json::Value,
+        cap_required: CapToken,
+        reversible: bool,
+    ) -> Self {
+        Self {
+            tool,
+            args,
+            cap_required,
+            reversible,
+        }
+    }
 }
 
 #[cfg(test)]

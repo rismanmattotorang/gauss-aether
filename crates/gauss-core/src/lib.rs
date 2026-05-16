@@ -21,12 +21,14 @@
 //! that `String`/`Vec` are available without a feature flag.
 
 pub mod action;
+pub mod cap;
 pub mod error;
 pub mod ids;
 pub mod observation;
 pub mod taint;
 
 pub use action::{Action, TextAction, ToolAction};
+pub use cap::{CapToken, Capability};
 pub use error::{GaussError, RefusalReason};
 pub use ids::{AgentId, SessionId, ToolId, TurnId, WorkerId};
 pub use observation::{Observation, ObservationSource};
