@@ -9,7 +9,7 @@
 //! `SandboxTrait`, `VoiceTrait`, `ApprovalTrait`, `CanvasTrait`.
 
 use async_trait::async_trait;
-use gauss_core::{Action, CapToken, GaussResult, Observation, TaintLabel, TurnId};
+use gauss_core::{Action, CapToken, GaussResult, Observation, TaintLabel, ToolId, TurnId};
 use serde::{Deserialize, Serialize};
 
 /// Sealed marker — prevents downstream crates from implementing kernel-private
@@ -132,6 +132,198 @@ impl ChainHeadSnapshot {
     pub const fn new(digest: [u8; 32], length: u64) -> Self {
         Self { digest, length }
     }
+}
+
+// =================================================================
+// Sandbox surface (Phase 3) — composite WASM ∧ Landlock ∧ ns/seccomp ∧ TEE.
+// =================================================================
+
+/// One layer in the composite sandbox stack. Each layer is independent so the
+/// product bound of Theorem T10 (`Pr[compromise] ≤ Π pᵢ + p_T`) holds under
+/// conditional orthogonality.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxLayer {
+    /// L1 — WebAssembly (wasmi in Phase 3; wasmtime in Phase 10).
+    Wasm,
+    /// L2 — Linux Landlock (5.13+) or macOS Seatbelt.
+    Landlock,
+    /// L3a — Linux namespaces (via bubblewrap).
+    Namespace,
+    /// L3b — Linux seccomp filter.
+    Seccomp,
+    /// L4 — TEE attestation (Phase 10).
+    Tee,
+}
+
+/// Composite sandbox class derived from a capability — paper §IX.B.
+///
+/// The class is a bit-set so layers can be combined ergonomically. Higher
+/// capability depth → larger required set.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SandboxClass(u8);
+
+impl SandboxClass {
+    /// Empty class (no layers). Only the `NoOpSandbox` in tests accepts
+    /// this; production composite sandboxes will refuse.
+    pub const NONE: Self = Self(0);
+    /// `Wasm` only.
+    pub const L1: Self = Self(0b0_0001);
+    /// `Wasm` + `Landlock` / Seatbelt.
+    pub const L2: Self = Self(0b0_0011);
+    /// L1+L2 + namespace + seccomp.
+    pub const L3: Self = Self(0b0_1111);
+    /// L1+L2+L3 + TEE attestation (Phase 10).
+    pub const L4: Self = Self(0b1_1111);
+
+    /// Construct from a raw bitmask.
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Self {
+        Self(bits)
+    }
+
+    /// Return the raw bitmask.
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// True iff this class requires `layer`.
+    #[must_use]
+    pub const fn requires(self, layer: SandboxLayer) -> bool {
+        let bit: u8 = match layer {
+            SandboxLayer::Wasm => 1 << 0,
+            SandboxLayer::Landlock => 1 << 1,
+            SandboxLayer::Namespace => 1 << 2,
+            SandboxLayer::Seccomp => 1 << 3,
+            SandboxLayer::Tee => 1 << 4,
+        };
+        (self.0 & bit) == bit
+    }
+
+    /// Bitwise union — combine two classes (largest stack wins per layer).
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+/// Compute the **minimum** required sandbox class for a given capability
+/// (SPECS §7.1). Higher capability depth → stricter stack.
+///
+/// * Read-only filesystem reads / canvas renders → L1 only.
+/// * Scoped filesystem writes + network GET → L1 + Landlock.
+/// * Subprocess spawn / network POST → L1 + L2 + L3 (ns + seccomp).
+/// * Crypto signing → L4 (TEE; Phase 10) — Phase 3 returns L3 with a
+///   software-only marker on the receipt.
+#[must_use]
+pub const fn min_sandbox_for(cap: CapToken) -> SandboxClass {
+    // Walk highest-privilege bits first.
+    if cap.contains(CapToken::CRYPTO_SIGN) {
+        return SandboxClass::L4;
+    }
+    if cap.contains(CapToken::SUBPROCESS_SPAWN) || cap.contains(CapToken::NETWORK_POST) {
+        return SandboxClass::L3;
+    }
+    if cap.contains(CapToken::FILESYSTEM_WRITE)
+        || cap.contains(CapToken::NETWORK_GET)
+        || cap.contains(CapToken::CANVAS_EMBED)
+        || cap.contains(CapToken::CANVAS_FILE_WRITE)
+    {
+        return SandboxClass::L2;
+    }
+    SandboxClass::L1
+}
+
+/// Input to the sandbox executor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct SandboxRequest {
+    /// Tool identifier (mostly for tracing).
+    pub tool: ToolId,
+    /// Capability the parent kernel has already admitted for this action.
+    pub cap: CapToken,
+    /// Tool-supplied arguments (opaque to the sandbox).
+    pub args: serde_json::Value,
+    /// Bytes piped to the tool's stdin (or its WASM `args.stdin` equivalent).
+    pub stdin: Vec<u8>,
+}
+
+impl SandboxRequest {
+    /// Construct a request.
+    #[must_use]
+    pub const fn new(
+        tool: ToolId,
+        cap: CapToken,
+        args: serde_json::Value,
+        stdin: Vec<u8>,
+    ) -> Self {
+        Self {
+            tool,
+            cap,
+            args,
+            stdin,
+        }
+    }
+}
+
+/// Outcome of a sandboxed invocation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct SandboxOutcome {
+    /// Bytes the tool wrote to stdout / its WASM out-channel.
+    pub stdout: Vec<u8>,
+    /// Layers the sandbox stack actually invoked. Used by the conformance
+    /// suite to verify the cap → class mapping.
+    pub layers_invoked: Vec<SandboxLayer>,
+    /// Exit code; 0 on success.
+    pub exit_code: i32,
+}
+
+impl SandboxOutcome {
+    /// Convenience constructor for stub / success outcomes.
+    #[must_use]
+    pub const fn ok(stdout: Vec<u8>, layers_invoked: Vec<SandboxLayer>) -> Self {
+        Self {
+            stdout,
+            layers_invoked,
+            exit_code: 0,
+        }
+    }
+
+    /// Full constructor; required because the struct is `#[non_exhaustive]`.
+    #[must_use]
+    pub const fn new(stdout: Vec<u8>, layers_invoked: Vec<SandboxLayer>, exit_code: i32) -> Self {
+        Self {
+            stdout,
+            layers_invoked,
+            exit_code,
+        }
+    }
+}
+
+/// Sandbox trait — Phase 3.
+///
+/// An implementor MUST refuse the request if its layers do not cover the
+/// class returned by [`min_sandbox_for`] for the requested capability. The
+/// composite executor in `gauss-sandbox` enforces this; individual layers
+/// only contribute their own confinement.
+#[async_trait]
+pub trait SandboxTrait: Send + Sync + core::fmt::Debug {
+    /// Layers this implementor activates for the given capability. Inspected
+    /// by the kernel to compare against [`min_sandbox_for`].
+    fn class(&self, cap: CapToken) -> SandboxClass;
+
+    /// Execute `request` inside the sandbox. The future MUST NOT resolve
+    /// until the executor has either committed the tool's effect or rejected
+    /// it.
+    ///
+    /// # Errors
+    /// * [`gauss_core::GaussError::Denied`] — sandbox refused (cap or class
+    ///   mismatch).
+    /// * [`gauss_core::GaussError::Io`] — I/O / runtime failure.
+    async fn exec(&self, request: SandboxRequest) -> GaussResult<SandboxOutcome>;
 }
 
 /// LLM policy trait `π` (Phase 2).

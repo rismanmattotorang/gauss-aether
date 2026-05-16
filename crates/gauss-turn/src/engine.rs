@@ -21,7 +21,10 @@
 use std::sync::Arc;
 
 use gauss_core::{Action, GaussError, GaussResult, TaintLabel, TurnId};
-use gauss_traits::{AppendAck, AppendEntry, ChainHeadSnapshot, Kernel, MemoryBackend, Provider};
+use gauss_traits::{
+    AppendAck, AppendEntry, ChainHeadSnapshot, Kernel, MemoryBackend, Provider, SandboxRequest,
+    SandboxTrait,
+};
 
 use crate::TurnInput;
 
@@ -43,10 +46,13 @@ pub type TurnOutcome = TurnSummary;
 ///
 /// Generic over the kernel, memory backend, and provider so test harnesses
 /// can mix-and-match implementations without changing the engine itself.
+/// The sandbox is an optional `dyn SandboxTrait` so a Phase-2-only
+/// engine (no sandbox) keeps compiling identically.
 pub struct TurnEngine<K, M, P> {
     kernel: Arc<K>,
     memory: Arc<M>,
     provider: Arc<P>,
+    sandbox: Option<Arc<dyn SandboxTrait>>,
 }
 
 impl<K, M, P> core::fmt::Debug for TurnEngine<K, M, P> {
@@ -55,6 +61,10 @@ impl<K, M, P> core::fmt::Debug for TurnEngine<K, M, P> {
             .field("kernel", &"<K: Kernel>")
             .field("memory", &"<M: MemoryBackend>")
             .field("provider", &"<P: Provider>")
+            .field(
+                "sandbox",
+                &self.sandbox.as_ref().map_or("<None>", |_| "<Some>"),
+            )
             .finish()
     }
 }
@@ -65,12 +75,29 @@ where
     M: MemoryBackend,
     P: Provider,
 {
-    /// Construct a turn engine.
+    /// Construct a turn engine without a sandbox (Phase-2 compatibility).
     pub const fn new(kernel: Arc<K>, memory: Arc<M>, provider: Arc<P>) -> Self {
         Self {
             kernel,
             memory,
             provider,
+            sandbox: None,
+        }
+    }
+
+    /// Construct a turn engine with a composite sandbox (Phase 3).
+    #[must_use]
+    pub fn with_sandbox(
+        kernel: Arc<K>,
+        memory: Arc<M>,
+        provider: Arc<P>,
+        sandbox: Arc<dyn SandboxTrait>,
+    ) -> Self {
+        Self {
+            kernel,
+            memory,
+            provider,
+            sandbox: Some(sandbox),
         }
     }
 
@@ -109,8 +136,26 @@ where
             "wal append committed"
         );
 
-        // -- 5. Commit external effects (Phase 3 fills in sandbox exec) --
-        apply_actions_locally(&actions);
+        // -- 5. Commit external effects --
+        // Phase 3: if a sandbox is wired, every tool action runs through it;
+        // otherwise we fall through to the Phase-2 placeholder. The WAL
+        // append in step 4 has already happened, so the structural barrier
+        // is preserved either way.
+        if let Some(sb) = &self.sandbox {
+            for action in &actions {
+                if let Action::Tool(t) = action {
+                    let request = SandboxRequest::new(
+                        t.tool.clone(),
+                        t.cap_required,
+                        t.args.clone(),
+                        Vec::new(),
+                    );
+                    sb.exec(request).await?;
+                }
+            }
+        } else {
+            apply_actions_locally(&actions);
+        }
 
         Ok(TurnSummary {
             id: input.id,
