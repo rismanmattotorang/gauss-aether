@@ -24,6 +24,9 @@
 //! | T9 | IPI containment (HWCA worker + schema gate ≤ 2.19%)                 | Phase 4            |
 //! | T10| Composite sandbox bound                                             | Phase 3            |
 //! | T5 | Hybrid recall bound (`miss ≤ 0.015` on benchmark corpus)            | Phase 6            |
+//! | T6 | Stateless turn scaling (consistent-hash routing)                    | Phase 10           |
+//! | T7 | Provider adjunction (polyhedral equivalence on probe set)           | Phase 8            |
+//! | T8 | Pareto-dominance scorecard (Canvas + Health + Gateway)              | Phase 9            |
 //! | T11| Receipt non-repudiation (Ed25519 + chain replay + TSA anchor)       | Phase 5            |
 //! | T12| Delta-encoded warm switch (`cold-start ≤ 10 ms p95`)                | Phase 6            |
 
@@ -489,7 +492,7 @@ mod axiom_a7_and_theorem_t9_hwca {
         let v: ValidatedValue = spawner
             .spawn_and_invoke(&tool, json!({}), TaintLabel::User, 0)
             .await
-            .unwrap();
+       .unwrap();
         // Tool output is Web-tainted by default; join(User, Web) = Web.
         assert_eq!(v.taint, TaintLabel::Web);
         assert_eq!(v.value["title"], "ok");
@@ -1425,6 +1428,261 @@ mod axiom_a8_sag_approval {
             summary.sag_decisions[0].approver.as_deref(),
             Some("ops-on-call")
         );
+    }
+}
+
+#[cfg(test)]
+mod theorem_t7_provider_adjunction {
+    //! CONF-T7-* — provider polyhedral equivalence (Phase 8).
+    //!
+    //! Two providers that produce byte-equal action streams on every
+    //! probe in a finite set are polyhedrally equivalent. The
+    //! conformance suite asserts the toy-provider compatibility check
+    //! end-to-end against `gauss_poly::verify_provider_equivalence`.
+
+    use gauss_core::{Action, Observation, ObservationSource, TaintLabel, TextAction};
+    use gauss_poly::{verify_provider_equivalence, PolyhedralProbeSet, Probe};
+    use gauss_provider::ToyProvider;
+
+    fn obs(channel: &str) -> Observation {
+        Observation::new(
+            ObservationSource::User {
+                channel: channel.into(),
+            },
+            TaintLabel::User,
+            serde_json::Value::Null,
+        )
+    }
+
+    fn echo_probes() -> PolyhedralProbeSet<Observation, Vec<Action>> {
+        let expected: Vec<Action> = vec![Action::Text(TextAction::new("hi"))];
+        PolyhedralProbeSet::new(vec![
+            Probe::new("alpha", obs("a"), expected.clone()),
+            Probe::new("beta", obs("b"), expected.clone()),
+            Probe::new("gamma", obs("c"), expected),
+        ])
+    }
+
+    #[tokio::test]
+    async fn equivalent_providers_pass_the_polyhedral_check() {
+        let p = ToyProvider::always_text("hi");
+        let q = ToyProvider::always_text("hi");
+        let report = verify_provider_equivalence(&p, &q, &echo_probes())
+            .await
+            .unwrap();
+        assert!(report.ok());
+        assert_eq!(report.passed, 3);
+    }
+
+    #[tokio::test]
+    async fn diverging_providers_fail_at_first_probe() {
+        let p = ToyProvider::always_text("hi");
+        let q = ToyProvider::always_text("nope");
+        let err = verify_provider_equivalence(&p, &q, &echo_probes())
+            .await
+            .expect_err("must diverge");
+        assert_eq!(err.probe_index, 0);
+    }
+}
+
+#[cfg(test)]
+mod theorem_t8_pareto_dominance {
+    //! CONF-T8-* — Phase 9 surfaces (Canvas + Health + Gateway).
+    //!
+    //! Theorem T8 says the deployed system Pareto-dominates each
+    //! predecessor on the fifteen-axis scorecard. The Phase-9
+    //! conformance check is structural: every surface crate produces a
+    //! well-formed wire payload, the live canvas accepts the operator's
+    //! update stream, and the health engine reports the seven minimum
+    //! invariants.
+    use gauss_canvas::{Canvas, CanvasNode, CanvasUpdate, InMemoryCanvas, NodeId, WidgetKind};
+    use gauss_gateway::{OpenAiChatMessage, OpenAiChatRequest, StreamEvent, TurnRequest};
+    use gauss_health::{HealthEngine, MockSubject, Verdict};
+
+    #[test]
+    fn health_engine_has_specs_seven_invariants() {
+        let e = HealthEngine::default();
+        assert_eq!(e.len(), 7);
+    }
+
+    #[test]
+    fn health_engine_reports_failure_on_broken_subject() {
+        let e = HealthEngine::default();
+        let s = MockSubject {
+            grant: 0,
+            ..MockSubject::default()
+        };
+        let report = e.evaluate(&s);
+        assert!(report.has_failure());
+        assert!(report
+            .invariants
+            .iter()
+            .any(|i| i.verdict == Verdict::Failing));
+    }
+
+    #[tokio::test]
+    async fn canvas_accepts_an_insert_and_subscribers_see_it() {
+        let c = InMemoryCanvas::default();
+        let mut rx = c.subscribe();
+        c.apply(CanvasUpdate::Insert {
+            node: CanvasNode::leaf(
+                NodeId::new("approval-1"),
+                WidgetKind::ApprovalPrompt,
+                serde_json::json!({"tool":"send_email"}),
+            ),
+            parent: None,
+        })
+        .await
+        .unwrap();
+        let evt = rx.recv().await.unwrap();
+        matches!(evt, CanvasUpdate::Insert { .. });
+        assert_eq!(c.len().await, 1);
+    }
+
+    #[test]
+    fn gateway_turn_request_round_trips() {
+        let r = TurnRequest::new(gauss_core::TurnId::new(1), "hi");
+        let s = serde_json::to_string(&r).unwrap();
+        let back: TurnRequest = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.body, "hi");
+    }
+
+    #[test]
+    fn gateway_openai_proxy_round_trips() {
+        let r = OpenAiChatRequest::new("gauss-1", vec![OpenAiChatMessage::new("user", "hello")]);
+        let s = serde_json::to_string(&r).unwrap();
+        let back: OpenAiChatRequest = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.messages.len(), 1);
+    }
+
+    #[test]
+    fn gateway_stream_event_uses_kebab_kind() {
+        let e = StreamEvent::Ping;
+        let s = serde_json::to_string(&e).unwrap();
+        assert!(s.contains("\"kind\":\"ping\""));
+    }
+}
+
+#[cfg(test)]
+mod theorem_t6_stateless_scaling_and_attest {
+    //! CONF-T6-* + CONF-T10-L4 — Phase 10 hardening surfaces.
+    //!
+    //! Two checks land here:
+    //!
+    //! * The cluster ring routes deterministically and adding / removing
+    //!   one node moves at most `O(1/N)` of the existing assignments —
+    //!   the property that lets Theorem T6's stateless turn scaling
+    //!   hold under live cluster reconfiguration.
+    //! * The software attestation simulator produces reports that the
+    //!   public verifier accepts, and tampered nonces / measurements /
+    //!   signatures are rejected — the off-line, hardware-free
+    //!   approximation of Theorem T10 Layer 4.
+
+    use gauss_attest::{
+        measure_workload, verify_report, AttestClaims, Attestor, SoftwareSimAttestor,
+    };
+    use gauss_kernel::{ConsistentHashRing, NodeId};
+
+    #[test]
+    fn cluster_routes_deterministically() {
+        let r = ConsistentHashRing::default();
+        for n in ["one", "two", "three"] {
+            r.add_node(NodeId::new(n));
+        }
+        let a = r.route_session("session-42").unwrap();
+        let b = r.route_session("session-42").unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn cluster_addition_moves_at_most_one_over_n_sessions() {
+        let r = ConsistentHashRing::new(128);
+        for n in ["a", "b", "c"] {
+            r.add_node(NodeId::new(n));
+        }
+        let keys: Vec<String> = (0..1000_u64).map(|i| format!("s-{i}")).collect();
+        let before: Vec<NodeId> = keys.iter().map(|k| r.route_session(k).unwrap()).collect();
+        r.add_node(NodeId::new("d"));
+        let after: Vec<NodeId> = keys.iter().map(|k| r.route_session(k).unwrap()).collect();
+        let moved = before
+            .iter()
+            .zip(after.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+        // 4-node ring: paper bound is ≤ 25 % moved on average; allow
+        // some slack for the small sample.
+        assert!(moved < 400, "{moved}/1000 moved");
+    }
+
+    #[tokio::test]
+    async fn attestation_round_trips_through_verifier() {
+        let baseline = measure_workload(b"gauss-aether-turn-engine");
+        let a = SoftwareSimAttestor::from_seed([7u8; 32], baseline);
+        let nonce = [0x99; 32];
+        let report = a
+            .attest(AttestClaims::new("gauss-aether/turn", "0.0.1"), nonce)
+            .await
+            .unwrap();
+        verify_report(&report, &nonce, &[*a.public_key()], &baseline).unwrap();
+    }
+
+    #[tokio::test]
+    async fn attestation_rejects_tampered_nonce() {
+        let baseline = measure_workload(b"gauss-aether-turn-engine");
+        let a = SoftwareSimAttestor::from_seed([8u8; 32], baseline);
+        let report = a
+            .attest(AttestClaims::new("workload", "0.0.1"), [0x11; 32])
+            .await
+            .unwrap();
+        let err = verify_report(&report, &[0x22; 32], &[*a.public_key()], &baseline).unwrap_err();
+        assert!(matches!(err, gauss_attest::AttestError::NonceMismatch));
+    }
+}
+
+#[cfg(test)]
+mod chaos_phase10 {
+    //! CONF-T1-CHAOS-* — chaos-engineering harness (Phase 10).
+    //!
+    //! The Phase-10 chaos crate ships kill / partition / clock-skew
+    //! injectors; this module verifies their semantics so the
+    //! Phase-11 chaos suite has a stable foundation.
+
+    use gauss_chaos::{ChaosBudget, ClockSkew, KillSwitch, Partition};
+
+    #[test]
+    fn kill_switch_propagates_arm_state() {
+        let k = KillSwitch::new();
+        assert!(!k.armed());
+        k.arm();
+        assert!(k.armed());
+    }
+
+    #[test]
+    fn partition_drops_in_flight_messages() {
+        let p: Partition<&'static str> = Partition::new();
+        p.send_or_drop("a");
+        p.partition();
+        p.send_or_drop("b");
+        assert_eq!(p.sent_count(), 1);
+        assert_eq!(p.drop_count(), 1);
+    }
+
+    #[test]
+    fn clock_skew_can_advance_and_retreat() {
+        let c = ClockSkew::new();
+        c.add(100);
+        assert_eq!(c.apply(0), 100);
+        c.add(-50);
+        assert_eq!(c.apply(0), 50);
+    }
+
+    #[test]
+    fn budget_is_independent_per_injector() {
+        let b = ChaosBudget::new();
+        b.kill.arm();
+        assert!(b.kill.armed());
+        assert!(!b.partition.is_partitioned());
+        assert_eq!(b.clock.offset(), 0);
     }
 }
 

@@ -23,6 +23,12 @@ gauss-provider = { workspace = true }
 gauss-sandbox  = { workspace = true }
 gauss-hwca     = { workspace = true }
 gauss-sag      = { workspace = true }
+gauss-poly     = { workspace = true }
+gauss-canvas   = { workspace = true }
+gauss-health   = { workspace = true }
+gauss-gateway  = { workspace = true }
+gauss-attest   = { workspace = true }
+gauss-chaos    = { workspace = true }
 async-trait    = { workspace = true }
 serde_json     = { workspace = true }
 
