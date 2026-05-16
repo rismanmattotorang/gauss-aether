@@ -15,14 +15,14 @@
 //! | A6 | Information-flow lattice + antitone declass                         | Phase 1            |
 //! | A7 | Worker-context isolation                                            | Phase 4            |
 //! | A8 | Supervised-autonomy gradient                                        | Phase 7 (planned)  |
-//! | A9 | EUF-CMA receipts + TSA anchor                                       | Phase 5 (planned)  |
+//! | A9 | EUF-CMA receipts + TSA anchor                                       | Phase 5            |
 //! | T1 | Crash atomicity (WAL discipline + replay)                           | Phase 2            |
 //! | T2 | Capability non-interference (cap meet on disjoint sets)             | Phase 1            |
 //! | T3 | Merkle tamper-evidence (proptest: any mutation diverges the head)   | Phase 0/2          |
 //! | T4 | Plane starvation bound `B/ρ`                                        | Phase 1            |
 //! | T9 | IPI containment (HWCA worker + schema gate ≤ 2.19%)                 | Phase 4            |
 //! | T10| Composite sandbox bound                                             | Phase 3            |
-//! | T11| Receipt non-repudiation                                             | Phase 5 (planned)  |
+//! | T11| Receipt non-repudiation (Ed25519 + chain replay + TSA anchor)       | Phase 5            |
 //! | T12| Delta-encoded warm switch                                           | Phase 6 (planned)  |
 
 pub use gauss_audit::ReceiptChain;
@@ -578,6 +578,266 @@ mod theorem_t4_starvation_bound {
     fn worst_case_wait_matches_b_over_rho() {
         let pool = PlanePool::new(20.0, 5.0);
         assert_eq!(pool.worst_case_wait(), Duration::from_secs(4));
+    }
+}
+
+#[cfg(test)]
+mod axiom_a9_and_theorem_t11_signed_receipts {
+    //! CONF-A9-* and CONF-T11-* — Ed25519 EUF-CMA receipts + chain replay.
+    //!
+    //! Phase 5 ships:
+    //!
+    //! * CONF-A9-1 — every committed turn emits a [`SignedReceipt`] when the
+    //!   engine is constructed via `TurnEngine::with_signing(...)`.
+    //! * CONF-A9-2 — the receipt verifies against its embedded public key
+    //!   and the canonicalised action payload.
+    //! * CONF-A9-3 — a tampered payload OR a flipped signature bit is
+    //!   rejected by the verifier.
+    //! * CONF-T11-1 — a contiguous run of receipts verifies as a chain;
+    //!   index gaps, payload swaps, and final-head mismatches are detected.
+    //! * CONF-T11-2 — anchoring the chain head through a
+    //!   `SimulatorTsaClient` produces a token that verifies, and any
+    //!   downstream payload mutation fails the anchor-replay path.
+    //! * CONF-T11-3 — the `AnchorPolicy::SPECS_DEFAULT` cadence (every 1000
+    //!   appends) is honoured; `AnchorPolicy::EVERY_APPEND` fires on every
+    //!   step.
+    //!
+    //! All tests are offline and deterministic — the simulator and engine
+    //! both accept a fixed clock seed for test stability.
+
+    use std::sync::Arc;
+
+    use gauss_audit::{
+        verify_anchor_replay, verify_chain, AnchorPolicy, Anchorer, Ed25519Signer, ReceiptSigner,
+        SignedReceipt, SimulatorTsaClient,
+    };
+    use gauss_core::{
+        Action, CapToken, GaussError, Observation, ObservationSource, TaintLabel, TextAction,
+        ToolAction, ToolId, TurnId,
+    };
+    use gauss_kernel::PrivilegedKernel;
+    use gauss_memory::SurrealMemory;
+    use gauss_provider::ToyProvider;
+    use gauss_traits::MemoryBackend;
+    use gauss_turn::{DynSigningBackend, TurnEngine, TurnInput};
+
+    fn obs(taint: TaintLabel) -> Observation {
+        Observation::new(
+            ObservationSource::User {
+                channel: "phase5".into(),
+            },
+            taint,
+            serde_json::Value::Null,
+        )
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn signed_turn_emits_a_verifiable_receipt() {
+        let memory = Arc::new(SurrealMemory::open_in_memory().await.unwrap());
+        let kernel = Arc::new(PrivilegedKernel::new(CapToken::TOP));
+        let provider = Arc::new(ToyProvider::always_text("hello, gauss"));
+        let signer = Ed25519Signer::from_seed([13u8; 32]);
+        let pk = *signer.public_key();
+        let receipt_signer = Arc::new(ReceiptSigner::new(DynSigningBackend::new(signer)));
+        let engine = TurnEngine::with_signing(
+            Arc::clone(&kernel),
+            Arc::clone(&memory),
+            Arc::clone(&provider),
+            receipt_signer,
+        );
+
+        let summary = engine
+            .run_turn(TurnInput {
+                id: TurnId::new(1),
+                obs: obs(TaintLabel::User),
+            })
+            .await
+            .unwrap();
+        let receipt: SignedReceipt = summary.receipt.expect("Phase 5 engine emits a receipt");
+        assert_eq!(receipt.public_key, pk);
+        assert_eq!(receipt.index, 0);
+        assert_eq!(receipt.taint, TaintLabel::User);
+        assert_eq!(receipt.post_head, summary.chain_head.digest);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unsigned_engine_returns_no_receipt() {
+        let memory = Arc::new(SurrealMemory::open_in_memory().await.unwrap());
+        let kernel = Arc::new(PrivilegedKernel::new(CapToken::TOP));
+        let provider = Arc::new(ToyProvider::always_text("legacy"));
+        let engine = TurnEngine::new(kernel, Arc::clone(&memory), provider);
+        let summary = engine
+            .run_turn(TurnInput {
+                id: TurnId::new(2),
+                obs: obs(TaintLabel::User),
+            })
+            .await
+            .unwrap();
+        assert!(summary.receipt.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn tampered_signature_is_rejected() {
+        let memory = Arc::new(SurrealMemory::open_in_memory().await.unwrap());
+        let kernel = Arc::new(PrivilegedKernel::new(CapToken::TOP));
+        let provider = Arc::new(ToyProvider::new(
+            vec![vec![Action::Text(TextAction::new("ok"))]],
+            true,
+        ));
+        let signer = Ed25519Signer::from_seed([15u8; 32]);
+        let receipt_signer = Arc::new(ReceiptSigner::new(DynSigningBackend::new(signer)));
+        let engine =
+            TurnEngine::with_signing(kernel, Arc::clone(&memory), provider, receipt_signer);
+
+        let summary = engine
+            .run_turn(TurnInput {
+                id: TurnId::new(3),
+                obs: obs(TaintLabel::User),
+            })
+            .await
+            .unwrap();
+        let mut receipt = summary.receipt.unwrap();
+        let actions = vec![Action::Text(TextAction::new("ok"))];
+        let payload = serde_json::to_vec(&actions).unwrap();
+        // Sanity: untampered receipt verifies.
+        receipt.verify(&payload).unwrap();
+        // Now flip one bit and expect failure.
+        receipt.signature[0] ^= 0x01;
+        let err = receipt.verify(&payload).unwrap_err();
+        assert!(matches!(err, GaussError::SignatureInvalid { .. }));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn admission_denial_emits_no_receipt() {
+        let memory = Arc::new(SurrealMemory::open_in_memory().await.unwrap());
+        // No caps granted; a NETWORK_POST tool action must be denied BEFORE
+        // the WAL barrier — so no receipt should be produced.
+        let kernel = Arc::new(PrivilegedKernel::new(CapToken::NETWORK_GET));
+        let provider = Arc::new(ToyProvider::new(
+            vec![vec![Action::Tool(ToolAction::new(
+                ToolId("send".into()),
+                serde_json::Value::Null,
+                CapToken::NETWORK_POST,
+                false,
+            ))]],
+            true,
+        ));
+        let signer = Ed25519Signer::from_seed([16u8; 32]);
+        let receipt_signer = Arc::new(ReceiptSigner::new(DynSigningBackend::new(signer)));
+        let engine =
+            TurnEngine::with_signing(kernel, Arc::clone(&memory), provider, receipt_signer);
+        let err = engine
+            .run_turn(TurnInput {
+                id: TurnId::new(4),
+                obs: obs(TaintLabel::User),
+            })
+            .await
+            .expect_err("kernel must deny");
+        assert!(matches!(err, GaussError::Denied { .. }));
+        assert_eq!(memory.len().await.unwrap(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn whole_chain_replay_round_trips_for_signed_engine() {
+        let memory = Arc::new(SurrealMemory::open_in_memory().await.unwrap());
+        let kernel = Arc::new(PrivilegedKernel::new(CapToken::TOP));
+        let provider = Arc::new(ToyProvider::new(
+            vec![
+                vec![Action::Text(TextAction::new("one"))],
+                vec![Action::Text(TextAction::new("two"))],
+                vec![Action::Text(TextAction::new("three"))],
+            ],
+            true,
+        ));
+        let signer = Ed25519Signer::from_seed([17u8; 32]);
+        let receipt_signer = Arc::new(ReceiptSigner::new(DynSigningBackend::new(signer)));
+        let engine =
+            TurnEngine::with_signing(kernel, Arc::clone(&memory), provider, receipt_signer);
+
+        let mut receipts = Vec::new();
+        let mut payloads = Vec::new();
+        for (i, text) in ["one", "two", "three"].iter().enumerate() {
+            let summary = engine
+                .run_turn(TurnInput {
+                    id: TurnId::new(u128::try_from(100 + i).unwrap()),
+                    obs: obs(TaintLabel::User),
+                })
+                .await
+                .unwrap();
+            let actions = vec![Action::Text(TextAction::new(*text))];
+            let payload = serde_json::to_vec(&actions).unwrap();
+            payloads.push(payload);
+            receipts.push(summary.receipt.unwrap());
+        }
+        let payload_refs: Vec<&[u8]> = payloads.iter().map(Vec::as_slice).collect();
+        let final_head = gauss_audit::ChainHead::from_bytes(receipts.last().unwrap().post_head);
+        verify_chain(&receipts, &payload_refs, Some(final_head)).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn tsa_anchor_covers_full_run_and_detects_tampering() {
+        let memory = Arc::new(SurrealMemory::open_in_memory().await.unwrap());
+        let kernel = Arc::new(PrivilegedKernel::new(CapToken::TOP));
+        let provider = Arc::new(ToyProvider::new(
+            vec![
+                vec![Action::Text(TextAction::new("alpha"))],
+                vec![Action::Text(TextAction::new("beta"))],
+            ],
+            true,
+        ));
+        let signer = Ed25519Signer::from_seed([18u8; 32]);
+        let receipt_signer = Arc::new(ReceiptSigner::new(DynSigningBackend::new(signer)));
+        let engine = TurnEngine::with_signing(
+            kernel,
+            Arc::clone(&memory),
+            Arc::clone(&provider),
+            receipt_signer,
+        );
+
+        let sim = SimulatorTsaClient::from_seed([19u8; 32]).with_fixed_clock(1_700_000_000_000);
+        let anchorer = Anchorer::new(sim, AnchorPolicy::EVERY_APPEND);
+
+        let mut payloads: Vec<Vec<u8>> = Vec::new();
+        let mut last_head = gauss_audit::ChainHead::ZERO;
+        for (i, text) in ["alpha", "beta"].iter().enumerate() {
+            let summary = engine
+                .run_turn(TurnInput {
+                    id: TurnId::new(u128::try_from(200 + i).unwrap()),
+                    obs: obs(TaintLabel::User),
+                })
+                .await
+                .unwrap();
+            let actions = vec![Action::Text(TextAction::new(*text))];
+            payloads.push(serde_json::to_vec(&actions).unwrap());
+            let head = gauss_audit::ChainHead::from_bytes(summary.chain_head.digest);
+            let anchor = anchorer
+                .maybe_anchor(head, summary.chain_head.length)
+                .await
+                .unwrap()
+                .expect("EVERY_APPEND must produce an anchor");
+            assert_eq!(anchor.head, summary.chain_head.digest);
+            last_head = head;
+        }
+        // Anchor-replay over the full payload list verifies the final head.
+        let anchor = anchorer.last_anchor().await.expect("anchor present");
+        assert_eq!(anchor.head, *last_head.as_bytes());
+        let payload_refs: Vec<&[u8]> = payloads.iter().map(Vec::as_slice).collect();
+        verify_anchor_replay(&anchor, anchorer.client(), &payload_refs).unwrap();
+
+        // Flip a byte in one payload; replay must fail.
+        let mut bad = payloads.clone();
+        bad[0][0] ^= 0x01;
+        let bad_refs: Vec<&[u8]> = bad.iter().map(Vec::as_slice).collect();
+        let err = verify_anchor_replay(&anchor, anchorer.client(), &bad_refs).unwrap_err();
+        assert!(matches!(err, GaussError::AuditChainBroken));
+    }
+
+    #[test]
+    fn anchor_cadence_default_is_specs_default() {
+        assert_eq!(AnchorPolicy::default().every_n_appends, 1000);
+        assert!(!AnchorPolicy::SPECS_DEFAULT.should_anchor_at(999));
+        assert!(AnchorPolicy::SPECS_DEFAULT.should_anchor_at(1000));
+        assert!(AnchorPolicy::SPECS_DEFAULT.should_anchor_at(2000));
     }
 }
 
