@@ -11,6 +11,12 @@ members = [
     "crates/gauss-sandbox",
     "crates/gauss-hwca",
     "crates/gauss-sag",
+    "crates/gauss-poly",
+    "crates/gauss-canvas",
+    "crates/gauss-health",
+    "crates/gauss-gateway",
+    "crates/gauss-attest",
+    "crates/gauss-chaos",
     "crates/gauss-conformance",
 ]
 
@@ -34,6 +40,12 @@ gauss-provider  = { path = "crates/gauss-provider",  version = "0.0.1" }
 gauss-sandbox   = { path = "crates/gauss-sandbox",   version = "0.0.1" }
 gauss-hwca      = { path = "crates/gauss-hwca",      version = "0.0.1" }
 gauss-sag       = { path = "crates/gauss-sag",       version = "0.0.1" }
+gauss-poly      = { path = "crates/gauss-poly",      version = "0.0.1" }
+gauss-canvas    = { path = "crates/gauss-canvas",    version = "0.0.1" }
+gauss-health    = { path = "crates/gauss-health",    version = "0.0.1" }
+gauss-gateway   = { path = "crates/gauss-gateway",   version = "0.0.1" }
+gauss-attest    = { path = "crates/gauss-attest",    version = "0.0.1" }
+gauss-chaos     = { path = "crates/gauss-chaos",     version = "0.0.1" }
 
 # Async
 async-trait = "0.1"

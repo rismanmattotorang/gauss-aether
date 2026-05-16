@@ -22,10 +22,12 @@
 
 pub mod admit;
 pub mod cap;
+pub mod cluster;
 pub mod flow;
 pub mod sched;
 
 pub use admit::{declass_default, declass_strict, PrivilegedKernel};
 pub use cap::{CapToken, Capability};
+pub use cluster::{ConsistentHashRing, NodeId};
 pub use flow::{default_declass, verify_antitone, DeclassMap};
 pub use sched::{Plane, PlanePool, Planes, TokenBucket};

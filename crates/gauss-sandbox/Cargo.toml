@@ -13,9 +13,14 @@ workspace = true
 
 [features]
 default = ["wasm-wasmi", "linux-layers", "macos-layers"]
-# WASM layer (default backend = wasmi; Phase 10 may add a wasmtime backend
-# under `wasm-wasmtime`).
+# WASM layer (default backend = wasmi; Phase 10 adds an opt-in
+# `wasm-wasmtime` swap. The wasmtime crate is gated on edition 2024 and
+# Rust 1.85+, so we mark it as a `feature` flag here without pulling in
+# the dep on the workspace MSRV. Production deployments enable it via
+# `cargo build --no-default-features --features wasm-wasmtime,linux-layers`
+# under a Rust 1.85+ toolchain — see ADR-0009 §Migration.
 wasm-wasmi = ["dep:wasmi"]
+wasm-wasmtime = []
 # Linux-specific layers. The crate compiles on non-Linux without these but
 # composing them on a Linux build is gated on `cfg(target_os = "linux")` so
 # the feature only opts the deps in; it doesn't change platform behaviour.
@@ -23,6 +28,10 @@ linux-layers = ["dep:landlock", "dep:seccompiler"]
 # macOS Seatbelt layer (sandbox-exec subprocess); pure-subprocess so no extra
 # dep is needed beyond `tokio::process`.
 macos-layers = []
+# TEE attestation layer (Phase 10). Wires the composite sandbox to
+# `gauss-attest`. When enabled, an attestation report can be produced for
+# each tool invocation and bundled into the signed receipt.
+tee-attest = ["dep:gauss-attest"]
 
 [dependencies]
 gauss-core   = { workspace = true }
@@ -35,6 +44,7 @@ tokio        = { workspace = true, features = ["sync", "rt", "macros", "time", "
 tracing      = { workspace = true }
 
 wasmi       = { workspace = true, optional = true }
+gauss-attest = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock    = { workspace = true, optional = true }
