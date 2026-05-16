@@ -12,11 +12,11 @@ description = "Privileged kernel — capability lattice, info-flow, three-plane 
 workspace = true
 
 [dependencies]
-gauss-core  = { workspace = true }
-parking_lot = { workspace = true }
-serde       = { workspace = true }
-thiserror   = { workspace = true }
-tracing     = { workspace = true }
+gauss-core   = { workspace = true }
+gauss-traits = { workspace = true }
+serde        = { workspace = true }
+thiserror    = { workspace = true }
+tracing      = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

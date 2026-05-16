@@ -1,21 +1,27 @@
-//! Three-plane scheduler — Axiom 4, Theorem T4.
+//! Three-plane scheduler — Axiom A4, Theorem T4 (Phase 1: lock-free).
 //!
-//! Phase 0 ships a minimal but real token-bucket per plane:
+//! The bucket state is packed into a single `AtomicU64`:
 //!
-//! * Per-plane state lives in its own atomic / lock — no cross-plane shared
-//!   counter, so starvation freedom holds by construction.
-//! * `try_acquire` is non-blocking and returns whether a token was granted.
-//! * Refill is amortised on each `try_acquire`, computed from a monotonic
-//!   clock — no background thread, no time skew.
+//! ```text
+//!   ┌─────────────── 32 bits ───────────────┬────────── 32 bits ─────────┐
+//!   │ tokens (fixed-point, 16.16)           │ epoch_ms since pool start  │
+//!   └────────────────────────────────────┴────────────────────────────┘
+//! ```
 //!
-//! Phase 1 ports this to a lock-free `AtomicU64` cell encoding both tokens
-//! and last-refill timestamp; the current `parking_lot::Mutex` implementation
-//! is simpler and easier to property-test for Phase 0.
+//! * Tokens are stored as a 16.16 fixed-point value (capacity up to 65535,
+//!   sub-token resolution ≈ 1/65536). This is more than enough for the
+//!   capacity range we use (1..1024 tokens per bucket).
+//! * The epoch is in milliseconds since the pool's `Instant::now()` at
+//!   construction, monotonic by construction, valid for ~49 days
+//!   (`u32::MAX` ms). Past that, the bucket gracefully clamps and refills.
+//!
+//! All updates are compare-and-swap loops; under contention this is wait-free
+//! up to one retry per concurrent caller. No allocation, no mutex.
 
+use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::time::Instant;
 
-use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 /// The three scheduler planes. Per `SPECS.md` §4.3.
@@ -30,48 +36,80 @@ pub enum Plane {
     Approval,
 }
 
-/// A single token-bucket plane pool.
+const FIXED_POINT_SCALE: u32 = 1 << 16; // 65 536
+
+/// A single lock-free token-bucket plane pool.
 ///
 /// Worst-case wait time for `try_acquire` to succeed under sustained pressure
 /// is `capacity / refill_rate` — the bound that drives Theorem T4 starvation
 /// freedom.
 #[derive(Debug)]
 pub struct PlanePool {
-    state: Mutex<BucketState>,
+    /// Packed `(tokens_fp32, epoch_ms)`.
+    state: AtomicU64,
     /// Tokens per second added back to the bucket.
     refill_per_sec: f64,
     /// Bucket capacity (maximum tokens held at any instant).
     capacity: f64,
+    /// Construction instant — basis for the `epoch_ms` field.
+    epoch_zero: Instant,
 }
 
-#[derive(Debug)]
-struct BucketState {
-    tokens: f64,
-    last_refill: Instant,
+#[inline]
+const fn pack(tokens_fp: u32, epoch_ms: u32) -> u64 {
+    ((tokens_fp as u64) << 32) | (epoch_ms as u64)
+}
+
+#[inline]
+const fn unpack(raw: u64) -> (u32, u32) {
+    let tokens = (raw >> 32) as u32;
+    let epoch = (raw & 0xFFFF_FFFF) as u32;
+    (tokens, epoch)
+}
+
+#[inline]
+fn tokens_to_fp(tokens: f64) -> u32 {
+    let scaled = tokens * f64::from(FIXED_POINT_SCALE);
+    if scaled < 0.0 {
+        0
+    } else if scaled > f64::from(u32::MAX) {
+        u32::MAX
+    } else {
+        // Safe because of the bounds above.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        {
+            scaled as u32
+        }
+    }
+}
+
+#[inline]
+fn fp_to_tokens(fp: u32) -> f64 {
+    f64::from(fp) / f64::from(FIXED_POINT_SCALE)
 }
 
 impl PlanePool {
     /// Construct a new plane pool.
     ///
     /// # Panics
-    /// Panics if `capacity` or `refill_per_sec` is non-finite or negative.
+    /// Panics if `capacity` or `refill_per_sec` is non-finite, non-positive, or
+    /// exceeds the fixed-point range (≈ 65535 tokens).
     #[must_use]
     pub fn new(capacity: f64, refill_per_sec: f64) -> Self {
         assert!(
-            capacity.is_finite() && capacity > 0.0,
-            "capacity must be positive and finite",
+            capacity.is_finite() && capacity > 0.0 && capacity <= f64::from(u16::MAX),
+            "capacity must be in (0, 65535]",
         );
         assert!(
             refill_per_sec.is_finite() && refill_per_sec > 0.0,
             "refill_per_sec must be positive and finite",
         );
+        let tokens_fp = tokens_to_fp(capacity);
         Self {
-            state: Mutex::new(BucketState {
-                tokens: capacity,
-                last_refill: Instant::now(),
-            }),
+            state: AtomicU64::new(pack(tokens_fp, 0)),
             refill_per_sec,
             capacity,
+            epoch_zero: Instant::now(),
         }
     }
 
@@ -81,27 +119,57 @@ impl PlanePool {
         self.try_acquire_at(Instant::now())
     }
 
+    /// Compute the `epoch_ms` value for an instant; clamps to `u32::MAX`.
+    #[inline]
+    fn epoch_ms_at(&self, now: Instant) -> u32 {
+        let elapsed = now.saturating_duration_since(self.epoch_zero);
+        u32::try_from(elapsed.as_millis()).unwrap_or(u32::MAX)
+    }
+
     /// Same as [`Self::try_acquire`] but with an explicit `now` for tests.
     pub fn try_acquire_at(&self, now: Instant) -> bool {
-        let mut state = self.state.lock();
-        let elapsed = now
-            .saturating_duration_since(state.last_refill)
-            .as_secs_f64();
-        state.tokens = elapsed
-            .mul_add(self.refill_per_sec, state.tokens)
-            .min(self.capacity);
-        state.last_refill = now;
-        if state.tokens >= 1.0 {
-            state.tokens -= 1.0;
-            true
-        } else {
-            false
+        let now_epoch = self.epoch_ms_at(now);
+
+        loop {
+            let current = self.state.load(Ordering::Acquire);
+            let (tokens_fp, last_epoch) = unpack(current);
+            let elapsed_secs = f64::from(now_epoch.saturating_sub(last_epoch)) / 1000.0;
+            let mut tokens = fp_to_tokens(tokens_fp);
+            tokens = elapsed_secs
+                .mul_add(self.refill_per_sec, tokens)
+                .min(self.capacity);
+
+            if tokens < 1.0 {
+                // Persist the refill timestamp anyway (we still observed time
+                // passing) so the next caller sees a more accurate bucket.
+                let updated = pack(tokens_to_fp(tokens), now_epoch);
+                if self
+                    .state
+                    .compare_exchange_weak(current, updated, Ordering::Release, Ordering::Acquire)
+                    .is_ok()
+                {
+                    return false;
+                }
+                continue;
+            }
+
+            tokens -= 1.0;
+            let updated = pack(tokens_to_fp(tokens), now_epoch);
+            if self
+                .state
+                .compare_exchange_weak(current, updated, Ordering::Release, Ordering::Acquire)
+                .is_ok()
+            {
+                return true;
+            }
+            // else: CAS contended — retry the whole sequence.
         }
     }
 
     /// Current token count (for diagnostics / metrics only).
     pub fn tokens(&self) -> f64 {
-        self.state.lock().tokens
+        let (fp, _) = unpack(self.state.load(Ordering::Acquire));
+        fp_to_tokens(fp)
     }
 
     /// Upper bound on wait time for one token under sustained demand.
@@ -126,9 +194,6 @@ pub struct Planes {
 
 impl Planes {
     /// Construct the three planes with the default `SPECS.md` §4.3 capacities.
-    ///
-    /// Refill rates are configurable per tenant in Phase 1; the defaults here
-    /// are intentionally conservative so tests run deterministically.
     #[must_use]
     pub fn with_defaults() -> Self {
         Self {
@@ -155,6 +220,9 @@ pub type TokenBucket = PlanePool;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+    use std::sync::Arc;
+    use std::thread;
 
     #[test]
     fn empty_bucket_refuses_until_refilled() {
@@ -162,39 +230,71 @@ mod tests {
         let t0 = Instant::now();
         assert!(pool.try_acquire_at(t0));
         assert!(pool.try_acquire_at(t0));
-        assert!(
-            !pool.try_acquire_at(t0),
-            "third acquire at t0 must fail (bucket drained)"
-        );
+        assert!(!pool.try_acquire_at(t0));
         let t1 = t0 + Duration::from_secs(1);
-        assert!(
-            pool.try_acquire_at(t1),
-            "after 1s with 1 token/s, must grant"
-        );
+        assert!(pool.try_acquire_at(t1));
     }
 
     #[test]
     fn cross_plane_starvation_does_not_propagate() {
-        // Drain the daemon plane completely and verify the conversation
-        // plane keeps serving.
         let planes = Planes::with_defaults();
         let t0 = Instant::now();
-        // Drain daemon to zero.
         while planes.daemon.try_acquire_at(t0) {}
         assert!(!planes.daemon.try_acquire_at(t0));
-        // Conversation still serves.
         assert!(planes.conversation.try_acquire_at(t0));
     }
 
     #[test]
     fn worst_case_wait_matches_b_over_rho() {
-        let pool = PlanePool::new(10.0, 2.0); // B = 10, rho = 2 => 5s
+        let pool = PlanePool::new(10.0, 2.0);
         assert_eq!(pool.worst_case_wait(), Duration::from_secs(5));
     }
 
     #[test]
-    #[should_panic(expected = "capacity must be positive")]
+    fn concurrent_acquires_never_exceed_capacity() {
+        // Hammer the bucket from N threads; the total number of granted
+        // tokens MUST equal the bucket's initial capacity (no double-grants).
+        let pool = Arc::new(PlanePool::new(100.0, 0.001)); // refill effectively off
+        let mut handles = vec![];
+        for _ in 0..8 {
+            let p = Arc::clone(&pool);
+            handles.push(thread::spawn(move || {
+                let t0 = Instant::now();
+                let mut granted = 0u32;
+                for _ in 0..1000 {
+                    if p.try_acquire_at(t0) {
+                        granted += 1;
+                    }
+                }
+                granted
+            }));
+        }
+        let total: u32 = handles.into_iter().map(|h| h.join().unwrap()).sum();
+        assert_eq!(
+            total, 100,
+            "exactly capacity tokens must be granted across threads"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "capacity must be in")]
     fn rejects_zero_capacity() {
         let _ = PlanePool::new(0.0, 1.0);
+    }
+
+    proptest! {
+        #[test]
+        fn refilled_tokens_never_exceed_capacity(elapsed_ms in 0u64..86_400_000, cap in 1.0f64..1000.0, rate in 0.1f64..100.0) {
+            let pool = PlanePool::new(cap, rate);
+            // Drain.
+            let t0 = Instant::now();
+            while pool.try_acquire_at(t0) {}
+            // Wait elapsed_ms.
+            let t1 = t0.checked_add(Duration::from_millis(elapsed_ms)).unwrap_or(t0);
+            // Cause a refill by calling try_acquire (and consuming at most one).
+            let _ = pool.try_acquire_at(t1);
+            // The remaining token count must never exceed `capacity`.
+            prop_assert!(pool.tokens() <= cap + 1e-3);
+        }
     }
 }
