@@ -25,10 +25,12 @@ use gauss_audit::{
     chain::ChainHead, sign::ReceiptSigner, sign::SignedReceipt, sign::SigningBackend,
 };
 use gauss_core::{Action, GaussError, GaussResult, TaintLabel, TurnId};
+use gauss_sag::{ApprovalDecision, ApprovalGate, DecisionTable, Outcome};
 use gauss_traits::{
     AppendAck, AppendEntry, ChainHeadSnapshot, Kernel, MemoryBackend, Provider, SandboxRequest,
     SandboxTrait,
 };
+use serde::Serialize;
 
 use crate::TurnInput;
 
@@ -45,6 +47,68 @@ pub struct TurnSummary {
     /// constructed via [`TurnEngine::with_signing`] / [`TurnEngine::with_all`]
     /// (Phase 5).
     pub receipt: Option<SignedReceipt>,
+    /// Per-action SAG decisions when the engine carries an approval gate
+    /// (Phase 7). Each entry is bundled into the canonical WAL payload so
+    /// the signed receipt covers the decision as well as the action set.
+    pub sag_decisions: Vec<SagDecisionRecord>,
+}
+
+/// One entry in [`TurnSummary::sag_decisions`].
+///
+/// The struct is `#[non_exhaustive]` so Phase-8+ can add fields (approver
+/// public key, rule trace, etc.) without breaking the trait surface.
+#[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
+pub struct SagDecisionRecord {
+    /// Tool the action would have invoked.
+    pub tool: String,
+    /// Risk band the SAG classifier returned.
+    pub risk: gauss_sag::Risk,
+    /// True iff the action proceeded (allowed or approved).
+    pub proceeded: bool,
+    /// Approver identity when a human surface handled the request.
+    pub approver: Option<String>,
+}
+
+impl SagDecisionRecord {
+    // The match below deliberately enumerates `Outcome::TimedOut` /
+    // `ApprovalDecision::Timeout` and the `#[non_exhaustive]` wildcard
+    // separately for documentation, even though their bodies are
+    // identical — silence the lint locally.
+    #[allow(clippy::match_same_arms)]
+    fn from_outcome(tool: &str, outcome: &Outcome) -> Self {
+        let (risk, proceeded, approver) = match outcome {
+            Outcome::Allow { risk } => (*risk, true, None),
+            Outcome::Denied { risk, .. } => (*risk, false, None),
+            Outcome::TimedOut => (gauss_sag::Risk::RequireApproval, false, None),
+            Outcome::Approved { decision } => match decision {
+                ApprovalDecision::Approved { approver } => (
+                    gauss_sag::Risk::RequireApproval,
+                    true,
+                    Some(approver.clone()),
+                ),
+                ApprovalDecision::Denied { approver, .. } => (
+                    gauss_sag::Risk::RequireApproval,
+                    false,
+                    Some(approver.clone()),
+                ),
+                // ApprovalDecision is `#[non_exhaustive]`; Timeout and any
+                // future variants are treated as denials so a new variant
+                // can't sneak an action past the gate.
+                _ => (gauss_sag::Risk::RequireApproval, false, None),
+            },
+            // `Outcome` is `#[non_exhaustive]`; a new variant added in a
+            // future SAG release must be triaged here. Default to "did not
+            // proceed" so the audit record is conservative.
+            _ => (gauss_sag::Risk::RequireApproval, false, None),
+        };
+        Self {
+            tool: tool.to_owned(),
+            risk,
+            proceeded,
+            approver,
+        }
+    }
 }
 
 /// Outcome of a single turn — alias retained for `SPECS.md` continuity.
@@ -62,6 +126,7 @@ pub struct TurnEngine<K, M, P> {
     provider: Arc<P>,
     sandbox: Option<Arc<dyn SandboxTrait>>,
     signer: Option<Arc<ReceiptSigner<DynSigningBackend>>>,
+    sag: Option<Arc<ApprovalGate<DecisionTable>>>,
 }
 
 impl<K, M, P> core::fmt::Debug for TurnEngine<K, M, P> {
@@ -78,6 +143,7 @@ impl<K, M, P> core::fmt::Debug for TurnEngine<K, M, P> {
                 "signer",
                 &self.signer.as_ref().map_or("<None>", |_| "<Some>"),
             )
+            .field("sag", &self.sag.as_ref().map_or("<None>", |_| "<Some>"))
             .finish()
     }
 }
@@ -118,6 +184,7 @@ where
             provider,
             sandbox: None,
             signer: None,
+            sag: None,
         }
     }
 
@@ -135,6 +202,7 @@ where
             provider,
             sandbox: Some(sandbox),
             signer: None,
+            sag: None,
         }
     }
 
@@ -153,6 +221,7 @@ where
             provider,
             sandbox: None,
             signer: Some(signer),
+            sag: None,
         }
     }
 
@@ -171,7 +240,19 @@ where
             provider,
             sandbox: Some(sandbox),
             signer: Some(signer),
+            sag: None,
         }
+    }
+
+    /// Attach a Phase-7 Supervised-Autonomy-Gradient gate. Tool actions are
+    /// classified after admission; `Auto` / `Notify` proceed directly,
+    /// `RequireApproval` round-trips through the approval surface, and
+    /// `Deny` / human-denied / timed-out actions short-circuit the turn
+    /// with the corresponding [`GaussError`] variant.
+    #[must_use]
+    pub fn with_sag(mut self, gate: Arc<ApprovalGate<DecisionTable>>) -> Self {
+        self.sag = Some(gate);
+        self
     }
 
     /// Drive a single turn through the full Phase-2 lifecycle.
@@ -194,11 +275,38 @@ where
             self.admit_action(a, taint)?;
         }
 
+        // -- 3a. SAG gate (Phase 7) -------------------------------------
+        // For every tool action, ask the SAG classifier; if the band is
+        // `Deny`, return `AutonomyDenied`; if `RequireApproval`, round-trip
+        // through the approval surface and honour the verdict; on
+        // `AutonomyApprovalTimeout` short-circuit the turn before the WAL
+        // append so denied / timed-out actions leave no chain entry.
+        let mut sag_decisions: Vec<SagDecisionRecord> = Vec::new();
+        if let Some(gate) = &self.sag {
+            for a in &actions {
+                if let Action::Tool(t) = a {
+                    let outcome = gate.decide_action(input.id, t, taint).await?;
+                    sag_decisions.push(SagDecisionRecord::from_outcome(&t.tool.0, &outcome));
+                    let _ = ApprovalGate::<DecisionTable>::check(outcome).map_err(|e| {
+                        tracing::warn!(
+                            turn_id = ?input.id,
+                            tool = %t.tool.0,
+                            error = %e,
+                            "SAG gate refused tool action"
+                        );
+                        e
+                    })?;
+                }
+            }
+        }
+
         // -- 4. WAL barrier (A1) ----------------------------------------
-        // Canonicalise the action set into a deterministic byte payload so
-        // the chain digest depends on the structural content, not on any
-        // serialiser non-determinism.
-        let payload = canonicalise_actions(&actions)?;
+        // Canonicalise the action set + SAG decisions into a deterministic
+        // byte payload so the chain digest depends on the structural
+        // content, not on any serialiser non-determinism. Bundling the
+        // decisions here means the Phase-5 signed receipt covers the
+        // approval verdict alongside the action set (paper §XI.D).
+        let payload = canonicalise_turn(&actions, &sag_decisions)?;
         // Capture the chain head BEFORE the append so the signed receipt's
         // `prev_head` is consistent with the chain link the backend produces.
         let prev_head = self.memory.chain_head().await?;
@@ -262,6 +370,7 @@ where
             action_count: actions.len(),
             chain_head: ack.head,
             receipt,
+            sag_decisions,
         })
     }
 
@@ -281,6 +390,22 @@ where
 fn canonicalise_actions(actions: &[Action]) -> GaussResult<Vec<u8>> {
     serde_json::to_vec(actions)
         .map_err(|e| GaussError::Internal(format!("canonicalise_actions: {e}")))
+}
+
+/// Phase-7 canonical payload: action set + SAG decisions, in a deterministic
+/// order. Falls back to the Phase-2 actions-only payload when no decisions
+/// are present, so unsigned and pre-Phase-7 engines produce byte-identical
+/// chain entries.
+fn canonicalise_turn(actions: &[Action], decisions: &[SagDecisionRecord]) -> GaussResult<Vec<u8>> {
+    if decisions.is_empty() {
+        return canonicalise_actions(actions);
+    }
+    let envelope = serde_json::json!({
+        "actions": actions,
+        "sag": decisions,
+    });
+    serde_json::to_vec(&envelope)
+        .map_err(|e| GaussError::Internal(format!("canonicalise_turn: {e}")))
 }
 
 #[inline]

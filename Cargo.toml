@@ -10,6 +10,7 @@ members = [
     "crates/gauss-provider",
     "crates/gauss-sandbox",
     "crates/gauss-hwca",
+    "crates/gauss-sag",
     "crates/gauss-conformance",
 ]
 
@@ -32,6 +33,7 @@ gauss-audit     = { path = "crates/gauss-audit",     version = "0.0.1" }
 gauss-provider  = { path = "crates/gauss-provider",  version = "0.0.1" }
 gauss-sandbox   = { path = "crates/gauss-sandbox",   version = "0.0.1" }
 gauss-hwca      = { path = "crates/gauss-hwca",      version = "0.0.1" }
+gauss-sag       = { path = "crates/gauss-sag",       version = "0.0.1" }
 
 # Async
 async-trait = "0.1"

@@ -15,7 +15,7 @@
 
 pub mod engine;
 
-pub use engine::{DynSigningBackend, TurnEngine, TurnOutcome, TurnSummary};
+pub use engine::{DynSigningBackend, SagDecisionRecord, TurnEngine, TurnOutcome, TurnSummary};
 
 use gauss_core::{GaussError, GaussResult, Observation, TurnId};
 
@@ -82,6 +82,7 @@ impl Turn<state::Generate> {
             action_count: 0,
             chain_head: gauss_traits::ChainHeadSnapshot::GENESIS,
             receipt: None,
+            sag_decisions: Vec::new(),
         })
     }
 }

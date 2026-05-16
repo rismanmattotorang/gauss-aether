@@ -16,6 +16,8 @@ gauss-core   = { workspace = true }
 gauss-kernel = { workspace = true }
 gauss-traits = { workspace = true }
 gauss-audit  = { workspace = true }
+gauss-sag    = { workspace = true }
+serde        = { workspace = true }
 serde_json   = { workspace = true }
 thiserror    = { workspace = true }
 tracing      = { workspace = true }
