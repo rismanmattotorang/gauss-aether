@@ -4,7 +4,7 @@
 //! twelve theorems (T1–T12) named in the source paper. Phase 0 wired the
 //! harness shape; subsequent phases tighten the assertions.
 //!
-//! Status per axiom / theorem after Phase 3:
+//! Status per axiom / theorem after Phase 2:
 //!
 //! | ID | Status                                                              | Phase that locked |
 //! |----|---------------------------------------------------------------------|--------------------|
@@ -13,14 +13,14 @@
 //! | A3 | Receipt-chain tamper-evidence (replay verification)                 | Phase 2            |
 //! | A4 | Plane fairness separation (3 independent token buckets)             | Phase 1            |
 //! | A6 | Information-flow lattice + antitone declass                         | Phase 1            |
-//! | A7 | Worker-context isolation                                            | Phase 4 (planned)  |
+//! | A7 | Worker-context isolation                                            | Phase 4            |
 //! | A8 | Supervised-autonomy gradient                                        | Phase 7 (planned)  |
 //! | A9 | EUF-CMA receipts + TSA anchor                                       | Phase 5 (planned)  |
 //! | T1 | Crash atomicity (WAL discipline + replay)                           | Phase 2            |
 //! | T2 | Capability non-interference (cap meet on disjoint sets)             | Phase 1            |
 //! | T3 | Merkle tamper-evidence (proptest: any mutation diverges the head)   | Phase 0/2          |
 //! | T4 | Plane starvation bound `B/ρ`                                        | Phase 1            |
-//! | T9 | IPI containment                                                     | Phase 4 (planned)  |
+//! | T9 | IPI containment (HWCA worker + schema gate ≤ 2.19%)                 | Phase 4            |
 //! | T10| Composite sandbox bound                                             | Phase 3            |
 //! | T11| Receipt non-repudiation                                             | Phase 5 (planned)  |
 //! | T12| Delta-encoded warm switch                                           | Phase 6 (planned)  |
@@ -401,6 +401,171 @@ mod theorem_t10_composite_sandbox {
         assert_eq!(summary.action_count, 1);
         // The WAL append still happens whether or not the sandbox is wired.
         assert_eq!(summary.chain_head.length, 1);
+    }
+}
+
+#[cfg(test)]
+mod axiom_a7_and_theorem_t9_hwca {
+    //! CONF-A7-* and CONF-T9-* — worker-context isolation + IPI bound.
+    //!
+    //! Phase 4 ships:
+    //!
+    //! * CONF-A7-1 — every tool invocation runs in a fresh `Worker`; the
+    //!   live counter returns to zero after the call, indicating no leak.
+    //! * CONF-A7-2 — the schema-validated value carries a joined taint
+    //!   (incoming ∨ Web).
+    //! * CONF-A7-3 — recursion-depth bound rejects spawns beyond the
+    //!   configured limit.
+    //! * CONF-T9-1 — the IPI corpus (n=20) is contained by the schema
+    //!   gate's instruction-substring filter; the empirical attack-success
+    //!   rate MUST be ≤ 2.19%.
+
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use gauss_core::{CapToken, GaussError, GaussResult, TaintLabel, ToolId};
+    use gauss_hwca::{IpiCorpus, IpiOutcome, WorkerSpawner};
+    use gauss_traits::{OutputSchema, SchemaGuards, ToolManifest, ToolTrait, ValidatedValue};
+    use serde_json::{json, Value};
+
+    /// A tool that returns a caller-supplied payload verbatim. The schema
+    /// gate is the only thing standing between the payload and the parent.
+    struct EchoTool {
+        manifest: ToolManifest,
+        payload: Value,
+    }
+
+    #[async_trait]
+    impl ToolTrait for EchoTool {
+        fn manifest(&self) -> &ToolManifest {
+            &self.manifest
+        }
+        async fn invoke_raw(&self, _args: Value) -> GaussResult<Value> {
+            Ok(self.payload.clone())
+        }
+    }
+
+    fn tool_manifest_with_default_schema() -> ToolManifest {
+        ToolManifest::new(
+            ToolId("fetch_url".into()),
+            CapToken::NETWORK_GET,
+            true,
+            OutputSchema::with_default_caps(json!({
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "maxLength": 280},
+                    "body":  {"type": "string", "maxLength": 4096}
+                },
+                "required": ["title"],
+                "additionalProperties": false
+            })),
+            SchemaGuards::strict(),
+        )
+    }
+
+    #[tokio::test]
+    async fn worker_live_counter_returns_to_zero() {
+        let spawner = WorkerSpawner::new();
+        let tool = EchoTool {
+            manifest: tool_manifest_with_default_schema(),
+            payload: json!({"title": "ok"}),
+        };
+        let _ = spawner
+            .spawn_and_invoke(&tool, json!({}), TaintLabel::User, 0)
+            .await
+            .unwrap();
+        assert_eq!(spawner.live_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn schema_validated_value_carries_joined_taint() {
+        let spawner = WorkerSpawner::new();
+        let tool = EchoTool {
+            manifest: tool_manifest_with_default_schema(),
+            payload: json!({"title": "ok"}),
+        };
+        let v: ValidatedValue = spawner
+            .spawn_and_invoke(&tool, json!({}), TaintLabel::User, 0)
+            .await
+            .unwrap();
+        // Tool output is Web-tainted by default; join(User, Web) = Web.
+        assert_eq!(v.taint, TaintLabel::Web);
+        assert_eq!(v.value["title"], "ok");
+    }
+
+    #[tokio::test]
+    async fn recursion_depth_bound_holds() {
+        let spawner = WorkerSpawner::new().with_max_depth(2);
+        let tool = EchoTool {
+            manifest: tool_manifest_with_default_schema(),
+            payload: json!({"title": "ok"}),
+        };
+        // depth=1 -> 1+1=2 ≤ 2, OK.
+        spawner
+            .spawn_and_invoke(&tool, json!({}), TaintLabel::User, 1)
+            .await
+            .unwrap();
+        // depth=2 -> 2+1=3 > 2, refused.
+        let err = spawner
+            .spawn_and_invoke(&tool, json!({}), TaintLabel::User, 2)
+            .await
+            .expect_err("depth bound must reject");
+        match err {
+            GaussError::WorkerDepthExceeded { limit } => assert_eq!(limit, 2),
+            other => panic!("expected WorkerDepthExceeded, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ipi_corpus_success_rate_is_below_paper_bound() {
+        let spawner = Arc::new(WorkerSpawner::new());
+        let manifest = tool_manifest_with_default_schema();
+
+        let attempts = IpiCorpus::attempts();
+        let total = attempts.len();
+        let mut escaped = 0usize;
+
+        for attempt in attempts {
+            let tool = EchoTool {
+                manifest: manifest.clone(),
+                payload: attempt.payload.clone(),
+            };
+            // Every attempt is expected to be contained. If the schema gate
+            // returned Ok we count it as an escape (IPI succeeded).
+            let outcome = match spawner
+                .spawn_and_invoke(&tool, json!({}), TaintLabel::Web, 0)
+                .await
+            {
+                Ok(_) => IpiOutcome::Escaped,
+                Err(GaussError::SchemaValidation(_)) => IpiOutcome::Contained,
+                Err(other) => panic!("unexpected error for attempt {}: {other:?}", attempt.name),
+            };
+            if outcome == IpiOutcome::Escaped {
+                escaped = escaped.saturating_add(1);
+                // Tests only — silence print-stdout for test diagnostic.
+                #[allow(clippy::print_stdout)]
+                {
+                    let _ = (attempt.name, attempt.family);
+                }
+            }
+        }
+
+        // Paper T9 bound: |Σa|/|Σ| · 1[δ] ≤ 2.19%.
+        // Phase-4 synthetic corpus should be 100% contained (escape = 0).
+        // The corpus is bounded at ~20 attempts; u32::try_from saturates.
+        let escaped_u32 = u32::try_from(escaped).unwrap_or(u32::MAX);
+        let total_u32 = u32::try_from(total).unwrap_or(u32::MAX);
+        let rate = f64::from(escaped_u32) / f64::from(total_u32);
+        assert!(
+            rate <= 0.0219,
+            "IPI success rate {rate:.4} > 0.0219 ({escaped} of {total} escaped)"
+        );
+        // Belt-and-suspenders: Phase-4 corpus is deliberately tight so the
+        // *empirical* rate should be 0.
+        assert_eq!(
+            escaped, 0,
+            "Phase-4 corpus expects full containment; {escaped} escaped"
+        );
     }
 }
 

@@ -253,12 +253,7 @@ pub struct SandboxRequest {
 impl SandboxRequest {
     /// Construct a request.
     #[must_use]
-    pub const fn new(
-        tool: ToolId,
-        cap: CapToken,
-        args: serde_json::Value,
-        stdin: Vec<u8>,
-    ) -> Self {
+    pub const fn new(tool: ToolId, cap: CapToken, args: serde_json::Value, stdin: Vec<u8>) -> Self {
         Self {
             tool,
             cap,

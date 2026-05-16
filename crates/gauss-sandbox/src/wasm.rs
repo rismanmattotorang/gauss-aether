@@ -145,6 +145,8 @@ mod tests {
         //   (func $main (result i32)
         //     i32.const 42)
         //   (export "main" (func $main)))
+        //
+        // Hand-assembled WAT-equivalent bytes:
         wat_to_wasm(
             r#"
             (module
@@ -158,12 +160,38 @@ mod tests {
     /// otherwise embed a precompiled module. wasmi 0.46 does not ship WAT
     /// support directly, so we keep a precompiled blob.
     fn wat_to_wasm(_wat: &str) -> Vec<u8> {
+        // Precompiled output of the WAT above.
+        // (module
+        //   (func (result i32) i32.const 42)
+        //   (export "main" (func 0)))
         vec![
-            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+            0x00, 0x61, 0x73, 0x6d, // magic
+            0x01, 0x00, 0x00, 0x00, // version
+            // Type section: 1 type, () -> (i32)
             0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f,
-            0x03, 0x02, 0x01, 0x00,
+            // Function section: 1 function, type 0
+            0x03, 0x02, 0x01, 0x00, // Export section: "main" -> func 0
             0x07, 0x08, 0x01, 0x04, 0x6d, 0x61, 0x69, 0x6e, 0x00, 0x00,
+            // Code section: 1 function, i32.const 42 + end
             0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, 0x2a, 0x0b,
+        ]
+    }
+
+    /// An infinite-loop module to exercise the fuel-exhaustion path.
+    fn infinite_loop_module() -> Vec<u8> {
+        // (module
+        //   (func $main (loop $L br $L))
+        //   (export "main" (func $main)))
+        vec![
+            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // Type: () -> ()
+            0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // Function: 1 func of type 0
+            0x03, 0x02, 0x01, 0x00, // Export: "main" -> func 0
+            0x07, 0x08, 0x01, 0x04, 0x6d, 0x61, 0x69, 0x6e, 0x00, 0x00,
+            // Code: loop (block) br 0 end
+            0x0a, 0x09, 0x01, 0x07, 0x00, 0x03, 0x40, // loop (void)
+            0x0c, 0x00, // br 0
+            0x0b, // end loop
+            0x0b, // end func
         ]
     }
 
@@ -180,27 +208,37 @@ mod tests {
             ))
             .await
             .unwrap();
+        // Note: the `main` export returns () in our infinite-loop test
+        // and i32 in the return-42 test. We exposed only the i32 variant in
+        // the executor; the return-42 path should yield 42 verbatim.
         assert_eq!(outcome.exit_code, 42);
         assert_eq!(outcome.layers_invoked, vec![SandboxLayer::Wasm]);
     }
 
     #[tokio::test]
     async fn fuel_exhaustion_traps() {
+        let bytes = infinite_loop_module();
+        // Use only the i32-returning fast-path skip for this test: the module
+        // exports `main` with signature `() -> ()`, which fails the typed-func
+        // lookup, so the executor returns 0 without ever entering the loop.
+        // To actually test fuel exhaustion we lower the budget to a small
+        // number AND need a module whose `main` returns i32 and contains an
+        // infinite loop. Hand-roll one:
         // (module (func $main (result i32) (loop $L br $L) i32.const 0)
         //   (export "main" (func 0)))
         let infinite_i32 = vec![
-            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-            0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f,
-            0x03, 0x02, 0x01, 0x00,
-            0x07, 0x08, 0x01, 0x04, 0x6d, 0x61, 0x69, 0x6e, 0x00, 0x00,
-            0x0a, 0x0b, 0x01, 0x09, 0x00,
-            0x03, 0x40, 0x0c, 0x00, 0x0b,
-            0x41, 0x00,
-            0x0b,
+            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60, 0x00, 0x01,
+            0x7f, // () -> i32
+            0x03, 0x02, 0x01, 0x00, 0x07, 0x08, 0x01, 0x04, 0x6d, 0x61, 0x69, 0x6e, 0x00, 0x00,
+            0x0a, 0x0b, 0x01, 0x09, 0x00, 0x03, 0x40, 0x0c, 0x00, 0x0b, // loop / br 0 / end
+            0x41, 0x00, // i32.const 0
+            0x0b, // end func
         ];
+        // Silence the "unused" warning on `bytes` from the earlier helper.
+        let _ = bytes;
         let sb = WasmSandbox::from_bytes(&infinite_i32)
             .expect("module parses")
-            .with_fuel(64);
+            .with_fuel(64); // tiny budget — must trap before the loop completes
         let err = sb
             .exec(SandboxRequest::new(
                 ToolId("loop".into()),

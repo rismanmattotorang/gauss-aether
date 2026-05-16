@@ -84,11 +84,12 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::missing_const_for_fn)]
     fn tool_action_default_reversibility_is_explicit() {
         // The struct has no Default impl, by design — reversibility must be
         // declared rather than implied. This test exists to make sure that
         // accidental Default derives don't sneak in.
-        fn assert_no_default<T>()
+        const fn assert_no_default<T>()
         where
             T: Sized,
         {

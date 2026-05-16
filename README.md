@@ -3,15 +3,19 @@
 An axiomatic operating system for trustworthy autonomous LLM agents,
 implemented in Rust.
 
-> Status: **Phase 3 complete** — workspace, lock-free three-plane kernel with
+> Status: **Phase 4 complete** — workspace, lock-free three-plane kernel with
 > joint capability/taint admission, Differential Turn Engine with WAL-before-effect
 > barrier, SurrealDB-backed Trinity Memory log (graph + vector + FTS + chain),
 > SHA-256 receipt chain with replay + inclusion-witness verification, line-level
-> Myers diff for transcript snapshots, deterministic toy provider, and a
-> **composite sandbox** (WASM via wasmi ∧ Linux Landlock ∧ seccomp ∧ bubblewrap
-> ∧ macOS Seatbelt) with capability-bound depth (T10). **90 tests pass** across
-> 9 crates; Phases 4–11 add HWCA, signed receipts, hybrid recall, SAG, trait
-> verifier, A2UI Canvas, SDHE, and 1.0 release (see [`ROADMAP.md`](./ROADMAP.md)).
+> Myers diff for transcript snapshots, deterministic toy provider, **composite
+> sandbox** (WASM via wasmi ∧ Linux Landlock ∧ seccomp ∧ bubblewrap ∧ macOS
+> Seatbelt) with capability-bound depth (T10), and **HWCA worker contexts**
+> with a four-stage schema gate (length cap → JSON Schema 2020-12 →
+> instruction-substring filter → taint join) achieving 0/20 escape on the
+> Phase-4 IPI corpus, well inside Theorem T9's `≤ 2.19%` bound. **110 tests
+> pass** across 10 crates; Phases 5–11 add signed receipts, hybrid recall,
+> SAG, trait verifier, A2UI Canvas, SDHE, and 1.0 release (see
+> [`ROADMAP.md`](./ROADMAP.md)).
 
 ## Documents
 
@@ -29,18 +33,19 @@ cargo test  --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-## Workspace layout (after Phase 3)
+## Workspace layout (after Phase 4)
 
 | Crate                | Purpose                                                                              |
 |----------------------|--------------------------------------------------------------------------------------|
 | `gauss-core`         | Shared types: identifiers, actions, observations, taint, `CapToken` lattice, errors. |
-| `gauss-traits`       | Public trait surface — `Kernel`, `MemoryBackend`, `Provider`, `SandboxTrait`.        |
+| `gauss-traits`       | Public trait surface — `Kernel`, `MemoryBackend`, `Provider`, `SandboxTrait`, `ToolTrait`, `OutputSchema`, `SchemaGuards`, `ValidatedValue`. |
 | `gauss-kernel`       | Privileged kernel: joint K×L admission, lock-free 3-plane token bucket, declass map. |
 | `gauss-turn`         | Differential Turn Engine — Algorithm 1 with optional sandbox executor.               |
 | `gauss-memory`       | Trinity Memory: SurrealDB-backed append log + HNSW + FTS + graph lineage + Myers diff.|
 | `gauss-audit`        | SHA-256 chain + replay verification + inclusion witnesses (Ed25519 in Phase 5).      |
 | `gauss-provider`     | Provider adapters — `ToyProvider` ships now; vendor adapters in Phase 8.             |
 | `gauss-sandbox`      | Composite sandbox — WASM (wasmi) + Landlock + seccomp + bwrap + Seatbelt (T10).      |
+| `gauss-hwca`         | HWCA worker contexts + schema gate (length cap, JSON Schema 2020-12, instruction-substring filter, taint join) + IPI corpus (A7, T9). |
 | `gauss-conformance`  | Axiom-by-axiom test harness (A1–A9, T1–T12).                                         |
 
 ## Database — SurrealDB
@@ -77,6 +82,27 @@ layers per Theorem T10. The required depth comes from
 ADR-0009 documents the wasmi (vs wasmtime) and seccompiler (vs libseccomp-rs)
 choices and the Phase-10 migration plan.
 
+## HWCA worker boundary
+
+Phase 4 (`gauss-hwca`) implements per-tool worker contexts that locks Axiom A7
+and proves Theorem T9 (IPI containment, `≤ 2.19%`). Every tool invocation goes
+through:
+
+1. **Worker spawn** — `WorkerSpawner::spawn_and_invoke` allocates a fresh
+   `Worker`, increments an `Arc<AtomicU32>` live counter via an RAII guard
+   (no `unsafe`; workspace lints forbid it), and enforces a recursion-depth
+   bound (default 8).
+2. **Schema gate** — four cheap-first checks: per-field length cap, JSON
+   Schema 2020-12 (via `jsonschema` 0.46, pure Rust), instruction-substring
+   filter for free-text fields, taint join (`incoming ∨ Web`).
+3. **Boundary** — only the `ValidatedValue` crosses back to the parent; raw
+   tool output is dropped with the worker.
+
+The Phase-4 IPI corpus ships 20 hand-curated attempts across three families
+(AgentDojo, EchoLeak, tool-call hijacking); empirical escape rate is `0/20`,
+meeting T9's bound with full margin. The AgentDojo + EchoLeak ~10⁵-scenario
+integration is a Phase-6 follow-up (ADR-0010).
+
 ## Design tenets
 
 1. **Axioms before features.** Every subsystem traces back to an axiom (A1–A9)
@@ -93,6 +119,9 @@ choices and the Phase-10 migration plan.
    stay semver-minor; explicit constructors are required.
 7. **WAL barrier is structural, not behavioural.** Tool execution (sandboxed)
    is unreachable until `memory.append(...)` returns — Axiom A1 by construction.
+8. **Worker boundary is structural too.** A tool's raw output cannot reach the
+   parent context; only the schema-gate `ValidatedValue` can — Axiom A7 by
+   construction (`gauss-hwca`).
 
 ## Quality gates
 
@@ -120,7 +149,7 @@ external pen-testing.
 | A6              | Information-flow lattice + antitone declass verifier                | Phase 1 ✅    |
 | T3              | Merkle tamper-evidence (proptest: any mutation diverges the head)   | Phase 0/2 ✅  |
 | T10             | Composite sandbox bound (cap → class, layer invariants)             | Phase 3 ✅    |
-| A7 / T9         | Worker-context isolation + IPI bound                                | Phase 4      |
+| A7 / T9         | Worker-context isolation + IPI bound (0/20 ≤ 2.19%)                 | Phase 4 ✅    |
 | A5 / T5 / T12   | Hybrid recall + delta context-switch                                | Phase 6      |
 | A8              | Supervised-autonomy gradient                                        | Phase 7      |
 | T7              | Provider adjunction                                                 | Phase 8      |

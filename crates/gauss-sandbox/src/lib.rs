@@ -4,13 +4,13 @@
 //! confinement layers (paper §IX, Theorem T10):
 //!
 //! ```text
-//!  ┌────────────────────────────────────────────────────────┐
+//!  ┌─────────────────────────────────────────────────────────────┐
 //!  │ L1  WASM (wasmi; fuel + step-budget interruption)           │
 //!  │ L2  Linux Landlock 5.13+ / macOS Seatbelt                   │
 //!  │ L3a Linux user namespaces (via bubblewrap subprocess)       │
 //!  │ L3b Linux seccomp filter                                    │
 //!  │ L4  TEE attestation (Phase 10)                              │
-//!  └────────────────────────────────────────────────────────┘
+//!  └─────────────────────────────────────────────────────────────┘
 //! ```
 //!
 //! The Phase-3 [`CompositeSandbox`] composes the available layers per

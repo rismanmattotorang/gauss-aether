@@ -139,8 +139,8 @@ fn check_string_lengths(value: &Value, path: &str, max: usize) -> Result<(), Sch
             }
             Ok(())
         }
-        Value::Object(map) => {
-            for (k, v) in map {
+        Value::Object(obj) => {
+            for (k, v) in obj {
                 check_string_lengths(v, &format!("{path}.{k}"), max)?;
             }
             Ok(())
@@ -162,8 +162,8 @@ fn check_no_instruction_substrings(value: &Value, path: &str) -> Result<(), Sche
             }
             Ok(())
         }
-        Value::Object(map) => {
-            for (k, v) in map {
+        Value::Object(obj) => {
+            for (k, v) in obj {
                 check_no_instruction_substrings(v, &format!("{path}.{k}"))?;
             }
             Ok(())

@@ -34,10 +34,10 @@ pub const fn bootstrap_ddl() -> &'static str {
 }
 
 const BOOTSTRAP_DDL: &str = r#"
--- ═════════════════════════════════════════════════════════════════════════════
+-- ════════════════════════════════════════════════════════════════════════
 -- Gauss-Aether Trinity Memory Substrate — SurrealQL bootstrap.
 -- One append-only event log, derived indices, graph lineage. SPECS §8.
--- ═════════════════════════════════════════════════════════════════════════════
+-- ════════════════════════════════════════════════════════════════════════
 
 -- 1. Append-only turn record (SPECS §8.1).
 DEFINE TABLE turn_record SCHEMAFULL PERMISSIONS NONE;

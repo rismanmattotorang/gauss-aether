@@ -6,8 +6,6 @@
 //! installed, the layer fails with a clear diagnostic so the operator can
 //! either install it or drop the cap that would require this layer.
 
-#![cfg(target_os = "linux")]
-
 use async_trait::async_trait;
 use gauss_core::{CapToken, GaussError, GaussResult};
 use gauss_traits::{SandboxClass, SandboxLayer, SandboxOutcome, SandboxRequest, SandboxTrait};

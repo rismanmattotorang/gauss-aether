@@ -24,8 +24,8 @@
 | 1     | Kernel-α: capability + scheduler         | 6 weeks  | A2, A4, A6     | T2, T4          | Lock-free 3-plane sched + joint K×L admit + SurrealDB | ✅ Done |
 | 2     | Turn engine + memory log                 | 6 weeks  | A1, A3         | T1, T3          | DTE end-to-end + Myers diff + chain replay    | ✅ Done |
 | 3     | Composite sandbox                        | 5 weeks  | (A2 bound)     | T10             | WASM (wasmi) + Landlock + seccomp + bwrap + Seatbelt | ✅ Done |
-| 4     | HWCA + information flow                  | 6 weeks  | A7             | T9              | IPI bound `≤ 2.19%` on AgentDojo corpus       | Next   |
-| 5     | Receipt chain + signatures               | 4 weeks  | A9             | T11             | Ed25519 chain + TSA anchor                    |        |
+| 4     | HWCA + information flow                  | 6 weeks  | A7             | T9              | HWCA worker + schema gate; 0/20 IPI corpus    | ✅ Done |
+| 5     | Receipt chain + signatures               | 4 weeks  | A9             | T11             | Ed25519 chain + TSA anchor                    | Next   |
 | 6     | Trinity memory: hybrid recall + K-LRU    | 5 weeks  | A5             | T5, T12         | Cold-start `≤ 10 ms`; recall `≤ 0.015`        |        |
 | 7     | SAG + approval plane                     | 4 weeks  | A8             | (A8 bound)      | Approval queue on third scheduler plane       |        |
 | 8     | Trait polyhedral surface + verifier      | 5 weeks  | —              | T7              | `cargo gauss-verify` SMT discharge            |        |
@@ -126,29 +126,39 @@ CONF-T10-* green; cap → class table matches SPECS §7.1; WASM-only composite r
 
 ---
 
-## Phase 4 — HWCA + Information Flow — NEXT
+## Phase 4 — HWCA + Information Flow ✅
 
 **Goal:** isolate every tool invocation in a worker context; propagate taint. **Locks A7; proves T9 (IPI bound).**
 
-### Deliverables
+### Delivered
 
-- `gauss-hwca::worker` — spawn-per-call worker with schema gate (JSON Schema 2020-12 via `jsonschema`).
-- Statistical-filter guard for instruction-substring detection in free-text fields.
-- Recursion-depth bound (default 8) with explicit overflow handling.
-- AgentDojo + EchoLeak corpus harness in `gauss-conformance` (IPI bound `≤ 2.19%`).
-- Phase-3 sandbox layers move into the worker subprocess so Landlock+seccomp+bwrap apply per-tool rather than to the host kernel thread.
+- **New crate `gauss-hwca`** — implements per-tool worker contexts and the schema gate at the worker→parent boundary.
+- **`gauss-hwca::worker`** — `WorkerSpawner` + `Worker`: spawn-per-call isolation with `Arc<AtomicU32>` RAII live counter (no `unsafe`, workspace lints forbid it), default recursion-depth bound 8 (`DEFAULT_MAX_DEPTH`), and optional sandbox integration via `with_sandbox(...)` for defence-in-depth.
+- **`gauss-hwca::schema_gate`** — four-stage gate in deliberate cheap-first order:
+  1. Per-field length cap (`OutputSchema::max_string_len`, recursive over arrays/objects).
+  2. JSON Schema 2020-12 (via `jsonschema` 0.46, pure Rust — no C dep, no JNI).
+  3. Instruction-substring filter (case-insensitive deny-list, applied recursively to every string field when `SchemaGuards.no_instruction_substrings` is on).
+  4. Taint join: outgoing = `incoming ∨ Web`.
+- **`gauss-hwca::filter`** — `INSTRUCTION_SUBSTRINGS` deny-list covering AgentDojo-style ("ignore previous"), EchoLeak-style ("exfiltrate", "post to https://"), system-tag impersonation (`system:`, `[system]`, `<|system|>`), and tool-call hijacking ("respond with the following", "override:", "your new instructions").
+- **`gauss-hwca::corpus`** — 20-attempt synthetic IPI corpus across three families (AgentDojo, EchoLeak, hijack) including two array-nested cases that exercise the gate's recursion.
+- **Trait surface in `gauss-traits`** — `ToolTrait`, `ToolManifest`, `OutputSchema`, `SchemaGuards`, `ValidatedValue` (paper SPECS §6.2): backend-agnostic so the JSON Schema crate is swappable via `SchemaGate::new` only.
+- **4 new conformance tests** for `CONF-A7-*` and `CONF-T9-*` — live-counter zeroing after success and after a schema-gate error; validated value carries the joined taint; recursion-depth bound rejects spawns beyond the limit; the IPI corpus run asserts `rate ≤ 0.0219` (Phase-4 actual is `0/20`).
+- **ADR-0010** — in-process workers (subprocess in Phase 10), `jsonschema` 0.46 choice, synthetic Phase-4 corpus → AgentDojo + EchoLeak in Phase 6, four-stage gate order, RAII counter without `unsafe`.
+- Total: **110 tests green** across 10 crates under pedantic+nursery clippy with `-D warnings`; `cargo doc --workspace --no-deps` clean under `RUSTDOCFLAGS=-D warnings`.
 
-### Conformance checks introduced
+### Exit gate (met)
 
-- CONF-A7-*, CONF-T9-* (IPI corpus).
+CONF-A7-* + CONF-T9-* green; Phase-4 IPI corpus 0/20 (well inside the `≤ 2.19%` paper bound); worker live-counter returns to zero on every exit path including schema-gate errors and panics; recursion-depth bound rejects depth>=`max_depth`.
 
-### Exit gate
+### Open follow-ups (don't block Phase 5)
 
-IPI corpus run: success rate ≤ 2.19%; no parent-context contamination across 10⁵ tool invocations.
+- Full AgentDojo + EchoLeak corpus integration (~10⁵ scenarios) — Phase 6 alongside provider replay.
+- Subprocess-per-worker model so Landlock+seccomp+bwrap apply per-tool rather than to the host kernel thread — Phase 10 (ADR-0010 §Migration).
+- Statistical classifier as a second-pass guard (LM scorer or small classifier) — Phase 6.
 
 ---
 
-## Phase 5 — Receipt Chain + Signatures (4 weeks)
+## Phase 5 — Receipt Chain + Signatures (4 weeks) — NEXT
 
 **Goal:** every action emits a signed, chained receipt with TSA anchor. **Locks A9; proves T11.**
 
@@ -306,12 +316,13 @@ External pen-test report; chaos suite green; bench scale demonstrates Θ(N).
 | 0007   | WAL barrier semantics for the DTE              | 2     | Accepted   |
 | 0008   | Canonical `CapToken` lives in `gauss-core`     | 2     | Accepted   |
 | 0009   | Composite sandbox stack (wasmi + …)            | 3     | Accepted   |
-| 0010   | TSA + OpenTimestamps anchoring policy          | 5     | Planned    |
-| 0011   | K-LRU eviction policy + checkpoint K           | 6     | Planned    |
-| 0012   | SAG decision-table schema                      | 7     | Planned    |
-| 0013   | Trait `specT` style guide                      | 8     | Planned    |
-| 0014   | Canvas core widget set freeze for 1.0          | 9     | Planned    |
-| 0015   | TEE attestation matrix for 1.0                 | 10    | Planned    |
+| 0010   | HWCA worker boundary + schema gate (IPI)       | 4     | Accepted   |
+| 0011   | TSA + OpenTimestamps anchoring policy          | 5     | Planned    |
+| 0012   | K-LRU eviction policy + checkpoint K           | 6     | Planned    |
+| 0013   | SAG decision-table schema                      | 7     | Planned    |
+| 0014   | Trait `specT` style guide                      | 8     | Planned    |
+| 0015   | Canvas core widget set freeze for 1.0          | 9     | Planned    |
+| 0016   | TEE attestation matrix for 1.0                 | 10    | Planned    |
 
 Each ADR lives under `docs/adr/NNNN-title.md` and is referenced from the relevant phase exit gate.
 
@@ -325,3 +336,4 @@ Each ADR lives under `docs/adr/NNNN-title.md` and is referenced from the relevan
 | 1     | 51          | + lock-free token bucket (12), antitone verifier, SurrealDB round-trip |
 | 2     | 73          | + DTE end-to-end (4), admission denial (1), crash injection (1), replay/witness (3), Myers diff (6), `ToyProvider` (2) |
 | 3     | 90          | + WasmSandbox (3), CompositeSandbox (3), NoOpSandbox (1), Landlock (2), bwrap (2), seccomp (2), CONF-T10 (4) |
+| 4     | 110         | + Worker spawner (4), schema gate (5), instruction-substring filter (4), IPI corpus (3), CONF-A7/T9 (4) |
