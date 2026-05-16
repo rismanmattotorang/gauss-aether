@@ -1,0 +1,27 @@
+[package]
+name        = "gauss-hwca"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+description = "Hierarchical Worker-Context Architecture — per-tool worker isolation, schema gate, IPI containment (A7, T9)."
+
+[lints]
+workspace = true
+
+[dependencies]
+gauss-core    = { workspace = true }
+gauss-traits  = { workspace = true }
+gauss-sandbox = { workspace = true }
+async-trait   = { workspace = true }
+jsonschema    = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+thiserror     = { workspace = true }
+tokio         = { workspace = true, features = ["sync", "rt", "macros"] }
+tracing       = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

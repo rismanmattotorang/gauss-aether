@@ -9,6 +9,7 @@ members = [
     "crates/gauss-audit",
     "crates/gauss-provider",
     "crates/gauss-sandbox",
+    "crates/gauss-hwca",
     "crates/gauss-conformance",
 ]
 
@@ -30,6 +31,7 @@ gauss-memory    = { path = "crates/gauss-memory",    version = "0.0.1" }
 gauss-audit     = { path = "crates/gauss-audit",     version = "0.0.1" }
 gauss-provider  = { path = "crates/gauss-provider",  version = "0.0.1" }
 gauss-sandbox   = { path = "crates/gauss-sandbox",   version = "0.0.1" }
+gauss-hwca      = { path = "crates/gauss-hwca",      version = "0.0.1" }
 
 # Async
 async-trait = "0.1"
@@ -64,6 +66,9 @@ wasmi       = { version = "0.46", default-features = false, features = ["std"] }
 # AND by `cfg(target_os = "linux")` so non-Linux builds skip them entirely.
 landlock    = "0.4"
 seccompiler = "0.5"
+
+# JSON Schema 2020-12 — HWCA schema gate (Phase 4).
+jsonschema = { version = "0.46", default-features = false }
 
 # Database — SurrealDB embedded.
 # `default-features = false` + only `kv-mem` keeps the dep surface narrow and
