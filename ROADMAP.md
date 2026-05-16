@@ -27,8 +27,8 @@
 | 4     | HWCA + information flow                  | 6 weeks  | A7             | T9              | HWCA worker + schema gate; 0/20 IPI corpus    | ✅ Done |
 | 5     | Receipt chain + signatures               | 4 weeks  | A9             | T11             | Ed25519 receipts + TSA-anchor traits + verifier | ✅ Done |
 | 6     | Trinity memory: hybrid recall + K-LRU    | 5 weeks  | A5             | T5, T12         | BM25 + HNSW hybrid recall + K-LRU prefix tree + Myers diff | ✅ Done |
-| 7     | SAG + approval plane                     | 4 weeks  | A8             | (A8 bound)      | Approval queue on third scheduler plane       | Next   |
-| 8     | Trait polyhedral surface + verifier      | 5 weeks  | —              | T7              | `cargo gauss-verify` SMT discharge            |        |
+| 7     | SAG + approval plane                     | 4 weeks  | A8             | (A8 bound)      | `DecisionTable` + monotonicity verifier + approval surfaces | ✅ Done |
+| 8     | Trait polyhedral surface + verifier      | 5 weeks  | —              | T7              | `cargo gauss-verify` SMT discharge            | Next   |
 | 9     | A2UI Canvas + Health + surfaces          | 6 weeks  | —              | T8              | Live Canvas Protocol; `gauss doctor`          |        |
 | 10    | Hardening, scale, attestation            | 6 weeks  | (V predicate)  | T6, T10 (L4)    | Θ(N) cluster mode; SEV-SNP/TDX attest         |        |
 | 11    | 1.0 release                              | 3 weeks  | All            | All             | Pareto-dominance scorecard regression-pinned  |        |
@@ -140,7 +140,7 @@ CONF-T10-* green; cap → class table matches SPECS §7.1; WASM-only composite r
   3. Instruction-substring filter (case-insensitive deny-list, applied recursively to every string field when `SchemaGuards.no_instruction_substrings` is on).
   4. Taint join: outgoing = `incoming ∨ Web`.
 - **`gauss-hwca::filter`** — `INSTRUCTION_SUBSTRINGS` deny-list covering AgentDojo-style ("ignore previous"), EchoLeak-style ("exfiltrate", "post to https://"), system-tag impersonation (`system:`, `[system]`, `<|system|>`), and tool-call hijacking ("respond with the following", "override:", "your new instructions").
-- **`gauss-hwca::corpus`** — 20-attempt synthetic IPI corpus across three families (AgentDojo, EchoLeak, hijack) including two array-nested cases that exercise the gate's recursion.
+- **`gauss-hwca::corpus`** —  20-attempt synthetic IPI corpus across three families (AgentDojo, EchoLeak, hijack) including two array-nested cases that exercise the gate's recursion.
 - **Trait surface in `gauss-traits`** — `ToolTrait`, `ToolManifest`, `OutputSchema`, `SchemaGuards`, `ValidatedValue` (paper SPECS §6.2): backend-agnostic so the JSON Schema crate is swappable via `SchemaGate::new` only.
 - **4 new conformance tests** for `CONF-A7-*` and `CONF-T9-*` — live-counter zeroing after success and after a schema-gate error; validated value carries the joined taint; recursion-depth bound rejects spawns beyond the limit; the IPI corpus run asserts `rate ≤ 0.0219` (Phase-4 actual is `0/20`).
 - **ADR-0010** — in-process workers (subprocess in Phase 10), `jsonschema` 0.46 choice, synthetic Phase-4 corpus → AgentDojo + EchoLeak in Phase 6, four-stage gate order, RAII counter without `unsafe`.
@@ -222,24 +222,36 @@ CONF-A5-*, CONF-T5-*, CONF-T12-* green: monoid laws hold against `SurrealMemory`
 
 ---
 
-## Phase 7 — Supervised Autonomy Gradient + Approval Plane (4 weeks) — NEXT
+## Phase 7 — Supervised Autonomy Gradient + Approval Plane ✅
 
 **Goal:** action risk classifier + channel-routed approval queue. **Locks A8.**
 
-### Deliverables
+### Delivered
 
-- `gauss-sag::classify` — decision table per tenant; build-time monotonicity check.
-- Approval surfaces: Telegram inline-keyboard, Slack interactive message, Discord buttons, CLI/TUI blocking prompt, SSE web widget.
-- Approval responses are themselves signed receipts joined to the chain.
-- Default 5-minute deadline; deny-on-timeout.
+- **New crate `gauss-sag`** — four-band `Risk` lattice (`Auto < Notify < RequireApproval < Deny`), `RiskInputs { cap, taint, reversible, tool }`, `Classifier` trait.
+- **`DecisionTable`** — ordered `Vec<Rule>` + fall-through `Risk`; `Predicate` algebra (`Always`, `ContainsCap`, `TaintAtLeast`, `NonReversible`, `Tool`, `All`, `Any`); operator-readable labels per rule. The Phase-7 `default_decision_table()` encodes paper §XI.B: adversarial taint → Deny; `CRYPTO_SIGN` → RequireApproval; non-reversible (`NETWORK_POST` ∨ `SUBPROCESS_SPAWN`) → RequireApproval; (non-reversible ∨ Web taint) → Notify; otherwise Auto.
+- **`verify_monotonicity`** — build-time property check across the canonical cap × taint × reversibility grid. The default table passes from both the SAG unit-test AND the cross-crate conformance vantage.
+- **`ApprovalSurface`** — async trait + three deterministic test surfaces: `AutoApprove`, `AutoDeny`, `ChannelSurface` (`tokio::sync::mpsc`-driven). `ApprovalRequest { turn_id, action, risk, reason }`, `ApprovalDecision { Approved, Denied, Timeout }` (serde-friendly, `#[non_exhaustive]`).
+- **`ApprovalGate<C>`** — wraps a classifier + a boxed surface; configurable deadline (default 5 min per SPECS §XI.C); `decide_action(turn_id, action, taint) -> Outcome`; `Outcome::{Allow, Denied, Approved, TimedOut}` triaged by `ApprovalGate::check(...)` into `GaussError::{AutonomyDenied, AutonomyApprovalTimeout}`.
+- **DTE wiring** — `TurnEngine::with_sag(gate)`; SAG sits between admission (step 3) and the WAL append (step 4), so denied / timed-out actions leave no chain entry. The per-turn `TurnSummary.sag_decisions: Vec<SagDecisionRecord>` is bundled into the canonical payload so the Phase-5 signed receipt covers the approval verdict.
+- **Conformance** — new `axiom_a8_sag_approval` module (7 tests): default-table monotonicity from a cross-crate vantage; human-deny returns `AutonomyDenied` and the WAL stays empty; approval timeout returns `AutonomyApprovalTimeout`; approve-then-execute commits and the summary's `sag_decisions` records the approver; classifier-`Deny` short-circuits without calling the surface; text-only turns skip SAG; channel surface round-trips an explicit decision.
+- **ADR-0013** — decision-table schema, monotonicity invariant, surface trait, Phase-9 production-adapter migration plan.
+- Total: **199 tests green** across 11 crates under pedantic+nursery clippy with `-D warnings`; `cargo doc --workspace --no-deps` clean under `RUSTDOCFLAGS=-D warnings`.
 
-### Exit gate
+### Exit gate (met)
 
-Demo: tool with `reversible = false` triggers approval; user denies via Telegram inline-keyboard; chain shows approval receipt; tool not executed.
+CONF-A8-* green: SAG denial path returns `AutonomyDenied` and leaves no chain entry; SAG timeout path returns `AutonomyApprovalTimeout`; approved actions commit with the SAG record bundled into the signed payload; classifier-Deny short-circuits without calling the human surface; text-only turns bypass SAG entirely.
+
+### Open follow-ups (don't block Phase 8)
+
+- Telegram / Slack / Discord / Matrix / CLI / SSE production surfaces — Phase 9 channel layer.
+- Statistical-LM classifier as a Phase-10 research item layered over the rule-driven `DecisionTable` (the trait surface accepts it as a drop-in `Classifier`).
+- Approver authentication tied to the channel adapter's authenticated identity — Phase 9.
+- Per-tenant `DecisionTable` loading from disk / config — `serde` impl already in place.
 
 ---
 
-## Phase 8 — Trait Polyhedral Surface + Build-time Verifier (5 weeks)
+## Phase 8 — Trait Polyhedral Surface + Build-time Verifier (5 weeks) — NEXT
 
 **Goal:** typed plugin surface with behavioural-equivalence checks. **Proves T7.**
 
@@ -338,7 +350,7 @@ External pen-test report; chaos suite green; bench scale demonstrates Θ(N).
 | 0010   | HWCA worker boundary + schema gate (IPI)       | 4     | Accepted   |
 | 0011   | Receipt chain signing + TSA / OpenTimestamps   | 5     | Accepted   |
 | 0012   | K-LRU prefix-tree cache + checkpoint cadence   | 6     | Accepted   |
-| 0013   | SAG decision-table schema                      | 7     | Planned    |
+| 0013   | SAG decision table + approval surface          | 7     | Accepted   |
 | 0014   | Trait `specT` style guide                      | 8     | Planned    |
 | 0015   | Canvas core widget set freeze for 1.0          | 9     | Planned    |
 | 0016   | TEE attestation matrix for 1.0                 | 10    | Planned    |
@@ -358,3 +370,4 @@ Each ADR lives under `docs/adr/NNNN-title.md` and is referenced from the relevan
 | 4     | 110         | + Worker spawner (4), schema gate (5), instruction-substring filter (4), IPI corpus (3), CONF-A7/T9 (4) |
 | 5     | 143         | + Ed25519 signer (7), SignedReceipt (8), TSA simulator + anchor verifier (5), AnchorPolicy + Anchorer (4), public verifier API (9), CONF-A9/T11 (7) |
 | 6     | 170         | + AppendEntry recall fields (3), Myers diff (8), K-LRU PrefixTree (7), SurrealDB FTS/KNN/hybrid (3), CONF-A5/T5/T12 (9) |
+| 7     | 199         | + Risk lattice + RiskInputs (4), DecisionTable + monotonicity verifier (7), ApprovalSurface + AutoApprove/Deny/Channel (5), ApprovalGate (5), DTE SAG wiring (1), CONF-A8 (7) |

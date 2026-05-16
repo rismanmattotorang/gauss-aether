@@ -3,20 +3,22 @@
 An axiomatic operating system for trustworthy autonomous LLM agents,
 implemented in Rust.
 
-> Status: **Phase 6 complete** — workspace, lock-free three-plane kernel
+> Status: **Phase 7 complete** — workspace, lock-free three-plane kernel
 > with joint capability/taint admission, Differential Turn Engine with
-> WAL-before-effect barrier, composite sandbox (WASM via wasmi ∧ Linux
-> Landlock ∧ seccomp ∧ bubblewrap ∧ macOS Seatbelt) with capability-bound
-> depth (T10), HWCA worker contexts + four-stage schema gate (0/20 IPI
-> escape, T9), Ed25519 signed receipt chain + TSA-anchor abstractions
-> (A9, T11), and **Trinity Memory hybrid recall** — BM25 keyword search,
-> HNSW vector kNN, and a `hybrid_recall(α)` weighted-union surface
-> backed by SurrealDB's `@@` and `<|k|>` operators; plus a **K-LRU
-> prefix-tree cache** (K = 128 default, paper §VIII.C) and a proper
-> Myers `O((N+M)·D)` diff for ADT-aware deltas. Optional
-> `kv-surrealkv` / `kv-rocksdb` Cargo features for persistent storage.
-> **170 tests pass** across 10 crates; Phases 7–11 add SAG, trait
-> verifier, A2UI Canvas, SDHE, and 1.0 release (see
+> WAL-before-effect barrier, composite sandbox (T10), HWCA worker
+> contexts + schema gate (T9), Ed25519 signed receipt chain + TSA-anchor
+> abstractions (A9, T11), Trinity Memory hybrid recall (BM25 + HNSW +
+> hybrid union) + K-LRU prefix tree + Myers diff (A5, T5, T12), and the
+> **Supervised Autonomy Gradient (SAG)** — a rule-driven, auditable
+> `DecisionTable` with a build-time monotonicity verifier, an
+> `ApprovalSurface` trait with three deterministic test surfaces
+> (`AutoApprove`, `AutoDeny`, `ChannelSurface`), and a 5-minute
+> deny-on-timeout approval round-trip. SAG sits between kernel
+> admission and the WAL append: denied / timed-out / human-denied
+> actions leave no chain entry; approved actions ride alongside the
+> signed receipt so the approval verdict is itself non-repudiable
+> (A8). **199 tests pass** across 11 crates; Phases 8–11 add the
+> trait verifier, A2UI Canvas, SDHE, and 1.0 release (see
 > [`ROADMAP.md`](./ROADMAP.md)).
 
 ## Documents
@@ -35,19 +37,20 @@ cargo test  --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-## Workspace layout (after Phase 6)
+## Workspace layout (after Phase 7)
 
 | Crate                | Purpose                                                                              |
 |----------------------|--------------------------------------------------------------------------------------|
 | `gauss-core`         | Shared types: identifiers, actions, observations, taint, `CapToken` lattice, errors. |
 | `gauss-traits`       | Public trait surface — `Kernel`, `MemoryBackend`, `Provider`, `SandboxTrait`, `ToolTrait`, `OutputSchema`, `SchemaGuards`, `ValidatedValue`. |
 | `gauss-kernel`       | Privileged kernel: joint K×L admission, lock-free 3-plane token bucket, declass map. |
-| `gauss-turn`         | Differential Turn Engine — Algorithm 1 with optional sandbox executor + signed receipts. |
+| `gauss-turn`         | Differential Turn Engine — Algorithm 1 with optional sandbox executor + signed receipts + SAG approval gate. |
 | `gauss-memory`       | Trinity Memory: SurrealDB-backed append log + BM25 + HNSW hybrid recall + K-LRU prefix tree + Myers diff. |
 | `gauss-audit`        | SHA-256 chain + Ed25519 [`SignedReceipt`] + RFC 3161 / `OpenTimestamps` anchor traits + offline simulator (`SimulatorTsaClient`) + public verifier API. |
 | `gauss-provider`     | Provider adapters — `ToyProvider` ships now; vendor adapters in Phase 8.             |
 | `gauss-sandbox`      | Composite sandbox — WASM (wasmi) + Landlock + seccomp + bwrap + Seatbelt (T10).      |
 | `gauss-hwca`         | HWCA worker contexts + schema gate (length cap, JSON Schema 2020-12, instruction-substring filter, taint join) + IPI corpus (A7, T9). |
+| `gauss-sag`          | Supervised Autonomy Gradient — `DecisionTable` + monotonicity verifier + `ApprovalSurface` trait + test surfaces (A8). |
 | `gauss-conformance`  | Axiom-by-axiom test harness (A1–A9, T1–T12).                                         |
 
 ## Database — SurrealDB
@@ -112,10 +115,10 @@ Ed25519 signatures and external anchors on top of the Phase-2 SHA-256
 chain — without changing the underlying chain primitives.
 
 ```text
-┌───────────────────────────────────────────────────────────┐
+┌──────────────────────────────────────────────────────────────┐
 │ run_turn ──► WAL append ──► sign_append ──► (every N)         │
 │                                              tsa.anchor(head) │
-└───────────────────────────────────────────────────────────┘
+└──────────────────────────────────────────────────────────────┘
 ```
 
 Three pluggable surfaces, all in `gauss-audit`:
@@ -169,6 +172,42 @@ delta payload of the K-LRU `Node::Delta` variant.
 
 ADR-0012 documents the K-LRU policy + cadence rationale.
 
+## Supervised Autonomy Gradient (Phase 7)
+
+Phase 7 (`gauss-sag`) locks Axiom A8 by interposing a four-band risk
+classifier + human-approval round-trip between kernel admission and the
+WAL append:
+
+```text
+admit ──► classify ──► (Auto/Notify) ──► WAL append ──► sandbox exec
+                  │
+                  ├─► (RequireApproval) ──► surface ──► approved? ─► WAL
+                  │                                  └─► denied/timeout: AutonomyDenied / AutonomyApprovalTimeout
+                  └─► (Deny) ──► AutonomyDenied
+```
+
+Three pluggable surfaces:
+
+- **`DecisionTable`** — ordered `Vec<Rule>` + fall-through `Risk`.
+  Predicates: `Always`, `ContainsCap`, `TaintAtLeast`, `NonReversible`,
+  `Tool`, `All`, `Any`. The default table denies adversarial taint,
+  requires approval for `CRYPTO_SIGN` and non-reversible
+  `NETWORK_POST` / `SUBPROCESS_SPAWN`, notifies on Web taint or
+  non-reversibility, and auto-fires the rest.
+- **`verify_monotonicity`** — build-time property check: relaxing any
+  input field never tightens the outcome (paper §XI.B).
+- **`ApprovalSurface`** — async trait with three test impls
+  (`AutoApprove`, `AutoDeny`, `ChannelSurface` driven by
+  `tokio::sync::mpsc`). Production adapters (Telegram, Slack, Discord,
+  Matrix, CLI/TUI, SSE) ship in Phase 9 as additive impls.
+
+`TurnEngine::with_sag(gate)` attaches the gate. The per-turn `TurnSummary`
+carries a `Vec<SagDecisionRecord>` bundled into the canonical payload so
+the Phase-5 signed receipt covers the approval verdict as well as the
+action set. Default deadline: 5 minutes (`DEFAULT_DEADLINE`), per SPECS
+§XI.C; deny-on-timeout. ADR-0013 documents the policy + Phase-9 adapter
+migration path.
+
 ## Design tenets
 
 1. **Axioms before features.** Every subsystem traces back to an axiom (A1–A9)
@@ -197,6 +236,11 @@ ADR-0012 documents the K-LRU policy + cadence rationale.
     with the empty log as identity — Axiom A5 by construction. Recall
     fuses BM25 and HNSW into a single weighted union over the
     deduplicated set of hits — Theorem T5 by construction (`gauss-memory`).
+11. **Autonomy is gated by an auditable table.** A monotone
+    `DecisionTable` decides which actions auto-fire, which notify,
+    which require human approval, and which are refused outright;
+    approval verdicts are bundled into the signed payload — Axiom A8 by
+    construction (`gauss-sag`).
 
 ## Quality gates
 
@@ -227,7 +271,7 @@ external pen-testing.
 | A7 / T9         | Worker-context isolation + IPI bound (0/20 ≤ 2.19%)                 | Phase 4 ✅    |
 | A9 / T11        | Ed25519 signed receipts + chain replay + TSA anchor                 | Phase 5 ✅    |
 | A5 / T5 / T12   | Memory monoid + hybrid recall + K-LRU warm-cache bound              | Phase 6 ✅    |
-| A8              | Supervised-autonomy gradient                                        | Phase 7      |
+| A8              | SAG decision table + approval round-trip + deny-on-timeout          | Phase 7 ✅    |
 | T7              | Provider adjunction                                                 | Phase 8      |
 | T6              | Stateless-turn scaling                                              | Phase 10     |
 | T8              | Pareto-dominance scorecard                                          | Phase 9      |
