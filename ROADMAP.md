@@ -25,8 +25,8 @@
 | 2     | Turn engine + memory log                 | 6 weeks  | A1, A3         | T1, T3          | DTE end-to-end + Myers diff + chain replay    | ✅ Done |
 | 3     | Composite sandbox                        | 5 weeks  | (A2 bound)     | T10             | WASM (wasmi) + Landlock + seccomp + bwrap + Seatbelt | ✅ Done |
 | 4     | HWCA + information flow                  | 6 weeks  | A7             | T9              | HWCA worker + schema gate; 0/20 IPI corpus    | ✅ Done |
-| 5     | Receipt chain + signatures               | 4 weeks  | A9             | T11             | Ed25519 chain + TSA anchor                    | Next   |
-| 6     | Trinity memory: hybrid recall + K-LRU    | 5 weeks  | A5             | T5, T12         | Cold-start `≤ 10 ms`; recall `≤ 0.015`        |        |
+| 5     | Receipt chain + signatures               | 4 weeks  | A9             | T11             | Ed25519 receipts + TSA-anchor traits + verifier | ✅ Done |
+| 6     | Trinity memory: hybrid recall + K-LRU    | 5 weeks  | A5             | T5, T12         | Cold-start `≤ 10 ms`; recall `≤ 0.015`        | Next   |
 | 7     | SAG + approval plane                     | 4 weeks  | A8             | (A8 bound)      | Approval queue on third scheduler plane       |        |
 | 8     | Trait polyhedral surface + verifier      | 5 weeks  | —              | T7              | `cargo gauss-verify` SMT discharge            |        |
 | 9     | A2UI Canvas + Health + surfaces          | 6 weeks  | —              | T8              | Live Canvas Protocol; `gauss doctor`          |        |
@@ -158,29 +158,39 @@ CONF-A7-* + CONF-T9-* green; Phase-4 IPI corpus 0/20 (well inside the `≤ 2.19%
 
 ---
 
-## Phase 5 — Receipt Chain + Signatures (4 weeks) — NEXT
+## Phase 5 — Receipt Chain + Signatures ✅
 
-**Goal:** every action emits a signed, chained receipt with TSA anchor. **Locks A9; proves T11.**
+**Goal:** every action emits a signed, chained receipt with an optional external anchor. **Locks A9; proves T11.**
 
-### Deliverables
+### Delivered
 
-- `gauss-audit::sign` — Ed25519 via `ed25519-dalek` v2; key storage via OS keyring + optional HSM trait.
-- `gauss-audit::tsa` — RFC 3161 client; OpenTimestamps fallback.
-- Anchoring cadence configurable per tenant; default 1000 receipts.
-- Public verifier API (HTTP) per SPECS §9.3.
-- EUF-CMA test-vector pack; `cargo-fuzz` chain-tampering target.
+- **`gauss-audit` restructure** — split `lib.rs` into focused modules: `chain`, `sign`, `tsa`, `anchor`, `verify`. The chain primitives stay byte-identical to Phase 2.
+- **`gauss-audit::sign`** — `Ed25519Signer` (dalek 2.x, pure Rust); pluggable `SigningBackend` trait for HSM / OS keyring / cloud KMS; `ReceiptSigner<B>` driver; layout-stable `SignedReceipt` (turn_id ‖ index ‖ prev_head ‖ payload_digest ‖ post_head ‖ taint ‖ signed_at_ms; 129 bytes). `Zeroize`-on-drop secret keys.
+- **`gauss-audit::tsa`** — async `TsaClient` trait; `AnchorKind { Rfc3161, OpenTimestamps, Simulator }`; deterministic `SimulatorTsaClient` (Ed25519 simulator with fixed-clock support) exercises the canonical wire format offline.
+- **`gauss-audit::anchor`** — `AnchorPolicy::SPECS_DEFAULT::every_n_appends = 1000` (paper §IX.D); `EVERY_APPEND` for high-frequency testing; `Anchorer` driver tracks the most recent externally-witnessed head.
+- **`gauss-audit::verify`** — public verifier API: `verify_receipt`, `verify_chain`, `verify_simulator_anchor`, `verify_anchor_replay`, `verifying_key_from_bytes`. Same surface the Phase-9 HTTP wrapper will call.
+- **`gauss-core` errors** — new `GaussError::SignatureInvalid { reason }` and `GaussError::AnchorFailed(String)` variants (still `#[non_exhaustive]`, semver-minor).
+- **DTE wiring** — `TurnEngine::with_signing(...)` + `TurnEngine::with_all(...)`; per-turn `TurnSummary.receipt: Option<SignedReceipt>`. The receipt covers exactly the bytes the memory backend chained, signed AFTER the WAL append (A1 preserved).
+- **Type-erased backend** — `DynSigningBackend` lives in `gauss-turn::engine` so the engine remains object-safe without sprouting a backend generic; concrete backends (`Ed25519Signer`, HSM clients) plug in unchanged.
+- **`serde-big-array`** for the 64-byte signature field — JSON-friendly while preserving zero-copy deserialization.
+- **Conformance** — new `axiom_a9_and_theorem_t11_signed_receipts` module: signed turn emits a verifiable receipt; unsigned engine emits `None`; tampered signature is rejected; admission denial emits no receipt; whole-chain replay round-trips for a 3-step run; TSA anchor covers the run and tamper detection is correct; `AnchorPolicy::SPECS_DEFAULT` cadence honoured.
+- **ADR-0011** — receipt format, `SigningBackend` / `TsaClient` pluggability, anchor cadence rationale, RFC 3161 / `OpenTimestamps` deferral to Phase 9 / 10.
+- Total: **143 tests green** across 10 crates under pedantic+nursery clippy with `-D warnings`; `cargo doc --workspace --no-deps` clean under `RUSTDOCFLAGS=-D warnings`.
 
-### Conformance checks introduced
+### Exit gate (met)
 
-- CONF-A9-*, CONF-T11-* (forgery negl(λ), chain tamper bound `n·2^{-λ+1}`).
+CONF-A9-* and CONF-T11-* green: receipt verifies against its embedded public key; a tampered signature / payload / chain link is rejected; a `SimulatorTsaClient` anchor covers a multi-step run AND fails on payload mutation; cadence policy fires at exactly the expected counts.
 
-### Exit gate
+### Open follow-ups (don't block Phase 6)
 
-Regulator-style audit demo: presented `(ρ, c_prev, c_next, tsa_token)`, third-party verifier accepts; tamper attempt detected.
+- Real RFC 3161 HTTP client — Phase 9 alongside the public verifier wrapper.
+- `OpenTimestamps` Bitcoin-Calendar client — Phase 10 feature-gated.
+- OS-keyring backend impl of `SigningBackend` — Phase 9 deployment work.
+- `cargo-fuzz` chain-tampering target — Phase 6 alongside `kv-rocksdb` (cross-process replay).
 
 ---
 
-## Phase 6 — Trinity Memory: FTS + HNSW + K-LRU + Delta (5 weeks)
+## Phase 6 — Trinity Memory: FTS + HNSW + K-LRU + Delta (5 weeks) — NEXT
 
 **Goal:** activate the indices reserved by the SurrealDB schema in Phase 1. **Locks A5; proves T5, T12.**
 
@@ -317,7 +327,7 @@ External pen-test report; chaos suite green; bench scale demonstrates Θ(N).
 | 0008   | Canonical `CapToken` lives in `gauss-core`     | 2     | Accepted   |
 | 0009   | Composite sandbox stack (wasmi + …)            | 3     | Accepted   |
 | 0010   | HWCA worker boundary + schema gate (IPI)       | 4     | Accepted   |
-| 0011   | TSA + OpenTimestamps anchoring policy          | 5     | Planned    |
+| 0011   | Receipt chain signing + TSA / OpenTimestamps   | 5     | Accepted   |
 | 0012   | K-LRU eviction policy + checkpoint K           | 6     | Planned    |
 | 0013   | SAG decision-table schema                      | 7     | Planned    |
 | 0014   | Trait `specT` style guide                      | 8     | Planned    |
@@ -337,3 +347,4 @@ Each ADR lives under `docs/adr/NNNN-title.md` and is referenced from the relevan
 | 2     | 73          | + DTE end-to-end (4), admission denial (1), crash injection (1), replay/witness (3), Myers diff (6), `ToyProvider` (2) |
 | 3     | 90          | + WasmSandbox (3), CompositeSandbox (3), NoOpSandbox (1), Landlock (2), bwrap (2), seccomp (2), CONF-T10 (4) |
 | 4     | 110         | + Worker spawner (4), schema gate (5), instruction-substring filter (4), IPI corpus (3), CONF-A7/T9 (4) |
+| 5     | 143         | + Ed25519 signer (7), SignedReceipt (8), TSA simulator + anchor verifier (5), AnchorPolicy + Anchorer (4), public verifier API (9), CONF-A9/T11 (7) |

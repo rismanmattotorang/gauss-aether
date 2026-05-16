@@ -3,18 +3,20 @@
 An axiomatic operating system for trustworthy autonomous LLM agents,
 implemented in Rust.
 
-> Status: **Phase 4 complete** — workspace, lock-free three-plane kernel with
-> joint capability/taint admission, Differential Turn Engine with WAL-before-effect
-> barrier, SurrealDB-backed Trinity Memory log (graph + vector + FTS + chain),
-> SHA-256 receipt chain with replay + inclusion-witness verification, line-level
-> Myers diff for transcript snapshots, deterministic toy provider, **composite
-> sandbox** (WASM via wasmi ∧ Linux Landlock ∧ seccomp ∧ bubblewrap ∧ macOS
-> Seatbelt) with capability-bound depth (T10), and **HWCA worker contexts**
-> with a four-stage schema gate (length cap → JSON Schema 2020-12 →
-> instruction-substring filter → taint join) achieving 0/20 escape on the
-> Phase-4 IPI corpus, well inside Theorem T9's `≤ 2.19%` bound. **110 tests
-> pass** across 10 crates; Phases 5–11 add signed receipts, hybrid recall,
-> SAG, trait verifier, A2UI Canvas, SDHE, and 1.0 release (see
+> Status: **Phase 5 complete** — workspace, lock-free three-plane kernel
+> with joint capability/taint admission, Differential Turn Engine with
+> WAL-before-effect barrier, SurrealDB-backed Trinity Memory log
+> (graph + vector + FTS + chain), composite sandbox (WASM via wasmi ∧
+> Linux Landlock ∧ seccomp ∧ bubblewrap ∧ macOS Seatbelt) with
+> capability-bound depth (T10), HWCA worker contexts + four-stage schema
+> gate (0/20 IPI escape, T9), and **Ed25519 signed receipt chain** with
+> pluggable [`SigningBackend`] (HSM-ready), RFC 3161 / `OpenTimestamps`
+> [`TsaClient`] abstractions, an offline Ed25519 simulator anchor for
+> deterministic conformance, per-tenant [`AnchorPolicy`] (default every
+> 1000 appends, SPECS §IX.D), and a public verifier API surface
+> (`verify_receipt`, `verify_chain`, `verify_anchor_replay`). **143 tests
+> pass** across 10 crates; Phases 6–11 add hybrid recall, SAG, trait
+> verifier, A2UI Canvas, SDHE, and 1.0 release (see
 > [`ROADMAP.md`](./ROADMAP.md)).
 
 ## Documents
@@ -33,16 +35,16 @@ cargo test  --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-## Workspace layout (after Phase 4)
+## Workspace layout (after Phase 5)
 
 | Crate                | Purpose                                                                              |
 |----------------------|--------------------------------------------------------------------------------------|
 | `gauss-core`         | Shared types: identifiers, actions, observations, taint, `CapToken` lattice, errors. |
 | `gauss-traits`       | Public trait surface — `Kernel`, `MemoryBackend`, `Provider`, `SandboxTrait`, `ToolTrait`, `OutputSchema`, `SchemaGuards`, `ValidatedValue`. |
 | `gauss-kernel`       | Privileged kernel: joint K×L admission, lock-free 3-plane token bucket, declass map. |
-| `gauss-turn`         | Differential Turn Engine — Algorithm 1 with optional sandbox executor.               |
+| `gauss-turn`         | Differential Turn Engine — Algorithm 1 with optional sandbox executor + signed receipts. |
 | `gauss-memory`       | Trinity Memory: SurrealDB-backed append log + HNSW + FTS + graph lineage + Myers diff.|
-| `gauss-audit`        | SHA-256 chain + replay verification + inclusion witnesses (Ed25519 in Phase 5).      |
+| `gauss-audit`        | SHA-256 chain + Ed25519 [`SignedReceipt`] + RFC 3161 / `OpenTimestamps` anchor traits + offline simulator (`SimulatorTsaClient`) + public verifier API. |
 | `gauss-provider`     | Provider adapters — `ToyProvider` ships now; vendor adapters in Phase 8.             |
 | `gauss-sandbox`      | Composite sandbox — WASM (wasmi) + Landlock + seccomp + bwrap + Seatbelt (T10).      |
 | `gauss-hwca`         | HWCA worker contexts + schema gate (length cap, JSON Schema 2020-12, instruction-substring filter, taint join) + IPI corpus (A7, T9). |
@@ -103,6 +105,38 @@ The Phase-4 IPI corpus ships 20 hand-curated attempts across three families
 meeting T9's bound with full margin. The AgentDojo + EchoLeak ~10⁵-scenario
 integration is a Phase-6 follow-up (ADR-0010).
 
+## Signed receipts + chain anchoring (Phase 5)
+
+Phase 5 (`gauss-audit`) locks Axiom A9 and proves Theorem T11 by adding
+Ed25519 signatures and external anchors on top of the Phase-2 SHA-256
+chain — without changing the underlying chain primitives.
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│ run_turn ──► WAL append ──► sign_append ──► (every N)         │
+│                                              tsa.anchor(head) │
+└──────────────────────────────────────────────────────────────┘
+```
+
+Three pluggable surfaces, all in `gauss-audit`:
+
+- **`SigningBackend`** — Ed25519 via dalek 2.x (`Ed25519Signer`) is the
+  default; HSM / OS keyring / cloud-KMS backends implement the trait
+  directly. `ReceiptSigner<B>` is type-erased through
+  `DynSigningBackend` so `TurnEngine` carries a single `Arc<…>` regardless
+  of backend.
+- **`TsaClient`** — async trait producing an `Anchor { kind, head, token,
+  … }`. Phase 5 ships `SimulatorTsaClient` (offline Ed25519 simulator,
+  test-only); RFC 3161 + `OpenTimestamps` clients are additive Phase-9
+  / Phase-10 impls.
+- **`AnchorPolicy`** — `SPECS_DEFAULT::every_n_appends = 1000` per SPECS
+  §IX.D; `EVERY_APPEND` for high-frequency conformance tests.
+
+The public verifier API is a set of pure functions
+(`verify_receipt`, `verify_chain`, `verify_anchor_replay`,
+`verifying_key_from_bytes`) — the same surface the Phase-9 HTTP wrapper
+calls verbatim. ADR-0011 documents the wire format and migration path.
+
 ## Design tenets
 
 1. **Axioms before features.** Every subsystem traces back to an axiom (A1–A9)
@@ -122,6 +156,11 @@ integration is a Phase-6 follow-up (ADR-0010).
 8. **Worker boundary is structural too.** A tool's raw output cannot reach the
    parent context; only the schema-gate `ValidatedValue` can — Axiom A7 by
    construction (`gauss-hwca`).
+9. **Receipts are EUF-CMA from the kernel side.** When a `Signer` is wired,
+   every committed turn emits a `SignedReceipt` whose canonical bytes are
+   layout-stable across languages and whose Ed25519 signature can be
+   verified off-line by any third party — Axiom A9 / Theorem T11 by
+   construction (`gauss-audit`).
 
 ## Quality gates
 
@@ -150,10 +189,10 @@ external pen-testing.
 | T3              | Merkle tamper-evidence (proptest: any mutation diverges the head)   | Phase 0/2 ✅  |
 | T10             | Composite sandbox bound (cap → class, layer invariants)             | Phase 3 ✅    |
 | A7 / T9         | Worker-context isolation + IPI bound (0/20 ≤ 2.19%)                 | Phase 4 ✅    |
+| A9 / T11        | Ed25519 signed receipts + chain replay + TSA anchor                 | Phase 5 ✅    |
 | A5 / T5 / T12   | Hybrid recall + delta context-switch                                | Phase 6      |
 | A8              | Supervised-autonomy gradient                                        | Phase 7      |
 | T7              | Provider adjunction                                                 | Phase 8      |
-| A9 / T11        | EUF-CMA receipts + TSA anchor                                       | Phase 5      |
 | T6              | Stateless-turn scaling                                              | Phase 10     |
 | T8              | Pareto-dominance scorecard                                          | Phase 9      |
 
