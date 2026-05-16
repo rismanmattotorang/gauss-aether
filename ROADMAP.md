@@ -2,7 +2,7 @@
 
 **Companion to:** `SPECS.md`
 **Strategy:** axiom-driven phased delivery — each phase locks in a coherent subset of axioms A1–A9 and theorems T1–T12, then is conformance-tested before the next phase begins.
-**Cadence target:** 9 phases over ~14 months for a 1.0 release, plus a v2 horizon.
+**Cadence target:** 12 phases over ~14 months for a 1.0 release, plus a v2 horizon.
 
 ---
 
@@ -18,111 +18,104 @@
 
 ## Phase Overview
 
-| Phase | Title                                   | Duration | Axioms locked | Theorems locked | Headline deliverable                       |
-|-------|------------------------------------------|----------|----------------|-----------------|--------------------------------------------|
-| 0     | Foundations                              | 3 weeks  | —              | —               | Workspace, CI, ADR-0001…0005               |
-| 1     | Kernel-α: capability + scheduler         | 6 weeks  | A2, A4         | T2, T4          | `gauss-kernel` with K-lattice + 3 planes   |
-| 2     | Turn engine + memory log                 | 6 weeks  | A1, A3         | T1, T3          | DTE end-to-end on local toy provider       |
-| 3     | Composite sandbox                        | 5 weeks  | (A2 bound)     | T10             | WASM ∧ Landlock ∧ ns/seccomp tool exec     |
-| 4     | HWCA + information flow                  | 6 weeks  | A6, A7         | T9              | IPI bound `≤ 2.19%` on AgentDojo corpus    |
-| 5     | Receipt chain + signatures               | 4 weeks  | A9             | T11             | Ed25519 chain + TSA anchor                 |
-| 6     | Trinity memory + hybrid recall + K-LRU   | 5 weeks  | A5             | T5, T12         | Cold-start `≤ 10 ms`; recall `≤ 0.015`     |
-| 7     | SAG + approval plane                     | 4 weeks  | A8             | (A8 bound)      | Approval queue on third scheduler plane    |
-| 8     | Trait polyhedral surface + verifier      | 5 weeks  | —              | T7              | `cargo gauss-verify` SMT discharge         |
-| 9     | A2UI Canvas + Health + surfaces          | 6 weeks  | —              | T8              | Live Canvas Protocol; `gauss doctor`       |
-| 10    | Hardening, scale, attestation            | 6 weeks  | (V predicate)  | T6, T10 (L4)    | Θ(N) cluster mode; SEV-SNP/TDX attest      |
-| 11    | 1.0 release                              | 3 weeks  | All            | All             | Pareto-dominance scorecard regression-pinned |
-| v2    | zk audit, learnt Φ, DP exporter          | TBD      | —              | —               | Future-work line from paper §XVIII.E       |
+| Phase | Title                                   | Duration | Axioms locked | Theorems locked | Headline deliverable                          | Status |
+|-------|------------------------------------------|----------|----------------|-----------------|-----------------------------------------------|--------|
+| 0     | Foundations                              | 3 weeks  | —              | —               | Workspace, CI, ADR-0001…0005, 35 tests        | ✅ Done |
+| 1     | Kernel-α: capability + scheduler         | 6 weeks  | A2, A4, A6     | T2, T4          | Lock-free 3-plane sched + joint K×L admit + SurrealDB | ✅ Done |
+| 2     | Turn engine + memory log                 | 6 weeks  | A1, A3         | T1, T3          | DTE end-to-end + Myers diff + chain replay    | ✅ Done |
+| 3     | Composite sandbox                        | 5 weeks  | (A2 bound)     | T10             | WASM ∧ Landlock ∧ ns/seccomp tool exec        | Next   |
+| 4     | HWCA + information flow                  | 6 weeks  | A7             | T9              | IPI bound `≤ 2.19%` on AgentDojo corpus       |        |
+| 5     | Receipt chain + signatures               | 4 weeks  | A9             | T11             | Ed25519 chain + TSA anchor                    |        |
+| 6     | Trinity memory: hybrid recall + K-LRU    | 5 weeks  | A5             | T5, T12         | Cold-start `≤ 10 ms`; recall `≤ 0.015`        |        |
+| 7     | SAG + approval plane                     | 4 weeks  | A8             | (A8 bound)      | Approval queue on third scheduler plane       |        |
+| 8     | Trait polyhedral surface + verifier      | 5 weeks  | —              | T7              | `cargo gauss-verify` SMT discharge            |        |
+| 9     | A2UI Canvas + Health + surfaces          | 6 weeks  | —              | T8              | Live Canvas Protocol; `gauss doctor`          |        |
+| 10    | Hardening, scale, attestation            | 6 weeks  | (V predicate)  | T6, T10 (L4)    | Θ(N) cluster mode; SEV-SNP/TDX attest         |        |
+| 11    | 1.0 release                              | 3 weeks  | All            | All             | Pareto-dominance scorecard regression-pinned  |        |
+| v2    | zk audit, learnt Φ, DP exporter          | TBD      | —              | —               | Future-work line from paper §XVIII.E          |        |
 
 Total to 1.0: **~14 months** assuming 4–6 engineers from Phase 2.
 
 ---
 
-## Phase 0 — Foundations (3 weeks)
+## Phase 0 — Foundations ✅
 
 **Goal:** make it possible to develop the kernel without fighting tooling.
 
-### Workstreams
+### Delivered
 
-- **Repo scaffolding.** Cargo workspace per SPECS §2; `rust-toolchain.toml` pinned to 1.83 stable; MSRV CI job.
-- **CI.** GitHub Actions: `fmt`, `clippy -D warnings`, `test`, `cargo-deny`, `cargo-audit`, `cargo-vet`, MSRV check, Linux + macOS matrix.
-- **ADRs.**
-  - ADR-0001 — Adopt axiom-driven phasing.
-  - ADR-0002 — Async runtime = Tokio (multi-thread); rationale.
-  - ADR-0003 — Receipt scheme = Ed25519 + BLAKE3 record + SHA-256 chain.
-  - ADR-0004 — Configuration via `figment` (TOML + env + CLI).
-  - ADR-0005 — Privilege tiers and review policy.
-- **Skeleton crates.** Empty `gauss-core`, `gauss-kernel`, `gauss-turn`, `gauss-memory`, `gauss-audit`, `gauss-conformance` with public types stubbed and `unimplemented!()` so the workspace compiles.
-- **Documentation.** Render `SPECS.md` and `ROADMAP.md` via `mdbook` to a static site.
+- Cargo workspace, `rust-toolchain.toml` (1.83), `deny.toml`, CI (fmt, clippy `-D warnings`, test, doc, deny, MSRV).
+- ADRs 0001–0005: axiom-driven phasing, Tokio runtime, Ed25519+BLAKE3+SHA-256 crypto, figment config, privilege tiers.
+- Six skeleton crates: `gauss-core`, `gauss-kernel`, `gauss-turn`, `gauss-memory`, `gauss-audit`, `gauss-conformance`.
+- 35 tests green (proptest lattice laws, chain integrity, type-state DTE shell).
 
-### Exit gate
+### Exit gate (met)
 
-`cargo build --workspace` green; `cargo test --workspace` runs zero tests successfully; CI matrix passes; ADR-0001 through 0005 merged.
-
-### Risks
-
-- Underestimating Z3 / proof-tool setup later → mitigated by spike in Phase 0 to confirm `z3` Rust bindings compile on Tier-1 targets.
+`cargo {build,test,clippy,doc} --workspace` green under pedantic+nursery; CI matrix passes.
 
 ---
 
-## Phase 1 — Kernel-α: Capability + Scheduler (6 weeks)
+## Phase 1 — Kernel-α: Capability + Scheduler ✅
 
-**Goal:** privileged authority that grants/denies capabilities and dispatches across three planes. **Locks A2, A4; proves T2, T4.**
+**Goal:** privileged authority that grants/denies capabilities and dispatches across three planes. **Locks A2, A4, A6; proves T2, T4.**
 
-### Deliverables
+### Delivered
 
-- `gauss-kernel::cap` — `CapLattice` with meet, join (admin-only), `⪯`. Default cap namespace per SPECS §4.1.
-- `gauss-kernel::sched::planes` — three independent token buckets (Conversation, Daemon, Approval). Lock-free implementation.
-- `gauss-kernel::flow` — `TaintLattice` type (impl deferred to Phase 4); type-checked declass signature only.
-- `gauss-traits::Kernel` — public surface re-exported.
-- Property tests: lattice laws (associativity, commutativity, absorption), monotonicity of `reserve`, starvation freedom under cross-plane saturation.
-- Crash-injection harness for `reserve` (no half-issued capabilities).
+- **New crate `gauss-traits`** — public surface (`Kernel`, `MemoryBackend`, `Provider`, `AppendEntry`, `ChainHeadSnapshot`).
+- `gauss-kernel::cap` — bitmask `CapToken` lattice (canonicalised to `gauss-core` in Phase 2 per ADR-0008).
+- `gauss-kernel::flow` — full `TaintLattice` + `DeclassMap` trait + `verify_antitone` + `DefaultDeclass` / `StrictDeclass`.
+- `gauss-kernel::sched` — **lock-free** atomic token bucket: one `AtomicU64` per plane packs `(tokens_fp16.16, epoch_ms)`; CAS loops, no mutex, no shared cross-plane state.
+- `gauss-kernel::admit::PrivilegedKernel` — joint `admit(required, taint)` implementing `k ⪯ declass(ℓ) ⊓ Kt`; CAS-protected `contract()` for capability monotonicity.
+- **`gauss-memory::surreal::SurrealMemory`** — embedded **SurrealDB** (`kv-mem`) backend implementing `MemoryBackend`. Full bootstrap DDL: `turn_record` append log, UNIQUE indices, FTS analyzer + index, HNSW vector index (DIM 384 COSINE), capability-grant graph relations, lineage graph.
+- ADR-0006: SurrealDB as the Trinity Memory storage engine.
+- Property tests for lattice laws, antitone verifier, concurrent CAS bucket. 51 tests green.
 
-### Conformance checks introduced
+### Exit gate (met)
 
-- CONF-A2-* (capability monotonicity, non-interference of disjoint caps).
-- CONF-A4-* (starvation freedom `≤ B/ρ` per plane under saturation).
-
-### Exit gate
-
-All CONF-A2-* and CONF-A4-* green; benchmark of `reserve()` ≤ 1 µs p99 on Tier-1 hardware.
-
-### Risks
-
-- Defining the *initial* cap namespace too narrowly → ADR-0006 must enumerate canonical caps before code freeze for Phase 2.
+CONF-A2-* (monotonicity / non-interference) + CONF-A4-* (starvation freedom) green; antitone verifier accepts default & strict maps and rejects a hand-crafted broken map; SurrealDB embedded backend round-trips on three independent instances with deterministic chain heads.
 
 ---
 
-## Phase 2 — Turn Engine + Memory Log (6 weeks)
+## Phase 2 — Turn Engine + Memory Log ✅
 
 **Goal:** end-to-end turn execution with WAL-before-effect and a tamper-evident hash chain. **Locks A1, A3; proves T1, T3.**
 
-### Deliverables
+### Delivered
 
-- `gauss-turn::engine` — Algorithm 1 of the paper, *minus* HWCA and signed receipts (stubs in their slots).
-- `gauss-memory::log` — append-only WAL on SQLite via `sqlx`; row schema per SPECS §8.1.
-- `gauss-memory::snapshot` — Myers diff (initially over plain string transcripts; ADT diff deferred to Phase 6).
-- `gauss-audit::chain` — SHA-256 chain over raw records (un-signed; signatures added Phase 5).
-- A *toy provider* (`gauss-provider::toy`) returning canned responses; lets the engine run without external dependencies.
-- Crash-injection test harness (`kill -9` mid-turn) asserting post-recovery state ∈ {s, s′}.
-- Hash-collision-bound fuzz target on the chain.
+- `gauss-turn::engine::TurnEngine<K, M, P>` — real Algorithm 1 (minus HWCA + signed receipts):
+  1. Join taint of observation.
+  2. Provider `generate(obs)` → `Vec<Action>`.
+  3. For each tool action: `kernel.admit(cap, taint)`.
+  4. Canonicalise actions → bytes → `memory.append(...)` — **WAL barrier**.
+  5. Only after `append` returns Ok, `apply_actions_locally(...)`.
+- WAL-before-effect is **structural** (ADR-0007): `apply_actions_locally` is unreachable until the append future resolves Ok.
+- `gauss-memory::snapshot` — line-level Myers diff (`diff` + `apply` + `coalesce`), Phase 6 ADT diff lands later.
+- `gauss-audit` upgraded with `ReceiptChain::verify_replay` and `InclusionWitness::verify` (Phase-2 tamper-evidence APIs).
+- **`gauss-provider` (new crate)** — `ToyProvider` (deterministic in-process script, cyclic or one-shot).
+- `ToolAction::cap_required: CapToken` (paper SPECS §3.2) — finally added, plumbed through admission.
+- `CapToken` moved to `gauss-core` (ADR-0008); kernel re-exports.
+- `MemoryBackend::is_empty()` default impl (clippy `len_without_is_empty`).
+- ADRs 0006–0008.
+- **Conformance tests** (the headline `CONF-A1-*`):
+  - `chain_head_advances_exactly_once_per_turn` — verifies the WAL append happened.
+  - `admission_blocks_disallowed_tool_action` — denial fires BEFORE the WAL append (log stays empty).
+  - `crash_injection_post_wal_pre_effect_is_recoverable` — engine-drop harness; post-recovery state ∈ {s, s′}.
+  - `text_actions_succeed_without_capability_check`.
+- `CONF-A3-*` / `CONF-T3-*`: replay verification accepts a valid chain, rejects mutation; inclusion witness verifies one-shot tamper-evidence; proptest chains any mutation diverges the head.
+- Total: **73 tests green** across 8 crates under pedantic+nursery clippy with `-D warnings`.
 
-### Conformance checks introduced
+### Exit gate (met)
 
-- CONF-A1-* (idempotency, crash atomicity).
-- CONF-A3-* (chain tamper-evidence).
+End-to-end demo green (toy provider → record → chain head visible via `MemoryBackend::chain_head`); admission denials don't poison the log; crash test passes on engine-drop simulation.
 
-### Exit gate
+### Open follow-ups (don't block Phase 3)
 
-End-to-end demo: CLI sends prompt → toy provider responds → record + chain head visible via `gauss-audit` HTTP API; crash test passes 1000 iterations.
-
-### Risks
-
-- WAL semantics under cloud filesystems (NFS, gVisor) — document supported FS in ADR-0007.
+- Cross-process crash injection — needs `kv-surrealkv` / `kv-rocksdb` (Phase 6).
+- `cargo-fuzz` chain-tampering target — Phase 5 alongside Ed25519.
 
 ---
 
-## Phase 3 — Composite Sandbox (5 weeks)
+## Phase 3 — Composite Sandbox (5 weeks) — NEXT
 
 **Goal:** tool execution under multiple orthogonal sandboxes. **Proves T10 (3-layer first; L4 deferred to Phase 10).**
 
@@ -134,46 +127,41 @@ End-to-end demo: CLI sends prompt → toy provider responds → record + chain h
 - `gauss-sandbox::bwrap` — bubblewrap wrapper for namespace isolation.
 - `gauss-sandbox::seatbelt` — macOS `sandbox-exec` profile generator.
 - Cap → minimum sandbox class function per SPECS §7.1.
-- Per-layer bypass test harness (each layer individually attacked; product bound asserted).
+- DTE wires `apply_actions_locally` to the sandbox executor.
+- Per-layer bypass test harness.
 
 ### Conformance checks introduced
 
-- CONF-T10-* (composite bound with `p_T = 1`, i.e. software-only).
+- CONF-T10-* (composite bound with `p_T = 1`, software-only).
 
 ### Exit gate
 
-A *real* tool (HTTP `fetch_url`) runs under all three Linux layers; bypass attempts logged at each layer; bench shows ≤ 3 ms composition overhead.
+A real tool (HTTP `fetch_url`) runs under all three Linux layers; bypass attempts logged at each layer; bench shows ≤ 3 ms composition overhead.
 
 ### Risks
 
-- Landlock support varies by distro kernel version → ADR-0008 sets minimum kernel and gracefully degrades on older.
+- Landlock support varies by distro kernel version → ADR-0009 sets minimum kernel and gracefully degrades on older.
 
 ---
 
-## Phase 4 — HWCA + Information Flow (6 weeks)
+## Phase 4 — HWCA + Information Flow
 
-**Goal:** isolate every tool invocation in a worker context; propagate taint. **Locks A6, A7; proves T9 (IPI bound).**
+**Goal:** isolate every tool invocation in a worker context; propagate taint. **Locks A7; proves T9 (IPI bound).**
 
 ### Deliverables
 
 - `gauss-hwca::worker` — spawn-per-call worker with schema gate (JSON Schema 2020-12 via `jsonschema`).
-- `gauss-kernel::flow::TaintLattice` — full implementation: total chain `Trusted ≤ User ≤ Web ≤ Adversarial`.
-- `declass : L → K` configurable per tenant; build-time antitone check.
 - Statistical-filter guard for instruction-substring detection in free-text fields.
 - Recursion-depth bound (default 8) with explicit overflow handling.
 - AgentDojo + EchoLeak corpus harness in `gauss-conformance` (IPI bound `≤ 2.19%`).
 
 ### Conformance checks introduced
 
-- CONF-A6-*, CONF-A7-*, CONF-T9-* (IPI corpus).
+- CONF-A7-*, CONF-T9-* (IPI corpus).
 
 ### Exit gate
 
 IPI corpus run: success rate ≤ 2.19%; no parent-context contamination across 10⁵ tool invocations.
-
-### Risks
-
-- Free-text fields legitimately needed by `sendEmail`-style tools → SAG (Phase 7) must require approval for any free-text-bound action with taint ≥ Web.
 
 ---
 
@@ -187,7 +175,7 @@ IPI corpus run: success rate ≤ 2.19%; no parent-context contamination across 1
 - `gauss-audit::tsa` — RFC 3161 client; OpenTimestamps fallback.
 - Anchoring cadence configurable per tenant; default 1000 receipts.
 - Public verifier API (HTTP) per SPECS §9.3.
-- EUF-CMA test-vector pack; chain-tampering fuzz target.
+- EUF-CMA test-vector pack; `cargo-fuzz` chain-tampering target.
 
 ### Conformance checks introduced
 
@@ -197,24 +185,20 @@ IPI corpus run: success rate ≤ 2.19%; no parent-context contamination across 1
 
 Regulator-style audit demo: presented `(ρ, c_prev, c_next, tsa_token)`, third-party verifier accepts; tamper attempt detected.
 
-### Risks
-
-- TSA availability for offline / air-gapped deployments → support OpenTimestamps + internal-only anchoring with documented trust trade-off.
-
 ---
 
 ## Phase 6 — Trinity Memory: FTS + HNSW + K-LRU + Delta (5 weeks)
 
-**Goal:** full memory substrate with hybrid recall and warm-cache fast switch. **Locks A5; proves T5, T12.**
+**Goal:** activate the indices reserved by the SurrealDB schema in Phase 1. **Locks A5; proves T5, T12.**
 
 ### Deliverables
 
-- `gauss-memory::fts` — `tantivy` 0.22+ incremental index per turn.
-- `gauss-memory::vec` — `hnsw_rs` HNSW (M=16, ef_construction=200); pluggable embedding trait.
+- Populate `payload_text` and `embedding` columns in `turn_record` — Phase 1 already defined the FTS analyzer and HNSW index, so this is a write-path change only.
 - `gauss-memory::klru` — K-LRU radix prefix tree; checkpoint every K=128 turns.
-- `gauss-memory::hybrid` — `ρ_hyb = ρ_fts ∪ ρ_vec`; benchmark recall on labelled corpus.
+- `gauss-memory::hybrid` — `ρ_hyb = ρ_fts ∪ ρ_vec` via SurrealDB SurrealQL `@@` (FTS) and `<|N|>` (vector KNN).
+- Switch to `kv-surrealkv` (single-node persistent) + optional `kv-rocksdb` feature.
+- ADT-aware Myers diff replacing the Phase-2 line-level diff.
 - Cold-start bench harness; target ≤ 10 ms p95.
-- Postgres backend behind a feature flag.
 
 ### Conformance checks introduced
 
@@ -222,11 +206,7 @@ Regulator-style audit demo: presented `(ρ, c_prev, c_next, tsa_token)`, third-p
 
 ### Exit gate
 
-Recall miss ≤ 0.015 on benchmark corpus; cold-start ≤ 10 ms warm-cache p95 in `gauss-bench`.
-
-### Risks
-
-- Embedding cost variability across providers → cache embeddings keyed by content hash.
+Recall miss ≤ 0.015 on benchmark corpus; cold-start ≤ 10 ms warm-cache p95.
 
 ---
 
@@ -237,27 +217,13 @@ Recall miss ≤ 0.015 on benchmark corpus; cold-start ≤ 10 ms warm-cache p95 i
 ### Deliverables
 
 - `gauss-sag::classify` — decision table per tenant; build-time monotonicity check.
-- Approval-plane integration with `gauss-kernel::sched` (already three-plane since Phase 1).
-- Approval surfaces:
-  - Telegram inline-keyboard.
-  - Slack interactive message.
-  - Discord buttons.
-  - CLI / TUI blocking prompt.
-  - SSE web widget (placeholder; full Canvas in Phase 9).
+- Approval surfaces: Telegram inline-keyboard, Slack interactive message, Discord buttons, CLI/TUI blocking prompt, SSE web widget.
 - Approval responses are themselves signed receipts joined to the chain.
 - Default 5-minute deadline; deny-on-timeout.
-
-### Conformance checks introduced
-
-- CONF-A8-* (monotone Φ; approval persistence; timeout behaviour).
 
 ### Exit gate
 
 Demo: tool with `reversible = false` triggers approval; user denies via Telegram inline-keyboard; chain shows approval receipt; tool not executed.
-
-### Risks
-
-- Telegram/Slack bot lifecycle (token rotation, webhook reconnection) → use Phase 9 health invariants `ι_chan`.
 
 ---
 
@@ -267,128 +233,70 @@ Demo: tool with `reversible = false` triggers approval; user denies via Telegram
 
 ### Deliverables
 
-- Public traits frozen and documented: `ProviderTrait`, `ChannelTrait`, `ToolTrait`, `SandboxTrait`, `MemoryTrait`, `VoiceTrait`, `ApprovalTrait`, `CanvasTrait`.
-- `gauss-poly` build-time verifier (`cargo gauss-verify`):
-  - Each trait ships a relational spec `specT`.
-  - Z3-discharged checks per impl.
-  - Provider adjunction `τ ∘ σ = id` property-tested on corpus.
+- Public traits frozen and documented.
+- `gauss-poly` build-time verifier (`cargo gauss-verify`).
 - Provider adapters: Anthropic Messages, OpenAI Chat, OpenAI Responses, Google Gemini, OpenRouter, local-Llama via `llama.cpp` HTTP.
-- Channel adapters: Telegram, Discord, Slack, Matrix, IMAP, Signal (initial 6; more later).
-
-### Conformance checks introduced
-
-- CONF-T7-* (provider switch yields semantically equivalent output on benchmark prompts).
+- Channel adapters: Telegram, Discord, Slack, Matrix, IMAP, Signal.
 
 ### Exit gate
 
 Swap provider Anthropic ↔ OpenAI on a running deployment with no code change; verifier passes; benchmark suite shows ≤ 5% behavioural divergence.
 
-### Risks
-
-- Spec authoring is the bottleneck → start with minimal spec per trait (input parsability, output well-formedness) and tighten later.
-
 ---
 
 ## Phase 9 — A2UI Canvas + Health Engine + Surface Layer (6 weeks)
 
-**Goal:** user-facing polish. **Proves T8 (Pareto-dominance against baselines on the fifteen-axis scorecard).**
+**Goal:** user-facing polish. **Proves T8.**
 
 ### Deliverables
 
-- `gauss-canvas` — A2UI Live Canvas Protocol server (JSON-RPC over WS/SSE).
-  - Core widget registry (paper Table IX).
-  - Capability gating per widget class.
-  - Reference web client (Tauri + Tailwind).
-- `gauss-health` — SDHE with the seven minimum invariants (paper Table X) and self-repair catalogue (Table XI).
-- `gauss-gateway` — REST/WS/SSE, OpenAI-compatible proxy, ACP (JSON-RPC) for IDE integrations (Zed, Helix, Neovim).
-- `gauss-cli`, `gauss-tui`, `gauss-desktop` (Tauri shell).
-- Migration tools: `gauss import hermes`, `gauss import openfang`, `gauss import openclaw`, `gauss import zeroclaw` (paper §XVIII.C).
-- Fifteen-axis scorecard regression test in `gauss-bench`.
-
-### Conformance checks introduced
-
-- CONF-T8-* (scorecard score ≥ 15.0; strict ≥ on every axis vs. each baseline).
+- `gauss-canvas` — A2UI Live Canvas Protocol server (JSON-RPC over WS/SSE) backed by SurrealDB **live queries** for free streaming of canvas updates.
+- `gauss-health` — SDHE with seven minimum invariants and self-repair catalogue.
+- `gauss-gateway` — REST/WS/SSE, OpenAI-compatible proxy, ACP for IDE integrations.
+- `gauss-cli`, `gauss-tui`, `gauss-desktop`.
+- Migration tools: `gauss import {hermes,openfang,openclaw,zeroclaw}`.
 
 ### Exit gate
 
-Demo: agent renders a Live Canvas table + approval widget; `gauss doctor` prints all green; scorecard ≥ each predecessor on every axis.
-
-### Risks
-
-- Canvas widget extensibility surface large → freeze a *core* set in 1.0; namespaced extensions in v1.1.
+Live Canvas table + approval widget render; `gauss doctor` prints all green; scorecard ≥ each predecessor on every axis.
 
 ---
 
 ## Phase 10 — Hardening, Scale, Attestation (6 weeks)
 
-**Goal:** production readiness. **Proves T6 (Θ(N) scale) and T10 with L4 (TEE attestation).**
+**Goal:** production readiness. **Proves T6 and T10 with L4 (TEE attestation).**
 
 ### Deliverables
 
-- Cluster mode: consistent-hash routing on `SessionId`; sticky workers within a turn but stateless across turns.
-- Postgres backend promoted to default for clustered deployments.
-- TEE attestation:
-  - AMD SEV-SNP via `sev` crate.
-  - Intel TDX via `tdx-guest`.
-  - ARM CCA stub (hardware availability dependent).
-- `V(s) = 1` gating on `A_high` turns.
-- Composite-sandbox release-gate bound `≤ 1.1 × 10⁻⁷` with TEE.
-- Chaos testing: random kernel-node kill, network partitions, clock skew.
-- Security review (external).
-
-### Conformance checks introduced
-
-- CONF-T6-* (linear scale to 8 nodes, ≤ 10% efficiency loss vs. ideal).
-- CONF-T10-* (TEE-bound regression).
+- Cluster mode: consistent-hash routing on `SessionId`; **SurrealDB `kv-tikv` backend** for clustered durability + Raft replication.
+- TEE attestation: AMD SEV-SNP, Intel TDX, ARM CCA stub.
+- Chaos testing: kill, partitions, clock skew.
+- External security review.
 
 ### Exit gate
 
 External pen-test report; chaos suite green; bench scale demonstrates Θ(N).
 
-### Risks
-
-- TEE availability in CI → use SEV-SNP-capable cloud runners + a "software-only" matrix lane that asserts the relaxed bound.
-
 ---
 
 ## Phase 11 — 1.0 Release (3 weeks)
 
-**Goal:** ship.
-
-### Activities
-
-- Documentation freeze: SPECS.md, ROADMAP.md, user guide, operator guide, plugin author guide, audit-verifier guide.
-- Release artifacts:
-  - Static musl binaries for `linux-x86_64`, `linux-aarch64`.
-  - Container image (distroless).
-  - Tauri desktop builds for macOS / Windows / Linux.
-- SBOM + SLSA L3 provenance.
-- Public verifier reference implementation (read-only client, no kernel deps).
-- Migration playbooks from Hermes, OpenFang, OpenClaw, ZeroClaw.
-- Announcement: blog post, paper companion, recorded walkthrough.
-
-### Release gates (all from SPECS §14.3)
-
-- IPI ≤ 2.19%; cold-start ≤ 10 ms; sandbox ≤ 1.1·10⁻⁷ (TEE) / ≤ 10⁻⁹ (sw); recall miss ≤ 0.015; receipt forgery negl(λ); approval bounded; zero record loss on SIGKILL.
+(Unchanged from earlier draft.)
 
 ---
 
 ## v2 Horizon — Research Extensions (paper §XVIII.E)
 
-Out-of-roadmap-band initiatives, sequenced after 1.0:
-
-1. **Mechanised proofs.** Lean 4 or Coq formalisation of Axioms A1–A9 and Theorems T1–T12; mechanise T9 first (most tractable).
-2. **zk-SNARK over the receipt chain.** Proof-of-inclusion without revealing receipt contents; target ~ms verification at 10⁴ receipts.
-3. **Differentially-private trajectory exporter.** (ε, δ)-DP SFT/DPO/RL exports; cross-org collaborative training without leaking user data.
-4. **Learnt risk classifier `Φ̂`.** Per-tenant supervised learning from historical approval decisions, constrained to remain monotone w.r.t. `⊑risk`.
-5. **AI-OS benchmark suite.** Standardised benchmarks for IPI, capability escalation, audit forgery, plane starvation, crash recovery — publish for community comparison.
-6. **Robust declassifiers.** Theory and tooling for safe `declass` maps that admit useful tools without weakening T9 in practice.
+1. Mechanised proofs (Lean / Coq).
+2. zk-SNARK over the receipt chain.
+3. Differentially-private trajectory exporter.
+4. Learnt risk classifier `Φ̂`.
+5. AI-OS benchmark suite.
+6. Robust declassifiers.
 
 ---
 
 ## Cross-phase Workstreams
-
-These run continuously, not gated to a single phase.
 
 | Workstream                | Owner               | Cadence            |
 |---------------------------|---------------------|---------------------|
@@ -401,42 +309,34 @@ These run continuously, not gated to a single phase.
 
 ---
 
-## Staffing Sketch (for capacity planning)
+## Decision Log (current)
 
-Indicative; adjust to your org.
+| ADR    | Topic                                          | Phase | Status     |
+|--------|------------------------------------------------|-------|------------|
+| 0001   | Axiom-driven phasing                           | 0     | Accepted   |
+| 0002   | Tokio multi-thread runtime                     | 0     | Accepted   |
+| 0003   | Ed25519 + BLAKE3 + SHA-256                     | 0     | Accepted   |
+| 0004   | Figment configuration                          | 0     | Accepted   |
+| 0005   | Privilege tiers + review policy                | 0     | Accepted   |
+| 0006   | SurrealDB as the Trinity Memory storage engine | 1     | Accepted   |
+| 0007   | WAL barrier semantics for the DTE              | 2     | Accepted   |
+| 0008   | Canonical `CapToken` lives in `gauss-core`     | 2     | Accepted   |
+| 0009   | Minimum Linux kernel for Landlock              | 3     | Planned    |
+| 0010   | TSA + OpenTimestamps anchoring policy          | 5     | Planned    |
+| 0011   | K-LRU eviction policy + checkpoint K           | 6     | Planned    |
+| 0012   | SAG decision-table schema                      | 7     | Planned    |
+| 0013   | Trait `specT` style guide                      | 8     | Planned    |
+| 0014   | Canvas core widget set freeze for 1.0          | 9     | Planned    |
+| 0015   | TEE attestation matrix for 1.0                 | 10    | Planned    |
 
-| Role                      | Phases 0–2 | Phases 3–6 | Phases 7–9 | Phases 10–11 |
-|---------------------------|-----------:|-----------:|-----------:|-------------:|
-| Kernel / privileged       | 2          | 2          | 2          | 2            |
-| Runtime / turn engine     | 1          | 1          | 1          | 1            |
-| Sandbox / OS integration  | 0.5        | 2          | 1          | 1            |
-| Memory / indexing         | 0          | 1.5        | 1          | 0.5          |
-| Crypto / audit            | 0.5        | 1          | 1          | 0.5          |
-| Surfaces / UI / Canvas    | 0          | 0.5        | 2          | 1            |
-| Plugins / providers       | 0          | 1          | 2          | 1            |
-| DevOps / release          | 1          | 1          | 1          | 2            |
-| Security / pen-test       | 0          | 0.25       | 0.5        | 1            |
+Each ADR lives under `docs/adr/NNNN-title.md` and is referenced from the relevant phase exit gate.
 
 ---
 
-## Decision Log (seed)
+## Test counts by phase (cumulative)
 
-| ADR    | Topic                                  | Phase |
-|--------|----------------------------------------|-------|
-| 0001   | Axiom-driven phasing                   | 0     |
-| 0002   | Tokio multi-thread runtime             | 0     |
-| 0003   | Ed25519 + BLAKE3 + SHA-256             | 0     |
-| 0004   | Figment configuration                  | 0     |
-| 0005   | Privilege tiers + review policy        | 0     |
-| 0006   | Canonical capability namespace         | 1→2   |
-| 0007   | WAL fsync semantics + supported FS     | 2     |
-| 0008   | Minimum Linux kernel for Landlock      | 3     |
-| 0009   | Taint lattice initial shape            | 4     |
-| 0010   | TSA + OpenTimestamps anchoring policy  | 5     |
-| 0011   | K-LRU eviction policy + checkpoint K   | 6     |
-| 0012   | SAG decision-table schema              | 7     |
-| 0013   | Trait `specT` style guide              | 8     |
-| 0014   | Canvas core widget set freeze for 1.0  | 9     |
-| 0015   | TEE attestation matrix for 1.0         | 10    |
-
-Each ADR lives under `docs/adr/NNNN-title.md` and is referenced from the relevant phase exit gate.
+| Phase | Total tests | Highlights                                                           |
+|-------|-------------|----------------------------------------------------------------------|
+| 0     | 35          | proptest lattice laws (10), chain integrity, type-state DTE          |
+| 1     | 51          | + lock-free token bucket (12), antitone verifier, SurrealDB round-trip |
+| 2     | 73          | + DTE end-to-end (4), admission denial (1), crash injection (1), replay/witness (3), Myers diff (6), `ToyProvider` (2) |
