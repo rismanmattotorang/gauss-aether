@@ -1,49 +1,49 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/gauss-core",
-    "crates/gauss-traits",
-    "crates/gauss-kernel",
-    "crates/gauss-turn",
-    "crates/gauss-memory",
-    "crates/gauss-audit",
-    "crates/gauss-provider",
-    "crates/gauss-sandbox",
-    "crates/gauss-hwca",
-    "crates/gauss-sag",
-    "crates/gauss-poly",
-    "crates/gauss-canvas",
-    "crates/gauss-health",
-    "crates/gauss-gateway",
-    "crates/gauss-attest",
-    "crates/gauss-chaos",
-    "crates/gauss-bench",
-    "crates/gauss-zk",
-    "crates/gauss-dp",
-    "crates/gauss-learnt",
-    "crates/gauss-robust",
-    "crates/gauss-conformance",
+    "gauss-aether/crates/gauss-core",
+    "gauss-aether/crates/gauss-traits",
+    "gauss-aether/crates/gauss-kernel",
+    "gauss-aether/crates/gauss-turn",
+    "gauss-aether/crates/gauss-memory",
+    "gauss-aether/crates/gauss-audit",
+    "gauss-aether/crates/gauss-provider",
+    "gauss-aether/crates/gauss-sandbox",
+    "gauss-aether/crates/gauss-hwca",
+    "gauss-aether/crates/gauss-sag",
+    "gauss-aether/crates/gauss-poly",
+    "gauss-aether/crates/gauss-canvas",
+    "gauss-aether/crates/gauss-health",
+    "gauss-aether/crates/gauss-gateway",
+    "gauss-aether/crates/gauss-attest",
+    "gauss-aether/crates/gauss-chaos",
+    "gauss-aether/crates/gauss-bench",
+    "gauss-aether/crates/gauss-zk",
+    "gauss-aether/crates/gauss-dp",
+    "gauss-aether/crates/gauss-learnt",
+    "gauss-aether/crates/gauss-robust",
+    "gauss-aether/crates/gauss-conformance",
 
-    # ── GaussClaw — Hermes-to-Rust port (see GAUSSCLAW_ROADMAP.md) ───────────
-    "crates/gaussclaw-agent",
-    "crates/gaussclaw-cli",
-    "crates/gaussclaw-tui",
-    "crates/gaussclaw-web",
-    "crates/gaussclaw-desktop",
-    "crates/gaussclaw-surfaces",
-    "crates/gaussclaw-channels",
-    "crates/gaussclaw-store",
-    "crates/gaussclaw-skill",
-    "crates/gaussclaw-tools",
-    "crates/gaussclaw-providers",
-    "crates/gaussclaw-providers-meta",
-    "crates/gaussclaw-api-modes",
-    "crates/gaussclaw-export",
-    "crates/gaussclaw-fed",
-    "crates/gaussclaw-config",
-    "crates/gaussclaw-migrate",
-    "crates/gaussclaw-conformance",
-    "crates/gaussclaw-bin",
+    # ── GaussClaw — Hermes-to-Rust port (see gaussclaw/ROADMAP.md) ───────────
+    "gaussclaw/crates/gaussclaw-agent",
+    "gaussclaw/crates/gaussclaw-cli",
+    "gaussclaw/crates/gaussclaw-tui",
+    "gaussclaw/crates/gaussclaw-web",
+    "gaussclaw/crates/gaussclaw-desktop",
+    "gaussclaw/crates/gaussclaw-surfaces",
+    "gaussclaw/crates/gaussclaw-channels",
+    "gaussclaw/crates/gaussclaw-store",
+    "gaussclaw/crates/gaussclaw-skill",
+    "gaussclaw/crates/gaussclaw-tools",
+    "gaussclaw/crates/gaussclaw-providers",
+    "gaussclaw/crates/gaussclaw-providers-meta",
+    "gaussclaw/crates/gaussclaw-api-modes",
+    "gaussclaw/crates/gaussclaw-export",
+    "gaussclaw/crates/gaussclaw-fed",
+    "gaussclaw/crates/gaussclaw-config",
+    "gaussclaw/crates/gaussclaw-migrate",
+    "gaussclaw/crates/gaussclaw-conformance",
+    "gaussclaw/crates/gaussclaw-bin",
 ]
 
 [workspace.package]
@@ -56,47 +56,47 @@ authors = ["Gauss-Aether Contributors"]
 
 [workspace.dependencies]
 # Internal crates (path deps for the local workspace)
-gauss-core      = { path = "crates/gauss-core",      version = "0.0.1" }
-gauss-traits    = { path = "crates/gauss-traits",    version = "0.0.1" }
-gauss-kernel    = { path = "crates/gauss-kernel",    version = "0.0.1" }
-gauss-turn      = { path = "crates/gauss-turn",      version = "0.0.1" }
-gauss-memory    = { path = "crates/gauss-memory",    version = "0.0.1" }
-gauss-audit     = { path = "crates/gauss-audit",     version = "0.0.1" }
-gauss-provider  = { path = "crates/gauss-provider",  version = "0.0.1" }
-gauss-sandbox   = { path = "crates/gauss-sandbox",   version = "0.0.1" }
-gauss-hwca      = { path = "crates/gauss-hwca",      version = "0.0.1" }
-gauss-sag       = { path = "crates/gauss-sag",       version = "0.0.1" }
-gauss-poly      = { path = "crates/gauss-poly",      version = "0.0.1" }
-gauss-canvas    = { path = "crates/gauss-canvas",    version = "0.0.1" }
-gauss-health    = { path = "crates/gauss-health",    version = "0.0.1" }
-gauss-gateway   = { path = "crates/gauss-gateway",   version = "0.0.1" }
-gauss-attest    = { path = "crates/gauss-attest",    version = "0.0.1" }
-gauss-chaos     = { path = "crates/gauss-chaos",     version = "0.0.1" }
-gauss-bench     = { path = "crates/gauss-bench",     version = "0.0.1" }
-gauss-zk        = { path = "crates/gauss-zk",        version = "0.0.1" }
-gauss-dp        = { path = "crates/gauss-dp",        version = "0.0.1" }
-gauss-learnt    = { path = "crates/gauss-learnt",    version = "0.0.1" }
-gauss-robust    = { path = "crates/gauss-robust",    version = "0.0.1" }
+gauss-core      = { path = "gauss-aether/crates/gauss-core",      version = "0.0.1" }
+gauss-traits    = { path = "gauss-aether/crates/gauss-traits",    version = "0.0.1" }
+gauss-kernel    = { path = "gauss-aether/crates/gauss-kernel",    version = "0.0.1" }
+gauss-turn      = { path = "gauss-aether/crates/gauss-turn",      version = "0.0.1" }
+gauss-memory    = { path = "gauss-aether/crates/gauss-memory",    version = "0.0.1" }
+gauss-audit     = { path = "gauss-aether/crates/gauss-audit",     version = "0.0.1" }
+gauss-provider  = { path = "gauss-aether/crates/gauss-provider",  version = "0.0.1" }
+gauss-sandbox   = { path = "gauss-aether/crates/gauss-sandbox",   version = "0.0.1" }
+gauss-hwca      = { path = "gauss-aether/crates/gauss-hwca",      version = "0.0.1" }
+gauss-sag       = { path = "gauss-aether/crates/gauss-sag",       version = "0.0.1" }
+gauss-poly      = { path = "gauss-aether/crates/gauss-poly",      version = "0.0.1" }
+gauss-canvas    = { path = "gauss-aether/crates/gauss-canvas",    version = "0.0.1" }
+gauss-health    = { path = "gauss-aether/crates/gauss-health",    version = "0.0.1" }
+gauss-gateway   = { path = "gauss-aether/crates/gauss-gateway",   version = "0.0.1" }
+gauss-attest    = { path = "gauss-aether/crates/gauss-attest",    version = "0.0.1" }
+gauss-chaos     = { path = "gauss-aether/crates/gauss-chaos",     version = "0.0.1" }
+gauss-bench     = { path = "gauss-aether/crates/gauss-bench",     version = "0.0.1" }
+gauss-zk        = { path = "gauss-aether/crates/gauss-zk",        version = "0.0.1" }
+gauss-dp        = { path = "gauss-aether/crates/gauss-dp",        version = "0.0.1" }
+gauss-learnt    = { path = "gauss-aether/crates/gauss-learnt",    version = "0.0.1" }
+gauss-robust    = { path = "gauss-aether/crates/gauss-robust",    version = "0.0.1" }
 
-# GaussClaw internal crates (Hermes port; see GAUSSCLAW_ROADMAP.md)
-gaussclaw-agent          = { path = "crates/gaussclaw-agent",          version = "0.0.1" }
-gaussclaw-cli            = { path = "crates/gaussclaw-cli",            version = "0.0.1" }
-gaussclaw-tui            = { path = "crates/gaussclaw-tui",            version = "0.0.1" }
-gaussclaw-web            = { path = "crates/gaussclaw-web",            version = "0.0.1" }
-gaussclaw-desktop        = { path = "crates/gaussclaw-desktop",        version = "0.0.1" }
-gaussclaw-surfaces       = { path = "crates/gaussclaw-surfaces",       version = "0.0.1" }
-gaussclaw-channels       = { path = "crates/gaussclaw-channels",       version = "0.0.1" }
-gaussclaw-store          = { path = "crates/gaussclaw-store",          version = "0.0.1" }
-gaussclaw-skill          = { path = "crates/gaussclaw-skill",          version = "0.0.1" }
-gaussclaw-tools          = { path = "crates/gaussclaw-tools",          version = "0.0.1" }
-gaussclaw-providers      = { path = "crates/gaussclaw-providers",      version = "0.0.1" }
-gaussclaw-providers-meta = { path = "crates/gaussclaw-providers-meta", version = "0.0.1" }
-gaussclaw-api-modes      = { path = "crates/gaussclaw-api-modes",      version = "0.0.1" }
-gaussclaw-export         = { path = "crates/gaussclaw-export",         version = "0.0.1" }
-gaussclaw-fed            = { path = "crates/gaussclaw-fed",            version = "0.0.1" }
-gaussclaw-config         = { path = "crates/gaussclaw-config",         version = "0.0.1" }
-gaussclaw-migrate        = { path = "crates/gaussclaw-migrate",        version = "0.0.1" }
-gaussclaw-conformance    = { path = "crates/gaussclaw-conformance",    version = "0.0.1" }
+# GaussClaw internal crates (Hermes port; see gaussclaw/ROADMAP.md)
+gaussclaw-agent          = { path = "gaussclaw/crates/gaussclaw-agent",          version = "0.0.1" }
+gaussclaw-cli            = { path = "gaussclaw/crates/gaussclaw-cli",            version = "0.0.1" }
+gaussclaw-tui            = { path = "gaussclaw/crates/gaussclaw-tui",            version = "0.0.1" }
+gaussclaw-web            = { path = "gaussclaw/crates/gaussclaw-web",            version = "0.0.1" }
+gaussclaw-desktop        = { path = "gaussclaw/crates/gaussclaw-desktop",        version = "0.0.1" }
+gaussclaw-surfaces       = { path = "gaussclaw/crates/gaussclaw-surfaces",       version = "0.0.1" }
+gaussclaw-channels       = { path = "gaussclaw/crates/gaussclaw-channels",       version = "0.0.1" }
+gaussclaw-store          = { path = "gaussclaw/crates/gaussclaw-store",          version = "0.0.1" }
+gaussclaw-skill          = { path = "gaussclaw/crates/gaussclaw-skill",          version = "0.0.1" }
+gaussclaw-tools          = { path = "gaussclaw/crates/gaussclaw-tools",          version = "0.0.1" }
+gaussclaw-providers      = { path = "gaussclaw/crates/gaussclaw-providers",      version = "0.0.1" }
+gaussclaw-providers-meta = { path = "gaussclaw/crates/gaussclaw-providers-meta", version = "0.0.1" }
+gaussclaw-api-modes      = { path = "gaussclaw/crates/gaussclaw-api-modes",      version = "0.0.1" }
+gaussclaw-export         = { path = "gaussclaw/crates/gaussclaw-export",         version = "0.0.1" }
+gaussclaw-fed            = { path = "gaussclaw/crates/gaussclaw-fed",            version = "0.0.1" }
+gaussclaw-config         = { path = "gaussclaw/crates/gaussclaw-config",         version = "0.0.1" }
+gaussclaw-migrate        = { path = "gaussclaw/crates/gaussclaw-migrate",        version = "0.0.1" }
+gaussclaw-conformance    = { path = "gaussclaw/crates/gaussclaw-conformance",    version = "0.0.1" }
 
 # Async
 async-trait = "0.1"
