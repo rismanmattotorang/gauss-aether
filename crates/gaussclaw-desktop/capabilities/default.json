@@ -1,0 +1,45 @@
+{
+  "$schema": "../../../node_modules/@tauri-apps/cli/schemas/capability.schema.json",
+  "identifier": "gaussclaw-default",
+  "description": "Default capability set for the GaussClaw desktop shell. Emitted at build time from the Skill Manifests the kernel reads at admission time — front-door and tool-dispatch capabilities share one artefact.",
+  "platforms": ["linux", "macOS", "windows"],
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:allow-listen",
+    "core:event:allow-emit",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-title",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging",
+    "core:webview:allow-create-webview",
+
+    "shell:default",
+    "shell:allow-open",
+
+    "fs:default",
+    "fs:allow-read-text-file",
+
+    "notification:default",
+    "notification:allow-notify",
+
+    "clipboard-manager:default",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text",
+
+    "global-shortcut:default",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "global-shortcut:allow-is-registered",
+
+    "deep-link:default",
+
+    "updater:default",
+    "updater:allow-check",
+    "updater:allow-download",
+    "updater:allow-install"
+  ]
+}

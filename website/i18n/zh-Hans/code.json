@@ -1,0 +1,18 @@
+{
+  "theme.NotFound.title": {
+    "message": "页面未找到",
+    "description": "The title of the 404 page"
+  },
+  "theme.NotFound.p1": {
+    "message": "我们找不到您要查找的页面。",
+    "description": "The 1st paragraph of the 404 page"
+  },
+  "theme.docs.breadcrumbs.home": {
+    "message": "主页",
+    "description": "The label used to link to the home in the breadcrumbs"
+  },
+  "theme.SearchBar.label": {
+    "message": "搜索",
+    "description": "The ARIA label and placeholder for search button"
+  }
+}

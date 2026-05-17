@@ -16,6 +16,7 @@
 #![allow(clippy::doc_markdown)]
 
 pub mod cli_parity;
+pub mod oai_sdk_parity;
 
 #[cfg(test)]
 mod tests {

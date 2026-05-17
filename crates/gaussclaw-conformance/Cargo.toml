@@ -12,8 +12,13 @@ description = "Hermes-parity test suite: replay, OAI SDK, CLI, TUI, web e2e, des
 workspace = true
 
 [dependencies]
-gaussclaw-cli = { workspace = true }
-clap          = { workspace = true }
+gaussclaw-cli      = { workspace = true }
+gaussclaw-surfaces = { workspace = true }
+clap               = { workspace = true }
 
 [dev-dependencies]
-insta = { workspace = true }
+insta        = { workspace = true }
+axum         = { workspace = true }
+tokio        = { workspace = true, features = ["test-util", "macros"] }
+tower        = { workspace = true }
+serde_json   = { workspace = true }
