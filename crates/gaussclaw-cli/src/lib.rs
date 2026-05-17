@@ -89,6 +89,27 @@ pub enum Command {
     /// Inspect the receipt chain head or verify an envelope (GaussClaw extension).
     #[command(subcommand)]
     Receipt(ReceiptCmd),
+
+    /// Launch the web dashboard (Axum + retained React frontend) (GaussClaw extension).
+    Web(WebArgs),
+}
+
+// ─── web ────────────────────────────────────────────────────────────────────
+
+/// `web` arguments.
+#[derive(Debug, Parser)]
+pub struct WebArgs {
+    /// Bind host. Defaults to `127.0.0.1`.
+    #[arg(long = "host", default_value = "127.0.0.1")]
+    pub host: String,
+
+    /// Bind port. `0` lets the OS pick a free port.
+    #[arg(short = 'p', long = "port", default_value_t = 8642)]
+    pub port: u16,
+
+    /// Open the dashboard URL in the default browser after the server is up.
+    #[arg(long = "open")]
+    pub open: bool,
 }
 
 // ─── chat ───────────────────────────────────────────────────────────────────
@@ -266,6 +287,7 @@ pub const fn dispatch_id(cmd: &Command) -> &'static str {
         Command::Doctor(_) => "doctor",
         Command::Import(_) => "import",
         Command::Receipt(_) => "receipt",
+        Command::Web(_) => "web",
     }
 }
 
@@ -283,6 +305,7 @@ pub const SUBCOMMANDS: &[(&str, bool)] = &[
     ("doctor", true),
     ("import", false),
     ("receipt", false),
+    ("web", false),
 ];
 
 #[cfg(test)]
@@ -309,6 +332,7 @@ mod tests {
             ("doctor",  &["gaussclaw", "doctor"]),
             ("import",  &["gaussclaw", "import", "/tmp/cfg.toml"]),
             ("receipt", &["gaussclaw", "receipt", "head"]),
+            ("web",     &["gaussclaw", "web"]),
         ];
         for (id, argv) in leaf {
             let parsed = Cli::try_parse_from(argv.iter().copied())

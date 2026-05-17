@@ -15,6 +15,7 @@
 /// Hermes is reflected here in lock-step.
 pub const HERMES_SUBCOMMANDS: &[&str] = &[
     "model", "tools", "config", "gateway", "setup", "update", "doctor",
+    // `web` is a GaussClaw extension — see SUBCOMMANDS for the parity flag.
 ];
 
 #[cfg(test)]

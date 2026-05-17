@@ -15,7 +15,7 @@
 
 use clap::Parser;
 use gaussclaw_cli::{
-    Cli, Command, ConfigCmd, GatewayCmd, ModelCmd, ReceiptCmd, ToolsCmd,
+    Cli, Command, ConfigCmd, GatewayCmd, ModelCmd, ReceiptCmd, ToolsCmd, WebArgs,
 };
 use gaussclaw_tui::StatusInfo;
 
@@ -43,8 +43,30 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command {
         None => run_default_tui(&cfg),
+        Some(Command::Web(args)) => run_web(cfg, report, args),
         Some(cmd) => dispatch(cmd),
     }
+}
+
+fn run_web(
+    cfg: gaussclaw_config::Config,
+    report: Option<gaussclaw_config::LoadReport>,
+    args: WebArgs,
+) -> anyhow::Result<()> {
+    let source = report
+        .and_then(|r| r.source)
+        .map(|p| p.display().to_string());
+    let state = gaussclaw_web::ServerState::new(cfg, source);
+    let addr: std::net::SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
+    let url = format!("http://{}/", addr);
+    eprintln!("gaussclaw web: serving on {url}");
+    if args.open {
+        eprintln!("note: --open is wired in slice 5 (desktop deep links)");
+    }
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(gaussclaw_web::serve(addr, state))
 }
 
 fn run_default_tui(cfg: &gaussclaw_config::Config) -> anyhow::Result<()> {
@@ -99,6 +121,7 @@ fn dispatch(cmd: Command) -> anyhow::Result<()> {
             ReceiptCmd::Head => stub("receipt head", 2, "gauss-audit + gaussclaw-store"),
             ReceiptCmd::Verify { .. } => stub("receipt verify", 5, "gaussclaw-export envelope verifier"),
         },
+        Command::Web(_) => unreachable!("`web` is dispatched above in main()"),
     }
 }
 
