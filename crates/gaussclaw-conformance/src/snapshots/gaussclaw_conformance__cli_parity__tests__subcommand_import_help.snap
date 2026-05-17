@@ -1,0 +1,18 @@
+---
+source: crates/gaussclaw-conformance/src/cli_parity.rs
+expression: body
+---
+Import a Hermes config and migrate it to GaussClaw (GaussClaw extension)
+
+Usage: import [OPTIONS] <HERMES_CONFIG>
+
+Arguments:
+  <HERMES_CONFIG>
+          Path to the Hermes config file
+
+Options:
+  -o, --output <PATH>
+          Write the converted `gaussclaw.toml` to this path instead of the default
+
+  -h, --help
+          Print help

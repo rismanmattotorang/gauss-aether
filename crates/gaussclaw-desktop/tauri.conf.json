@@ -1,0 +1,100 @@
+{
+  "$schema": "../../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "GaussClaw",
+  "version": "0.0.1",
+  "identifier": "ai.gauss.gaussclaw",
+  "build": {
+    "beforeBuildCommand": "echo 'frontend is embedded by gaussclaw-web rust-embed'",
+    "frontendDist": "../gaussclaw-web/frontend/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "GaussClaw",
+        "label": "main",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "fullscreen": false,
+        "resizable": true,
+        "center": true,
+        "decorations": true,
+        "transparent": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "theme": null,
+        "url": "index.html"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost"
+    },
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": true,
+      "menuOnLeftClick": false,
+      "tooltip": "GaussClaw"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg", "msi", "nsis", "appimage", "deb", "rpm"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "copyright": "Copyright (c) 2026 GaussClaw Contributors",
+    "category": "DeveloperTool",
+    "shortDescription": "GaussClaw — Hermes-compatible agent on the Gauss-Aether runtime",
+    "longDescription": "GaussClaw is a Rust port of the Hermes agent atop the Gauss-Aether axiomatic kernel. The desktop app supersedes Hermes Desktop on installer size, RAM footprint, cold start, IPC isolation, and code-signing posture.",
+    "macOS": {
+      "frameworks": [],
+      "minimumSystemVersion": "10.15",
+      "exceptionDomain": "",
+      "signingIdentity": null,
+      "entitlements": null
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "http://timestamp.digicert.com",
+      "wix": {
+        "language": ["en-US"]
+      },
+      "nsis": {
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico"
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": []
+      },
+      "appimage": {
+        "bundleMediaFramework": false
+      }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "pubkey": "",
+      "endpoints": [
+        "https://releases.gauss.ai/desktop/{{target}}/{{arch}}/{{current_version}}"
+      ],
+      "dialog": false
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": ["gaussclaw"]
+      }
+    },
+    "single-instance": {},
+    "window-state": {}
+  }
+}

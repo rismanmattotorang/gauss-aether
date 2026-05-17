@@ -1,0 +1,24 @@
+---
+source: crates/gaussclaw-conformance/src/cli_parity.rs
+expression: body
+---
+Launch the web dashboard (Axum + retained React frontend) (GaussClaw extension)
+
+Usage: web [OPTIONS]
+
+Options:
+      --host <HOST>
+          Bind host. Defaults to `127.0.0.1`
+          
+          [default: 127.0.0.1]
+
+  -p, --port <PORT>
+          Bind port. `0` lets the OS pick a free port
+          
+          [default: 8642]
+
+      --open
+          Open the dashboard URL in the default browser after the server is up
+
+  -h, --help
+          Print help

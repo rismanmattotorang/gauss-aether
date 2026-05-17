@@ -6,9 +6,25 @@ rust-version.workspace = true
 license.workspace      = true
 repository.workspace   = true
 authors.workspace      = true
-description = "Messaging channel adapters (Slack, Discord, Telegram, Matrix, ...)."
+description = "Messaging channel adapters: typed ChannelTrait, HMAC-verified webhooks, taint-by-default ingress."
 
 [lints]
 workspace = true
 
 [dependencies]
+gauss-core      = { workspace = true }
+gaussclaw-agent = { workspace = true }
+async-trait     = { workspace = true }
+serde           = { workspace = true }
+serde_json      = { workspace = true }
+thiserror       = { workspace = true }
+tokio           = { workspace = true }
+hmac            = { workspace = true }
+sha2            = { workspace = true }
+subtle          = { workspace = true }
+tracing         = { workspace = true }
+time            = { workspace = true }
+
+[dev-dependencies]
+gauss-kernel = { workspace = true }
+tokio        = { workspace = true, features = ["test-util", "macros"] }

@@ -11,4 +11,41 @@ description = "Tauri 2 desktop shell superseding the Electron-based Hermes Deskt
 [lints]
 workspace = true
 
+[features]
+# `tauri-runtime` pulls in the full Tauri 2 runtime — system deps
+# (webkit2gtk on Linux, WebView2 on Windows, WKWebView on macOS)
+# must be installed at build time. The default build is runtime-free
+# so the crate compiles in any environment.
+default       = []
+tauri-runtime = ["dep:tauri", "dep:tauri-plugin-shell", "dep:tauri-plugin-fs",
+                 "dep:tauri-plugin-notification", "dep:tauri-plugin-clipboard-manager",
+                 "dep:tauri-plugin-global-shortcut", "dep:tauri-plugin-window-state",
+                 "dep:tauri-plugin-single-instance", "dep:tauri-plugin-deep-link",
+                 "dep:tauri-plugin-updater"]
+
 [dependencies]
+gauss-core       = { workspace = true }
+gaussclaw-agent  = { workspace = true }
+gaussclaw-config = { workspace = true }
+gaussclaw-web    = { workspace = true }
+anyhow           = { workspace = true }
+serde            = { workspace = true }
+serde_json       = { workspace = true }
+tokio            = { workspace = true }
+tracing          = { workspace = true }
+
+# Optional — the actual Tauri 2 runtime. Gated behind `tauri-runtime`.
+tauri                            = { version = "2", optional = true, features = ["protocol-asset"] }
+tauri-plugin-shell               = { version = "2", optional = true }
+tauri-plugin-fs                  = { version = "2", optional = true }
+tauri-plugin-notification        = { version = "2", optional = true }
+tauri-plugin-clipboard-manager   = { version = "2", optional = true }
+tauri-plugin-global-shortcut     = { version = "2", optional = true }
+tauri-plugin-window-state        = { version = "2", optional = true }
+tauri-plugin-single-instance     = { version = "2", optional = true }
+tauri-plugin-deep-link           = { version = "2", optional = true }
+tauri-plugin-updater             = { version = "2", optional = true }
+
+[dev-dependencies]
+gauss-kernel = { workspace = true }
+tokio        = { workspace = true, features = ["test-util", "macros"] }

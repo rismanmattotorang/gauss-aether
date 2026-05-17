@@ -12,3 +12,20 @@ description = "Thin surface adapters: REST, WebSocket, OpenAI-compatible relay."
 workspace = true
 
 [dependencies]
+gauss-core      = { workspace = true }
+gauss-gateway   = { workspace = true }
+gaussclaw-agent = { workspace = true }
+anyhow          = { workspace = true }
+axum          = { workspace = true }
+tokio         = { workspace = true }
+tower         = { workspace = true }
+tower-http    = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+tracing       = { workspace = true }
+futures-util  = { workspace = true }
+
+[dev-dependencies]
+tokio        = { workspace = true, features = ["test-util"] }
+gauss-kernel = { workspace = true }
+gauss-core   = { workspace = true }

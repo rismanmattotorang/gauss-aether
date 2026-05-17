@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GaussClaw Dashboard</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+        background: #0a0a0a;
+        color: #e2e2e2;
+        margin: 0;
+        padding: 2rem;
+        line-height: 1.5;
+      }
+      main { max-width: 720px; margin: 0 auto; }
+      h1 { color: #67e8f9; }
+      code { background: #1f1f1f; padding: 0.1em 0.4em; border-radius: 3px; }
+      .row { margin-top: 1.25rem; }
+      .key { color: #a3a3a3; }
+      a { color: #67e8f9; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>GaussClaw Dashboard</h1>
+      <p>
+        The Rust + Axum backend is live. The React 19 + Vite + Tailwind frontend
+        ports verbatim from the upstream Hermes dashboard and lands in a follow-on
+        slice. Until then this placeholder confirms the server is reachable and
+        the embedded-asset pipeline is working.
+      </p>
+      <p>The API surface is already wired:</p>
+      <div class="row"><span class="key">GET </span><code>/api/status</code></div>
+      <div class="row"><span class="key">GET </span><code>/api/health</code></div>
+      <div class="row"><span class="key">GET </span><code>/api/config</code></div>
+      <div class="row"><span class="key">GET </span><code>/api/config/schema</code></div>
+      <div class="row"><span class="key">GET </span><code>/api/sessions</code></div>
+      <div class="row"><span class="key">GET </span><code>/api/providers</code></div>
+      <div class="row"><span class="key">GET </span><code>/api/tools</code></div>
+      <div class="row"><span class="key">GET </span><code>/api/receipt/head</code></div>
+      <div class="row"><span class="key">WS  </span><code>/api/chat/ws</code></div>
+      <p style="margin-top: 2rem; color: #737373; font-size: 0.9rem;">
+        See <code>GAUSSCLAW_ROADMAP.md</code> Phase 1 Task 4 for the frontend
+        port plan. The dashboard runs natively on Linux, macOS, and Windows; no
+        PTY required, no WSL2 constraint.
+      </p>
+    </main>
+  </body>
+</html>

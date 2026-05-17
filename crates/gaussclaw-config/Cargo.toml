@@ -12,3 +12,11 @@ description = "Hermes-compatible TOML configuration loader (figment-based)."
 workspace = true
 
 [dependencies]
+figment     = { workspace = true }
+toml        = { workspace = true }
+directories = { workspace = true }
+serde       = { workspace = true }
+thiserror   = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

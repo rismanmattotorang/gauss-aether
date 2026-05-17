@@ -12,3 +12,20 @@ description = "Axum dashboard backend with embedded React 19 + Vite + Tailwind f
 workspace = true
 
 [dependencies]
+gauss-core       = { workspace = true }
+gaussclaw-agent  = { workspace = true }
+gaussclaw-config = { workspace = true }
+anyhow           = { workspace = true }
+axum             = { workspace = true }
+tokio            = { workspace = true }
+tower            = { workspace = true }
+tower-http       = { workspace = true }
+rust-embed       = { workspace = true }
+mime_guess       = { workspace = true }
+serde            = { workspace = true }
+serde_json       = { workspace = true }
+tracing          = { workspace = true }
+futures-util     = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

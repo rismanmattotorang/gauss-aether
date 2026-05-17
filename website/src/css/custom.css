@@ -1,0 +1,27 @@
+/**
+ * GaussClaw theme — minimal overrides on top of the Docusaurus classic
+ * dark theme. Cyan accent matches the TUI's "GaussClaw" title chip.
+ */
+
+:root {
+  --ifm-color-primary: #06b6d4;
+  --ifm-color-primary-dark: #0891b2;
+  --ifm-color-primary-darker: #0e7490;
+  --ifm-color-primary-darkest: #155e75;
+  --ifm-color-primary-light: #22d3ee;
+  --ifm-color-primary-lighter: #67e8f9;
+  --ifm-color-primary-lightest: #a5f3fc;
+  --ifm-code-font-size: 95%;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #67e8f9;
+  --ifm-color-primary-dark: #22d3ee;
+  --ifm-color-primary-darker: #06b6d4;
+  --ifm-color-primary-darkest: #0891b2;
+  --ifm-color-primary-light: #a5f3fc;
+  --ifm-color-primary-lighter: #cffafe;
+  --ifm-color-primary-lightest: #ecfeff;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+}

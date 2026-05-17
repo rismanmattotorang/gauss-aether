@@ -12,3 +12,10 @@ description = "Ratatui + crossterm TUI replacing Hermes's React + Ink stack."
 workspace = true
 
 [dependencies]
+anyhow       = { workspace = true }
+ratatui      = { workspace = true }
+crossterm    = { workspace = true }
+tui-textarea = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
