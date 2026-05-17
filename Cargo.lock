@@ -2770,12 +2770,18 @@ name = "gaussclaw-bin"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
+ "gauss-health",
  "gaussclaw-cli",
  "gaussclaw-config",
+ "gaussclaw-export",
+ "gaussclaw-migrate",
  "gaussclaw-store",
  "gaussclaw-tui",
  "gaussclaw-web",
+ "hex",
+ "serde_json",
  "tokio",
  "tracing",
 ]

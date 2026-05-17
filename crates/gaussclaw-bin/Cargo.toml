@@ -16,12 +16,18 @@ name = "gaussclaw"
 path = "src/main.rs"
 
 [dependencies]
-gaussclaw-cli    = { workspace = true }
-gaussclaw-config = { workspace = true }
-gaussclaw-tui    = { workspace = true }
-gaussclaw-web    = { workspace = true }
-gaussclaw-store  = { workspace = true }
-clap             = { workspace = true }
-anyhow           = { workspace = true }
-tokio            = { workspace = true }
-tracing          = { workspace = true }
+gaussclaw-cli      = { workspace = true }
+gaussclaw-config   = { workspace = true }
+gaussclaw-tui      = { workspace = true }
+gaussclaw-web      = { workspace = true }
+gaussclaw-store    = { workspace = true }
+gaussclaw-migrate  = { workspace = true }
+gaussclaw-export   = { workspace = true }
+gauss-health       = { workspace = true }
+clap               = { workspace = true }
+anyhow             = { workspace = true }
+tokio              = { workspace = true }
+tracing            = { workspace = true }
+serde_json         = { workspace = true }
+async-trait        = { workspace = true }
+hex                = { workspace = true }

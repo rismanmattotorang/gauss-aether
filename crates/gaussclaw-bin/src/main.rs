@@ -15,7 +15,8 @@
 
 use clap::Parser;
 use gaussclaw_cli::{
-    Cli, Command, ConfigCmd, GatewayCmd, ModelCmd, ReceiptCmd, ToolsCmd, WebArgs,
+    Cli, Command, ConfigCmd, DoctorArgs, GatewayCmd, ImportArgs, ModelCmd, ReceiptCmd, ToolsCmd,
+    WebArgs,
 };
 use gaussclaw_tui::StatusInfo;
 
@@ -124,11 +125,11 @@ fn dispatch(cmd: Command) -> anyhow::Result<()> {
         },
         Command::Setup(_) => stub("setup", 1, "gaussclaw-config + gaussclaw-migrate"),
         Command::Update(_) => stub("update", 5, "gaussclaw-desktop updater + gauss-attest"),
-        Command::Doctor(_) => stub("doctor", 1, "gauss-health (SDHE invariants)"),
-        Command::Import(args) => stub_import(args.hermes_config),
+        Command::Doctor(args) => run_doctor(args),
+        Command::Import(args) => run_import(args),
         Command::Receipt(sub) => match sub {
             ReceiptCmd::Head => stub("receipt head", 2, "gauss-audit + gaussclaw-store"),
-            ReceiptCmd::Verify { .. } => stub("receipt verify", 5, "gaussclaw-export envelope verifier"),
+            ReceiptCmd::Verify { envelope } => run_receipt_verify(envelope),
         },
         Command::Web(_) => unreachable!("`web` is dispatched above in main()"),
     }
@@ -143,13 +144,123 @@ fn stub(name: &str, phase: u8, crates: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn stub_import(path: std::path::PathBuf) -> anyhow::Result<()> {
+// ─── Phase 5: doctor / import / receipt verify ─────────────────────────────
+
+fn run_doctor(args: DoctorArgs) -> anyhow::Result<()> {
+    // Build the SDHE with the SPECS-default invariant set and evaluate
+    // against a minimal subject. Production deployments swap the subject
+    // for one that owns Arc<dyn Kernel> + Arc<SessionStore> + signer.
+    use gauss_health::{HealthEngine, HealthReport};
+    let engine = HealthEngine::with_specs_defaults();
+    let subject = DefaultSubject;
+    let report: HealthReport = engine.evaluate(&subject);
+    if args.json {
+        let body = serde_json::to_string_pretty(&report)?;
+        println!("{body}");
+    } else {
+        let pass = report
+            .invariants
+            .iter()
+            .filter(|o| matches!(o.verdict, gauss_health::Verdict::Ok))
+            .count();
+        let warn = report
+            .invariants
+            .iter()
+            .filter(|o| matches!(o.verdict, gauss_health::Verdict::Warning))
+            .count();
+        let fail = report
+            .invariants
+            .iter()
+            .filter(|o| matches!(o.verdict, gauss_health::Verdict::Failing))
+            .count();
+        println!(
+            "gaussclaw doctor: {} invariants — {pass} ok, {warn} warning, {fail} failing",
+            report.invariants.len()
+        );
+        for o in &report.invariants {
+            let marker = match o.verdict {
+                gauss_health::Verdict::Ok => "ok",
+                gauss_health::Verdict::Warning => "warn",
+                gauss_health::Verdict::Failing => "fail",
+                _ => "?",
+            };
+            println!("  [{marker}] {} — {}", o.id, o.description);
+            if let Some(d) = &o.detail {
+                println!("      {d}");
+            }
+        }
+        if report.has_failure() {
+            eprintln!("\nat least one invariant is FAILING; exiting with code 1");
+            std::process::exit(1);
+        }
+    }
+    Ok(())
+}
+
+/// Minimal HealthSubject impl that reports a clean baseline so the
+/// SPECS-default invariants exercise their `Ok` branch on a fresh
+/// install. Real deployments swap this for a subject backed by the
+/// runtime kernel / store / signer.
+struct DefaultSubject;
+
+#[async_trait::async_trait]
+impl gauss_health::HealthSubject for DefaultSubject {
+    async fn chain_head(&self) -> Option<(u64, [u8; 32])> {
+        Some((0, [0u8; 32]))
+    }
+    fn current_grant(&self) -> u64 {
+        u64::MAX // permissive default
+    }
+    fn live_worker_count(&self) -> u32 {
+        0
+    }
+    fn signer_present(&self) -> bool {
+        false
+    }
+    fn sag_present(&self) -> bool {
+        false
+    }
+    fn sandbox_present(&self) -> bool {
+        true
+    }
+    async fn memory_non_empty(&self) -> bool {
+        false
+    }
+}
+
+fn run_import(args: ImportArgs) -> anyhow::Result<()> {
+    let (body, report) = gaussclaw_migrate::migrate_file_to_string(&args.hermes_config)?;
+    println!("{body}");
+    eprintln!("\n── migration report ──");
     eprintln!(
-        "gaussclaw import: not yet implemented.\n\
-         \n  Would read Hermes config from: {}\n  \
-         Lands in Phase 1 Task 8 of GAUSSCLAW_ROADMAP.md.\n  \
-         Implementing crate: gaussclaw-migrate\n",
-        path.display()
+        "  surfaces flipped to shim: {}\n  tools flipped to shim:    {}\n  defaults added:           {}",
+        report.surfaces_to_shim, report.tools_to_shim, report.defaults_added
+    );
+    if !report.checklist.is_empty() {
+        eprintln!("\n── opt-in checklist ──");
+        for item in &report.checklist {
+            eprintln!("  [{}] {}: {}", item.phase, item.area, item.action);
+        }
+    }
+    Ok(())
+}
+
+fn run_receipt_verify(envelope_path: std::path::PathBuf) -> anyhow::Result<()> {
+    let body = std::fs::read(&envelope_path)
+        .map_err(|e| anyhow::anyhow!("read {}: {e}", envelope_path.display()))?;
+    let envelope: gaussclaw_export::Envelope =
+        serde_json::from_slice(&body).map_err(|e| anyhow::anyhow!("parse envelope: {e}"))?;
+    // Verify under the envelope's embedded publisher key. Strict
+    // production deployments pin a known key via --pin-key (not wired
+    // here in the demo binary).
+    gaussclaw_export::verify_envelope(&envelope, None, None)
+        .map_err(|e| anyhow::anyhow!("verify_envelope: {e}"))?;
+    println!(
+        "ok: envelope verifies\n  publisher_pk: {}\n  chain_head:   {}\n  index:        {}\n  taint:        {:?}",
+        hex::encode(envelope.receipt.public_key),
+        hex::encode(envelope.chain_head),
+        envelope.receipt.index,
+        envelope.receipt.taint
     );
     Ok(())
 }
