@@ -750,3 +750,208 @@ code {
   .receipt-head { grid-template-columns: 1fr; }
   .view-head-actions { position: static; margin-top: 0.5rem; }
 }
+
+/* ============================================================================
+ * Sprint 2 — receipt explorer, envelope verifier, skill preview
+ * ============================================================================ */
+
+.receipt-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.9rem;
+  align-items: start;
+}
+
+.receipt-pane {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.15rem;
+}
+
+.receipt-pane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.6rem;
+}
+
+.receipt-pane-head h2 {
+  font-size: 0.84rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--accent-2);
+  margin: 0;
+  font-weight: 700;
+}
+
+.receipt-row {
+  display: grid;
+  grid-template-columns: 50px 1fr auto;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 0.82rem;
+}
+
+.receipt-row .receipt-index {
+  color: var(--fg-dim);
+}
+
+.receipt-row .receipt-digest {
+  color: var(--accent-2);
+  word-break: break-all;
+  font-size: 0.78rem;
+}
+
+/* Dropzone */
+
+.dropzone {
+  margin-top: 0.6rem;
+  padding: 1.4rem 1rem;
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-elev-2);
+  text-align: center;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  cursor: pointer;
+}
+
+.dropzone:hover,
+.dropzone.dragover {
+  border-color: var(--accent);
+  background: rgba(34, 211, 238, 0.05);
+}
+
+.dropzone-label {
+  display: block;
+  color: var(--fg-muted);
+  font-size: 0.92rem;
+  cursor: pointer;
+}
+
+.verify-report {
+  margin-top: 0.85rem;
+  padding: 0.95rem 1.1rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  font-size: 0.9rem;
+}
+
+.verify-report.hidden { display: none; }
+
+.verify-report.verify-ok {
+  border-color: rgba(52, 211, 153, 0.35);
+  background: rgba(52, 211, 153, 0.05);
+}
+
+.verify-report.verify-fail {
+  border-color: rgba(248, 113, 113, 0.4);
+  background: rgba(248, 113, 113, 0.05);
+}
+
+.verify-report h3 {
+  margin: 0 0 0.4rem;
+  font-size: 1rem;
+}
+
+.verify-report .axis {
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  color: var(--red);
+}
+
+.verify-report dl {
+  margin: 0.4rem 0 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.18rem 0.7rem;
+  font-size: 0.86rem;
+}
+
+.verify-report dt { color: var(--fg-muted); }
+.verify-report dd { margin: 0; font-family: var(--mono); word-break: break-all; }
+
+/* Skill preview */
+
+.skill-preview {
+  margin-top: 1rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.95rem 1.1rem;
+}
+
+.skill-preview[open] { padding-bottom: 1.2rem; }
+
+.skill-preview-head {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  font-weight: 600;
+  list-style: none;
+}
+
+.skill-preview-head::-webkit-details-marker { display: none; }
+.skill-preview-head::before {
+  content: '▶';
+  font-size: 0.7rem;
+  color: var(--accent);
+  transition: transform 0.15s ease;
+}
+
+.skill-preview[open] .skill-preview-head::before { transform: rotate(90deg); }
+
+.skill-preview-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.85rem;
+  margin: 0.85rem 0 0.6rem;
+}
+
+#skill-toml {
+  font-family: var(--mono);
+  font-size: 0.84rem;
+  width: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.7rem;
+  resize: vertical;
+}
+
+#skill-toml:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.12);
+}
+
+.skill-preview-result {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem 0.85rem;
+  font-size: 0.86rem;
+  overflow-y: auto;
+  max-height: 320px;
+}
+
+.skill-preview-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 0.5rem;
+}
+
+@media (max-width: 900px) {
+  .receipt-split { grid-template-columns: 1fr; }
+  .skill-preview-grid { grid-template-columns: 1fr; }
+}

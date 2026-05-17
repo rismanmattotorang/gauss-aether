@@ -95,6 +95,21 @@ const api = {
   providers: () => api.get('/api/providers'),
   tools:     () => api.get('/api/tools'),
   receipt:   () => api.get('/api/receipt/head'),
+  receiptsRecent: (limit = 10) => api.get(`/api/receipts/recent?limit=${limit}`),
+  envelopeVerify: body => api.post('/api/envelope/verify', body),
+  skillPreview:   toml => api.post('/api/skills/preview', { toml }),
+};
+
+// Augment the API client with a generic POST helper.
+api.post = async (path, body) => {
+  const r = await fetch(path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  const j = await r.json();
+  return j.ok ? j.data : Promise.reject(new Error(j.error?.message ?? 'unknown error'));
 };
 
 // ─── 3. View router ─────────────────────────────────────────────────────────
@@ -310,6 +325,9 @@ const builtInTools = [
   { name: 'file_read',    desc: 'Read a file from a permitted path.',                     cap: 'cap:fs:read',     taint: 'user', layers: ['Landlock', 'seccomp'] },
   { name: 'file_write',   desc: 'Write to a file in a permitted path.',                   cap: 'cap:fs:write',    taint: 'user', layers: ['Landlock', 'seccomp'] },
   { name: 'hash',         desc: 'SHA-256 / BLAKE3 digests.',                              cap: 'cap:none',        taint: '⊥',    layers: ['WASM'] },
+  { name: 'http_get',     desc: 'HTTPS GET, header allowlist, body cap, taint=Web.',      cap: 'cap:network:http_get',  taint: 'web', layers: ['WASM'] },
+  { name: 'http_head',    desc: 'HTTPS HEAD probe; returns status + headers.',            cap: 'cap:network:http_get',  taint: 'web', layers: ['WASM'] },
+  { name: 'http_post',    desc: 'HTTPS POST a JSON body, taint=Web, irreversible.',       cap: 'cap:network:http_post', taint: 'web', layers: ['WASM'] },
   { name: 'json_get',     desc: 'RFC 6901 JSON Pointer extraction.',                      cap: 'cap:none',        taint: '⊥',    layers: ['WASM'] },
   { name: 'json_set',     desc: 'Write a value at an RFC 6901 JSON Pointer.',             cap: 'cap:none',        taint: '⊥',    layers: ['WASM'] },
   { name: 'math_eval',    desc: 'Pure-function arithmetic evaluator.',                    cap: 'cap:none',        taint: '⊥',    layers: ['WASM'] },
@@ -363,7 +381,135 @@ renderers.receipts = async () => {
       toast('Clipboard unavailable');
     }
   };
+  await loadRecentReceipts();
 };
+
+async function loadRecentReceipts() {
+  const list = $('#receipt-list');
+  if (!list) return;
+  list.innerHTML = '';
+  try {
+    const data = await api.receiptsRecent(20);
+    if (!data.rows || data.rows.length === 0) {
+      list.append(el('li', { class: 'card placeholder' },
+        'No receipts yet — they populate as the agent accumulates turns. ',
+        'Use the CLI `gaussclaw receipt verify` to verify an exported envelope.'));
+      return;
+    }
+    data.rows.forEach(r => {
+      const ok = r.verified;
+      list.append(
+        el('li', { class: 'receipt-row' },
+          el('span', { class: 'receipt-index' }, `#${r.index}`),
+          el('span', { class: 'receipt-digest' }, r.digest),
+          el('span', { class: `badge ${ok ? 'badge-ok' : 'badge-err'}` }, ok ? 'verified' : 'invalid')
+        )
+      );
+    });
+  } catch {
+    list.append(el('li', { class: 'card placeholder' }, 'Could not load recent receipts.'));
+  }
+}
+
+function wireReceiptsView() {
+  const refresh = $('#receipt-refresh');
+  if (refresh) refresh.addEventListener('click', () => loadRecentReceipts());
+
+  const dz   = $('#envelope-dropzone');
+  const file = $('#envelope-file');
+  if (!dz || !file) return;
+  file.addEventListener('change', () => readEnvelope(file.files?.[0]));
+  ['dragenter', 'dragover'].forEach(ev => dz.addEventListener(ev, e => {
+    e.preventDefault();
+    dz.classList.add('dragover');
+  }));
+  ['dragleave', 'drop'].forEach(ev => dz.addEventListener(ev, e => {
+    e.preventDefault();
+    dz.classList.remove('dragover');
+  }));
+  dz.addEventListener('drop', e => readEnvelope(e.dataTransfer?.files?.[0]));
+}
+
+async function readEnvelope(file) {
+  if (!file) return;
+  let envelope = null;
+  try {
+    const text = await file.text();
+    envelope = JSON.parse(text);
+  } catch (e) {
+    return renderVerifyReport({
+      verified: false,
+      failed_axis: 'json_parse',
+      detail: String(e),
+    });
+  }
+  try {
+    const report = await api.envelopeVerify(envelope);
+    renderVerifyReport(report);
+  } catch (e) {
+    renderVerifyReport({
+      verified: false,
+      failed_axis: 'transport',
+      detail: String(e),
+    });
+  }
+}
+
+function renderVerifyReport(r) {
+  const wrap = $('#verify-report');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  wrap.classList.remove('hidden', 'verify-ok', 'verify-fail');
+  wrap.classList.add(r.verified ? 'verify-ok' : 'verify-fail');
+  const heading = r.verified ? '✓ Envelope verified' : '✕ Verification failed';
+  wrap.append(el('h3', {}, heading));
+  if (!r.verified) {
+    wrap.append(el('p', { class: 'axis' }, `failed axis: ${r.failed_axis ?? 'unknown'}`));
+    if (r.detail) wrap.append(el('p', { class: 'muted small' }, r.detail));
+  }
+  const dl = el('dl');
+  if (r.chain_head)   { dl.append(el('dt', {}, 'chain head'),   el('dd', {}, shortHex(r.chain_head, 32))); }
+  if (r.chain_length !== undefined) { dl.append(el('dt', {}, 'chain length'), el('dd', {}, String(r.chain_length))); }
+  if (r.has_anchor !== undefined)   { dl.append(el('dt', {}, 'TSA anchor'),   el('dd', {}, r.has_anchor ? 'present' : 'absent')); }
+  wrap.append(dl);
+}
+
+function wireSkillPreview() {
+  const btn = $('#skill-preview-run');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    const toml = $('#skill-toml').value || '';
+    const out  = $('#skill-preview-result');
+    out.innerHTML = '';
+    try {
+      const r = await api.skillPreview(toml);
+      if (!r.parsed) {
+        out.append(el('p', { class: 'axis' }, '✕ parse error'));
+        out.append(el('p', { class: 'muted small' }, r.error ?? ''));
+        return;
+      }
+      const s = r.summary;
+      out.append(
+        el('div', { class: 'kv' }, el('span', {}, 'name'), el('code', {}, s.name)),
+        el('div', { class: 'kv' }, el('span', {}, 'taint'), el('code', {}, s.taint)),
+        el('div', { class: 'kv' }, el('span', {}, 'reversible'), el('code', {}, String(s.reversible))),
+        el('div', { class: 'kv' }, el('span', {}, 'persistent'), el('code', {}, String(s.persistent))),
+        el('div', { class: 'kv' }, el('span', {}, 'IPI guard'), el('code', {}, String(s.no_instruction_substrings))),
+        el('div', { class: 'kv' }, el('span', {}, 'max string'), el('code', {}, `${s.max_string_len} bytes`)),
+        el('div', { class: 'kv' }, el('span', {}, 'cost/call'), el('code', {}, `$${s.cost_dollars_per_call.toFixed(4)} · ${s.cost_tokens_per_call} tok`)),
+      );
+      const caps = el('div', { class: 'card-list-inline' });
+      (s.caps ?? []).forEach(c => caps.append(el('span', { class: 'badge' }, c)));
+      if ((s.caps ?? []).length === 0) caps.append(el('span', { class: 'muted small' }, '(no caps required)'));
+      out.append(el('p', { class: 'muted small' }, 'capabilities'));
+      out.append(caps);
+      if (s.description) out.append(el('p', { class: 'muted small' }, s.description));
+    } catch (e) {
+      out.append(el('p', { class: 'axis' }, '✕ request failed'));
+      out.append(el('p', { class: 'muted small' }, String(e)));
+    }
+  });
+}
 
 // ─── 8. Health view ─────────────────────────────────────────────────────────
 
@@ -533,6 +679,8 @@ async function bootstrap() {
   chat.wireComposer();
   wirePalette();
   wireGlobalKeys();
+  wireReceiptsView();
+  wireSkillPreview();
   setConnection('warn', 'connecting');
 
   try {

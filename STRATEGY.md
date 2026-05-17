@@ -20,7 +20,7 @@ state — distinct from what the README marketing claims:
 | `gaussclaw-store` | 4 | 1,556 | **Shipping** — Trinity store, session, lineage. |
 | `gaussclaw-export` | 6 | 1,595 | **Shipping** — SFT / DPO + Cryptographic Envelope. |
 | `gaussclaw-surfaces` | 1 | 1,291 | **Shipping** — REST / WS / OAI-compat. |
-| `gaussclaw-tools` | 18 | 2,650 | **15 tools** real (base64, csv_parse, datetime, echo, env_get, file_read/write, hash, json_get/set, math_eval, regex_match, shell, upper, uuid). README claimed 30+. **Sprint 1 closed the gap by 5.** |
+| `gaussclaw-tools` | 19 | 3,150 | **18 tools** real. Sprint 1 added 5; Sprint 2 added 3 HTTP tools (http_get/post/head) over an injectable `HttpClient` trait. README claimed 30+. |
 | `gaussclaw-providers` | 15 | 3,575 | **9 leaf providers** + 12 OpenAI-compat shims (groq, cerebras, fireworks, deepseek, mistral, together, xai, perplexity, anyscale, octoai, vllm, tgi). README claimed 20; effective count is now **21**. |
 | `gaussclaw-providers-meta` | 3 | 567 | **Shipping** — OpenRouter + NotDiamond + router glue. |
 | `gaussclaw-fed` | 4 | 820 | **Shipping** — federated pool client + backend. |
@@ -41,7 +41,7 @@ state — distinct from what the README marketing claims:
 - ~~Web frontend doesn't exist~~ → **Sprint 0**: six-view dashboard ships.
 - ~~TUI is rudimentary~~ → **Sprint 0**: persistent history, OSC 52 copy, 9 working slash commands. **Sprint 1**: three-overlay modal system (approval / clarify / password).
 - ~~Channels: 2 / 20~~ → **Sprint 1**: 6 / 20 (Webhook, InMemory, Slack, Telegram, Discord, Email).
-- ~~Tools: 11 / 30+~~ → **Sprint 1**: 15 / 30+ (added csv_parse, datetime, env_get, json_set, uuid).
+- ~~Tools: 11 / 30+~~ → **Sprint 1**: 15 / 30+. **Sprint 2**: 18 / 30+ (added http_get, http_post, http_head with injectable `HttpClient` + header allowlist + body cap).
 - ~~Providers: 9 / 20~~ → **Sprint 1**: 21 effective via the OpenAI-compat shim catalogue.
 - Desktop: scaffold → **Sprint 3 target**.
 
@@ -136,15 +136,50 @@ Deferred to a follow-on:
   need an `HttpBackend` trait equivalent to the providers' one, plus a
   workspace HTTP-client dep. Tracked in Sprint 2.
 
-### Sprint 2 — *deepen the leapfrog*
+### Sprint 2 — *deepen the leapfrog* ✅ **shipped**
 
-- HTTP tools (`http_get`, `http_post`, `http_head`) with an injectable
-  `HttpBackend` (mirroring the providers' pattern) + a `reqwest`-based
-  default impl behind a feature flag.
-- Receipt-chain explorer in the dashboard with a Merkle-proof viewer.
-- Skill Manifest installer UI.
-- Replay corpus diff visualiser.
-- Trajectory Envelope upload + verify view.
+What landed:
+
+- **HTTP tool family** (`gaussclaw-tools::http`): three tools
+  (`http_get`, `http_post`, `http_head`) sharing an injectable
+  `HttpClient` trait + `MockHttpClient` for tests + `UnconfiguredHttpClient`
+  default. Operator-controlled `HttpToolPolicy`: HTTPS-only scheme by
+  default, header allowlist, 64-KiB body cap (truncates with a flag,
+  never drops silently). Output taint defaults to `Web`. Hermes ships
+  `http_get` as a thin `requests.get(url)` wrapper with no allowlist,
+  no body cap, no taint.
+- **Dashboard backend endpoints** (`gaussclaw-web`):
+  - `GET  /api/receipts/recent?limit=N` — recent-receipts list with
+    per-row verification status.
+  - `POST /api/envelope/verify` — verify a Cryptographic Trajectory
+    Envelope; response names the failing axis (`signature`,
+    `payload_digest`, `chain_link`, `witness_head`, `witness_index`,
+    `public_key`).
+  - `POST /api/skills/preview` — parse a Skill Manifest TOML and
+    return its typed summary (caps, taint, cost, IPI guard, max
+    string length) without installing it.
+- **Dashboard frontend** (`gaussclaw-web/frontend/dist/`):
+  - **Receipts view** split into two panes: recent-receipts list +
+    envelope-verify drop zone with `dragenter`/`drop` handling and
+    a typed verify report (✓ verified or ✕ failed-axis).
+  - **Tools view** gains a collapsible "Preview a Skill Manifest"
+    panel: paste TOML → see the typed summary with capability badges,
+    taint, cost, guards, before any install side-effect.
+  - Updated `builtInTools` fallback list to 18 entries including the
+    HTTP family with correct cap + taint + layer markers.
+- **Web crate gains a real test suite for the new endpoints**:
+  4 new tests cover the empty-store receipt path, a valid skill
+  preview, an invalid skill preview, and the envelope-verify failure
+  axis surface.
+
+Deferred to a follow-on:
+- A `reqwest`-backed default `HttpClient` impl behind an optional
+  feature flag (the trait + mock are landed; the runtime can inject
+  any conforming impl).
+- Skill Manifest **install** UI (preview ships now; install requires
+  a registry write path under `cap:config:write`).
+- Replay corpus diff visualiser — defers to when we have an actual
+  shipped corpus to demo against.
 
 ### Sprint 3 — *the desktop story*
 

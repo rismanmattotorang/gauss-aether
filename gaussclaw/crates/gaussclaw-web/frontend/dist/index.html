@@ -141,11 +141,39 @@
       <header class="view-head">
         <h1>Tools</h1>
         <p class="muted">Every registered tool, its capability requirement, its taint label, and the sandbox
-          layers it runs inside. Click a tool to inspect.</p>
+          layers it runs inside. Below: preview an unknown Skill Manifest before you install it.</p>
       </header>
       <div class="tools-grid" id="tools-list">
         <div class="card placeholder">Loading tool catalogue…</div>
       </div>
+
+      <details class="skill-preview" id="skill-preview">
+        <summary class="skill-preview-head">
+          <span>Preview a Skill Manifest</span>
+          <span class="muted small">Paste TOML → parse + validate before install</span>
+        </summary>
+        <div class="skill-preview-grid">
+          <textarea id="skill-toml" rows="14"
+                    spellcheck="false"
+                    placeholder='name = "my_tool"
+description = "what it does"
+caps = ["network:http_get"]
+taint = "web"
+reversible = true
+persistent = false
+
+[guards]
+no_instruction_substrings = true
+max_string_len = 65536'></textarea>
+          <div class="skill-preview-result" id="skill-preview-result">
+            <p class="muted small">Output appears after you click <em>Preview</em>.</p>
+          </div>
+        </div>
+        <div class="skill-preview-foot">
+          <span class="muted small">No skill is installed — preview only.</span>
+          <button class="btn-primary" id="skill-preview-run">Preview</button>
+        </div>
+      </details>
     </section>
 
     <!-- ───────────── Receipts ───────────── -->
@@ -172,15 +200,32 @@
         <button class="btn-secondary" id="receipt-copy">Copy head</button>
       </div>
 
-      <div class="card-list" id="receipt-list">
-        <div class="card">
-          <header class="card-head">
-            <strong>verifying receipts</strong>
-            <span class="badge badge-ok">Ed25519</span>
+      <div class="receipt-split">
+        <section class="receipt-pane" aria-labelledby="receipt-recent-title">
+          <header class="receipt-pane-head">
+            <h2 id="receipt-recent-title">Recent receipts</h2>
+            <button class="chip" id="receipt-refresh">↻ Refresh</button>
           </header>
-          <p class="muted small">Recent receipt list populates once the session store accumulates turns.
-            Use <code>gaussclaw receipt verify &lt;envelope.json&gt;</code> from the CLI to validate an export.</p>
-        </div>
+          <ol class="card-list" id="receipt-list">
+            <li class="card placeholder">Loading recent receipts…</li>
+          </ol>
+        </section>
+
+        <section class="receipt-pane" aria-labelledby="envelope-verify-title">
+          <header class="receipt-pane-head">
+            <h2 id="envelope-verify-title">Verify a trajectory envelope</h2>
+          </header>
+          <p class="muted small">Drop a Cryptographic Envelope JSON to verify the signature, payload digest,
+            chain link, position witness, and TSA anchor. Hermes ships no equivalent — its JSONL exports
+            carry no verifiable surface.</p>
+          <div class="dropzone" id="envelope-dropzone">
+            <input type="file" id="envelope-file" accept=".json,application/json" hidden />
+            <label for="envelope-file" class="dropzone-label">
+              <strong>Click to select</strong> · or drag a <code>.json</code> envelope here
+            </label>
+          </div>
+          <div class="verify-report hidden" id="verify-report" aria-live="polite"></div>
+        </section>
       </div>
     </section>
 
