@@ -12,3 +12,9 @@ description = "Hermes AIAgent.run_conversation lifted into a Differential Turn E
 workspace = true
 
 [dependencies]
+gauss-core   = { workspace = true }
+gauss-traits = { workspace = true }
+gauss-kernel = { workspace = true }
+
+[dev-dependencies]
+gauss-kernel = { workspace = true }

@@ -44,9 +44,11 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Json, Response};
-use axum::routing::{get, post};
+use axum::routing::get;
+use gauss_core::{CapToken, TaintLabel};
+use gaussclaw_agent::{KernelHandle, SurfaceRequest};
 use gaussclaw_config::Config;
-use rust_embed::{Embed, RustEmbed};
+use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -82,7 +84,7 @@ pub struct Ok<T> {
 
 impl<T> Ok<T> {
     /// Wrap a payload in the success envelope.
-    pub fn new(data: T) -> Self {
+    pub const fn new(data: T) -> Self {
         Self { ok: true, data }
     }
 }
@@ -187,29 +189,45 @@ pub struct ReceiptHeadPayload {
 
 // ─── shared state ───────────────────────────────────────────────────────────
 
-/// State passed to every handler. Holds the loaded config plus any
-/// runtime hooks the dashboard exposes.
+/// State passed to every handler. Holds the loaded config, the kernel
+/// handle (admit gate + plane selector), and the build profile.
 #[derive(Clone)]
 pub struct ServerState {
     config: Arc<Config>,
     config_source: Option<String>,
     profile: &'static str,
+    kernel: KernelHandle,
 }
 
 impl ServerState {
-    /// Build a fresh state. `config_source` is the path the config came from
-    /// (for the `/api/status` and `/api/config` payloads).
+    /// Build a fresh state with a permissive kernel. Use this for the
+    /// Phase 1 demo binary and for tests.
     pub fn new(config: Config, config_source: Option<String>) -> Self {
+        Self::with_kernel(config, config_source, KernelHandle::permissive())
+    }
+
+    /// Build a state with a caller-supplied kernel handle.
+    pub fn with_kernel(
+        config: Config,
+        config_source: Option<String>,
+        kernel: KernelHandle,
+    ) -> Self {
         Self {
             config: Arc::new(config),
             config_source,
             profile: if cfg!(debug_assertions) { "debug" } else { "release" },
+            kernel,
         }
     }
 
     /// Borrow the active config.
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// Borrow the kernel handle.
+    pub const fn kernel(&self) -> &KernelHandle {
+        &self.kernel
     }
 }
 
@@ -295,7 +313,17 @@ async fn handle_receipt_head() -> Json<Ok<ReceiptHeadPayload>> {
 }
 
 #[axum::debug_handler]
-async fn handle_chat_ws(ws: WebSocketUpgrade) -> Response {
+async fn handle_chat_ws(State(state): State<ServerState>, ws: WebSocketUpgrade) -> Response {
+    // Admit-gate the upgrade. Failure short-circuits before the WS
+    // handshake completes.
+    let _plane = state.kernel.plane_for(SurfaceRequest::UserSync);
+    if let Err(e) = state.kernel.admit(CapToken::NETWORK_GET, TaintLabel::User) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(Err::new("denied", format!("admit failed: {e:?}"))),
+        )
+            .into_response();
+    }
     ws.on_upgrade(chat_socket)
 }
 
@@ -338,15 +366,15 @@ async fn chat_socket(mut socket: WebSocket) {
 
 #[axum::debug_handler]
 async fn handle_root() -> impl IntoResponse {
-    serve_embedded("index.html").await
+    serve_embedded("index.html")
 }
 
 #[axum::debug_handler]
 async fn handle_asset(Path(path): Path<String>) -> impl IntoResponse {
-    serve_embedded(&path).await
+    serve_embedded(&path)
 }
 
-async fn serve_embedded(path: &str) -> Response {
+fn serve_embedded(path: &str) -> Response {
     // Map "/" -> "index.html" and reject path traversal up front.
     let key = if path.is_empty() || path == "/" { "index.html" } else { path };
     if key.contains("..") {
@@ -390,7 +418,6 @@ async fn serve_embedded(path: &str) -> Response {
 
 /// Build the Axum router. Exposed so integration tests can drive it
 /// without binding a real socket.
-#[must_use]
 pub fn router(state: ServerState) -> Router {
     Router::new()
         // API
@@ -523,23 +550,19 @@ mod tests {
 
     #[tokio::test]
     async fn root_serves_embedded_index() {
-        let (status, _body) = match {
-            let app = router(test_state());
-            let resp = app
-                .oneshot(
-                    Request::builder()
-                        .method(Method::GET)
-                        .uri("/")
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            (resp.status(), to_bytes(resp.into_body(), 1 << 20).await.unwrap())
-        } {
-            (s, b) => (s, b),
-        };
-        assert_eq!(status, StatusCode::OK);
+        let app = router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let _body = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
     }
 
     #[tokio::test]

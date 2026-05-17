@@ -58,7 +58,7 @@ fn run_web(
         .map(|p| p.display().to_string());
     let state = gaussclaw_web::ServerState::new(cfg, source);
     let addr: std::net::SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
-    let url = format!("http://{}/", addr);
+    let url = format!("http://{addr}/");
     eprintln!("gaussclaw web: serving on {url}");
     if args.open {
         eprintln!("note: --open is wired in slice 5 (desktop deep links)");

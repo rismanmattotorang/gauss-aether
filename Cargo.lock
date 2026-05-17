@@ -2098,6 +2098,11 @@ dependencies = [
 [[package]]
 name = "gaussclaw-agent"
 version = "0.0.1"
+dependencies = [
+ "gauss-core",
+ "gauss-kernel",
+ "gauss-traits",
+]
 
 [[package]]
 name = "gaussclaw-api-modes"
@@ -2185,6 +2190,21 @@ version = "0.0.1"
 [[package]]
 name = "gaussclaw-surfaces"
 version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "axum",
+ "futures-util",
+ "gauss-core",
+ "gauss-gateway",
+ "gauss-kernel",
+ "gaussclaw-agent",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+]
 
 [[package]]
 name = "gaussclaw-tools"
@@ -2208,6 +2228,8 @@ dependencies = [
  "anyhow",
  "axum",
  "futures-util",
+ "gauss-core",
+ "gaussclaw-agent",
  "gaussclaw-config",
  "mime_guess",
  "rust-embed",
