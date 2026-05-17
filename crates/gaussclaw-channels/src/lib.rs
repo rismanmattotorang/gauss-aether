@@ -46,6 +46,7 @@
     clippy::missing_const_for_fn,
     clippy::unused_async
 )]
+#![allow(rustdoc::broken_intra_doc_links)]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

@@ -53,6 +53,7 @@
     clippy::unused_async,
     clippy::const_is_empty
 )]
+#![allow(rustdoc::broken_intra_doc_links)]
 
 pub mod commands;
 pub mod state;

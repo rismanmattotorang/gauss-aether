@@ -70,6 +70,7 @@
     clippy::drop_non_drop,
     clippy::iter_cloned_collect
 )]
+#![allow(rustdoc::broken_intra_doc_links)]
 
 pub mod dpo;
 pub mod envelope;

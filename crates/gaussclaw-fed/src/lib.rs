@@ -55,6 +55,7 @@
     clippy::large_enum_variant,
     clippy::significant_drop_tightening
 )]
+#![allow(rustdoc::broken_intra_doc_links)]
 
 pub mod backend;
 pub mod policy;

@@ -434,7 +434,7 @@ pub fn buffer_text(buf: &Buffer) -> String {
 ///
 /// Owns the terminal setup and teardown: enters the alternate screen,
 /// enables raw mode + bracketed paste, and restores them on exit (even
-/// on panic via the [`TerminalGuard`]).
+/// on panic, via an internal Drop guard).
 pub fn run(initial: StatusInfo) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();

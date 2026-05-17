@@ -41,6 +41,7 @@
     clippy::assigning_clones,
     clippy::map_unwrap_or
 )]
+#![allow(rustdoc::broken_intra_doc_links)]
 
 pub mod notdiamond;
 pub mod openrouter;

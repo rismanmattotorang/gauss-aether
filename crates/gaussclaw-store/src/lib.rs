@@ -65,6 +65,7 @@
     clippy::cast_possible_truncation,
     clippy::significant_drop_tightening
 )]
+#![allow(rustdoc::broken_intra_doc_links)]
 
 pub mod embed;
 pub mod store;

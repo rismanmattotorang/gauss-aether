@@ -62,6 +62,7 @@
     clippy::single_match_else,
     clippy::map_unwrap_or
 )]
+#![allow(rustdoc::broken_intra_doc_links)]
 
 pub mod anthropic;
 pub mod backend;

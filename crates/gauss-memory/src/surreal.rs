@@ -431,7 +431,7 @@ mod tests {
             assert!(
                 h.payload_text
                     .as_deref()
-                    .map_or(false, |s| s.contains("lattice")),
+                    .is_some_and(|s| s.contains("lattice")),
                 "FTS hit should match the keyword"
             );
         }

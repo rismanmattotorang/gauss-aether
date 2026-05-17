@@ -35,6 +35,7 @@
 //! for the dashboard surface.
 
 #![allow(clippy::doc_markdown)]
+#![allow(rustdoc::broken_intra_doc_links)]
 
 use std::net::SocketAddr;
 use std::sync::Arc;

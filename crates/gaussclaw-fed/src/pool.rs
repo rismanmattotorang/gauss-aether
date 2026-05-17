@@ -265,7 +265,7 @@ mod tests {
         let err = pool.publish("acme", &env, Some(&pk)).await.unwrap_err();
         match err {
             PoolError::Verification(msg) => {
-                assert!(msg.contains("signature") || msg.contains("Signature"))
+                assert!(msg.contains("signature") || msg.contains("Signature"));
             }
             other => panic!("expected Verification, got {other:?}"),
         }

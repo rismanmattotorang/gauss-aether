@@ -14,6 +14,7 @@
 //! Phase 1 ships #1 in this commit; the rest are TBD per phase.
 
 #![allow(clippy::doc_markdown)]
+#![allow(rustdoc::broken_intra_doc_links)]
 
 pub mod cli_parity;
 pub mod oai_sdk_parity;
