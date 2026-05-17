@@ -12,3 +12,15 @@ description = "Federated Trajectory Pool client and reference server."
 workspace = true
 
 [dependencies]
+gauss-core       = { workspace = true }
+gauss-audit      = { workspace = true }
+gaussclaw-export = { workspace = true }
+async-trait      = { workspace = true }
+serde            = { workspace = true }
+serde_json       = { workspace = true }
+thiserror        = { workspace = true }
+tokio            = { workspace = true, features = ["sync"] }
+hex              = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros", "rt", "rt-multi-thread"] }

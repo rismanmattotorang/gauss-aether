@@ -2884,6 +2884,17 @@ dependencies = [
 [[package]]
 name = "gaussclaw-fed"
 version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "gauss-audit",
+ "gauss-core",
+ "gaussclaw-export",
+ "hex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
 
 [[package]]
 name = "gaussclaw-migrate"
