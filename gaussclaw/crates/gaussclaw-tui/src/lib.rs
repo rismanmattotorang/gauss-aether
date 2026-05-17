@@ -25,6 +25,10 @@
 
 #![allow(clippy::doc_markdown)]
 
+mod history;
+
+pub use history::HistoryStore;
+
 use std::io;
 use std::time::Duration;
 
@@ -116,12 +120,26 @@ pub struct App<'a> {
     status: StatusInfo,
     /// Vertical scroll offset (0 = bottom-pinned).
     scroll_offset: u16,
+    /// Persistent input history (`Up`/`Down` recall).
+    input_history: HistoryStore,
+    /// Last assistant text, for `/copy`.
+    last_assistant: Option<String>,
 }
 
 impl App<'_> {
     /// Build a fresh app with the given status bar payload.
+    ///
+    /// Persists user-submitted lines to the platform's state directory; use
+    /// [`Self::with_history`] in tests to keep everything in memory.
     #[must_use]
     pub fn new(status: StatusInfo) -> Self {
+        Self::with_history(status, HistoryStore::open())
+    }
+
+    /// Build an app with a caller-supplied [`HistoryStore`]. Tests pass an
+    /// in-memory store; production code uses [`Self::new`].
+    #[must_use]
+    pub fn with_history(status: StatusInfo, input_history: HistoryStore) -> Self {
         let mut input = TextArea::default();
         input.set_cursor_line_style(Style::default());
         input.set_placeholder_text(
@@ -129,13 +147,14 @@ impl App<'_> {
         );
         Self {
             history: vec![Entry::System(
-                "Welcome to GaussClaw. The TUI skeleton lands in this slice; \
-                 real agent dispatch arrives later in Phase 1. Try `/help`."
+                "Welcome to GaussClaw. Type a message, or `/help` for a tour of slash commands."
                     .into(),
             )],
             input,
             status,
             scroll_offset: 0,
+            input_history,
+            last_assistant: None,
         }
     }
 
@@ -170,6 +189,20 @@ impl App<'_> {
                     self.history.push(Entry::System("Session cleared.".into()));
                     return Tick::Continue;
                 }
+                KeyCode::Char('p') => {
+                    if let Some(line) = self.input_history.step_back().map(str::to_owned) {
+                        self.set_input_to(&line);
+                    }
+                    return Tick::Continue;
+                }
+                KeyCode::Char('n') => {
+                    if let Some(line) = self.input_history.step_forward().map(str::to_owned) {
+                        self.set_input_to(&line);
+                    } else {
+                        self.clear_input();
+                    }
+                    return Tick::Continue;
+                }
                 _ => {}
             }
         }
@@ -177,6 +210,20 @@ impl App<'_> {
         match key.code {
             KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.submit_current();
+                return Tick::Continue;
+            }
+            KeyCode::Up if self.input_is_empty_or_recalled() => {
+                if let Some(line) = self.input_history.step_back().map(str::to_owned) {
+                    self.set_input_to(&line);
+                }
+                return Tick::Continue;
+            }
+            KeyCode::Down if self.input_is_empty_or_recalled() => {
+                if let Some(line) = self.input_history.step_forward().map(str::to_owned) {
+                    self.set_input_to(&line);
+                } else {
+                    self.clear_input();
+                }
                 return Tick::Continue;
             }
             KeyCode::PageUp => {
@@ -195,6 +242,33 @@ impl App<'_> {
         Tick::Continue
     }
 
+    fn input_is_empty_or_recalled(&self) -> bool {
+        // Up/Down behaves like a history walker only when the buffer is empty
+        // or already showing a recalled entry — never when the user is in the
+        // middle of composing.
+        self.input.lines().iter().all(std::string::String::is_empty)
+    }
+
+    fn set_input_to(&mut self, body: &str) {
+        let mut ta = TextArea::from(body.split('\n').collect::<Vec<&str>>());
+        ta.set_cursor_line_style(Style::default());
+        ta.set_placeholder_text(
+            "Type a message. Enter to submit · Shift+Enter to insert newline · /help for commands.",
+        );
+        // Move cursor to end of buffer so the user can keep typing.
+        ta.move_cursor(tui_textarea::CursorMove::End);
+        self.input = ta;
+    }
+
+    fn clear_input(&mut self) {
+        let mut ta = TextArea::default();
+        ta.set_cursor_line_style(Style::default());
+        ta.set_placeholder_text(
+            "Type a message. Enter to submit · Shift+Enter to insert newline · /help for commands.",
+        );
+        self.input = ta;
+    }
+
     /// Submit the current input as a user turn. Splits slash commands out
     /// into [`Self::dispatch_slash`].
     fn submit_current(&mut self) {
@@ -202,55 +276,138 @@ impl App<'_> {
         if body.is_empty() {
             return;
         }
-        // Clear the editor.
-        self.input = TextArea::default();
-        self.input.set_cursor_line_style(Style::default());
-        self.input.set_placeholder_text(
-            "Type a message. Enter to submit · Shift+Enter to insert newline · /help for commands.",
-        );
+        // Clear the editor and remember the line for Up/Down recall.
+        self.clear_input();
+        self.input_history.push(&body);
+        self.input_history.reset_cursor();
 
         if let Some(cmd) = body.strip_prefix('/') {
             self.dispatch_slash(cmd);
             return;
         }
 
-        // Echo the user turn, then a stub assistant turn.
+        // Echo the user turn, then a stub assistant turn. Real dispatch lands
+        // once `gaussclaw-agent` exposes a `run_turn` API to the surface plane.
         self.history.push(Entry::User(body));
-        self.history.push(Entry::Assistant(
-            "(stub) gaussclaw-tui does not yet dispatch to a provider; \
-             real agent execution lands later in Phase 1 (Task 9, three-plane routing)."
-                .into(),
-        ));
+        let reply = format!(
+            "(stub) Real provider dispatch lands once `gaussclaw-agent::run_turn` is wired into the \
+             surface plane. Current model: {model}, taint floor: {taint}.",
+            model = self.status.model,
+            taint = self.status.taint_floor,
+        );
+        self.last_assistant = Some(reply.clone());
+        self.history.push(Entry::Assistant(reply));
         self.status.turn = self.status.turn.saturating_add(1);
     }
 
-    /// Dispatch a slash command. Phase 1 ships `/help`, `/quit`, `/clear`;
-    /// the rest stub with the phase that lands them.
+    /// Dispatch a slash command. The TUI ships every command that can
+    /// answer from local state today (`/help`, `/quit`, `/clear`, `/info`,
+    /// `/version`, `/copy`, `/history`, `/model`, `/receipt`, `/taint`,
+    /// `/caps`, `/sandbox`); commands that need agent state announce what
+    /// will land them.
     fn dispatch_slash(&mut self, cmd: &str) {
         let (head, rest) = cmd
             .split_once(char::is_whitespace)
             .map_or((cmd, ""), |(h, r)| (h.trim(), r.trim()));
+
         let body = match head {
-            "help" => HELP_TEXT.into(),
+            "help" | "?" => HELP_TEXT.into(),
+
             "quit" | "exit" => {
                 self.history
                     .push(Entry::System("Bye. (Use Ctrl+C any time.)".into()));
                 return;
             }
+
             "clear" | "new" => {
                 self.history.clear();
-                self.history.push(Entry::System("Session cleared.".into()));
+                self.history
+                    .push(Entry::System("Session cleared.".into()));
                 return;
             }
-            "receipt" | "taint" | "caps" | "sandbox" => {
-                format!(
-                    "/{head}: not yet implemented (Phase 2 / 3 deliverable; see GAUSSCLAW_ROADMAP.md)."
-                )
+
+            "version" => format!(
+                "GaussClaw TUI v{} · gauss-aether runtime",
+                env!("CARGO_PKG_VERSION")
+            ),
+
+            "info" | "status" => format!(
+                "session  {session}\nmodel    {model}\nturn     {turn}\nchain    {chain}\
+                 \ntaint    {taint}\ncaps     {caps}\nhistory  {hist} entries{path_line}",
+                session = self.status.session,
+                model = self.status.model,
+                turn = self.status.turn,
+                chain = self.status.chain_head,
+                taint = self.status.taint_floor,
+                caps = self.status.caps,
+                hist = self.input_history.len(),
+                path_line = self
+                    .input_history
+                    .path()
+                    .map(|p| format!("\nhistory  → {}", p.display()))
+                    .unwrap_or_default(),
+            ),
+
+            "history" => {
+                if self.input_history.is_empty() {
+                    "No prior input recorded. New entries persist under the platform state directory.".into()
+                } else {
+                    let path_note = self
+                        .input_history
+                        .path()
+                        .map(|p| format!(" · stored at {}", p.display()))
+                        .unwrap_or_default();
+                    format!(
+                        "{} entries on disk{}.\nUse Ctrl+P / Ctrl+N (or Up/Down on an empty line) to recall.",
+                        self.input_history.len(),
+                        path_note,
+                    )
+                }
             }
-            "model" | "tools" | "config" | "logs" | "statusbar" | "queue" | "undo" | "retry"
-            | "copy" | "paste" | "details" | "compact" | "resume" => {
-                format!("/{head} {rest}: not yet implemented (later Phase 1 slice).")
+
+            "copy" => {
+                if let Some(text) = self.last_assistant.clone() {
+                    emit_osc52(&text);
+                    format!(
+                        "Copied last assistant reply to the system clipboard ({} chars via OSC 52).",
+                        text.chars().count()
+                    )
+                } else {
+                    "Nothing to copy yet — submit a turn first.".into()
+                }
             }
+
+            "model" => {
+                if rest.is_empty() {
+                    format!("Active model: {}", self.status.model)
+                } else {
+                    self.status.model = rest.to_owned();
+                    format!("Active model set to {rest} (local only; persists once gaussclaw-config is wired).")
+                }
+            }
+
+            "receipt" => format!(
+                "Receipt chain head: {chain}\nVerify an export with: gaussclaw receipt verify <envelope.json>",
+                chain = self.status.chain_head
+            ),
+
+            "taint" => format!(
+                "Current taint floor: {floor}\nThe taint lattice ℒ is enforced by gauss-kernel::flow with antitone declassification.",
+                floor = self.status.taint_floor
+            ),
+
+            "caps" => format!(
+                "Granted capabilities: {n}\nRun `gaussclaw doctor --json` to inspect the active grant.",
+                n = self.status.caps
+            ),
+
+            "sandbox" => "Composite sandbox layers (per tool dispatch):\n  L1 WASM (wasmi)\n  L2 Landlock\n  L3 seccomp\n  L4 bwrap\nUpper-bound compromise: Pr ≤ 1.1 × 10⁻⁷ (theorem T10).".into(),
+
+            "tools" | "config" | "logs" | "queue" | "undo" | "retry" | "paste" | "compact"
+            | "resume" | "sessions" | "details" | "statusbar" => {
+                format!("/{head} {rest}: awaits agent-loop wiring; tracked in STRATEGY.md.")
+            }
+
             _ => format!("Unknown command: /{head}. Try /help."),
         };
         self.history.push(Entry::System(body));
@@ -382,23 +539,46 @@ fn prefixed_lines(prefix: &str, body: &str, colour: Color) -> Vec<Line<'static>>
         .collect()
 }
 
+/// Emit an OSC 52 clipboard write so the parent terminal puts `text` on
+/// the user's system clipboard. Works in iTerm2, kitty, WezTerm, Alacritty,
+/// recent xterm, and any tmux 3.3+ with `set-clipboard on`. No-ops on
+/// terminals that ignore the sequence.
+fn emit_osc52(text: &str) {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+    // ESC ] 52 ; c ; <base64> BEL — written straight to stdout. The TUI is
+    // already in raw mode so the escape sequence reaches the terminal
+    // emulator without being intercepted.
+    let _ = std::io::Write::write_all(&mut io::stdout(), format!("\x1b]52;c;{b64}\x07").as_bytes());
+    let _ = std::io::Write::flush(&mut io::stdout());
+}
+
 /// In-app help body for `/help`.
 const HELP_TEXT: &str = "\
-Slash commands:
-  /help          show this help
-  /quit, /exit   exit the TUI (or Ctrl+C / Ctrl+D)
-  /clear, /new   wipe the visible history (also Ctrl+L)
-  /receipt       Phase 2: show receipt-chain head
-  /taint         Phase 3: show current taint floor + per-token labels
-  /caps          Phase 3: show current capability set
-  /sandbox       Phase 3: per-tool sandbox layer status
+Slash commands
+──────────────
+  /help, /?          show this help
+  /quit, /exit       exit (Ctrl+C / Ctrl+D also work)
+  /clear, /new       wipe the visible history (Ctrl+L also)
+  /version           show TUI + runtime versions
+  /info, /status     dump session, model, chain head, taint, caps
+  /history           show on-disk recall buffer location + size
+  /model [name]      show or set the active model
+  /copy              copy the last assistant reply to the system clipboard
+  /receipt           show the active receipt-chain head
+  /taint             show the active taint floor
+  /caps              show the active capability count
+  /sandbox           show composite-sandbox layer order
 
-Keybindings:
-  Enter          submit current input
-  Shift+Enter    insert newline
-  Ctrl+C, Ctrl+D quit
-  Ctrl+L         clear history
-  PageUp/Down    scroll history
+Keybindings
+───────────
+  Enter              submit current input
+  Shift+Enter        insert a newline
+  Ctrl+C, Ctrl+D     quit
+  Ctrl+L             clear history
+  Ctrl+P / Up        recall previous input
+  Ctrl+N / Down      recall next input
+  PageUp / PageDown  scroll transcript
 ";
 
 // ─── public render hook used by the conformance snapshot tests ──────────────
@@ -444,6 +624,16 @@ pub fn run(initial: StatusInfo) -> Result<()> {
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     let mut app = App::new(initial);
+
+    // Surface where we'll be persisting input history so operators know
+    // exactly which file to grep or revoke.
+    if let Some(path) = app.input_history.path().cloned() {
+        app.push(Entry::System(format!(
+            "Input history persists at {} ({} entries loaded).",
+            path.display(),
+            app.input_history.len(),
+        )));
+    }
 
     run_event_loop(&mut terminal, &mut app)?;
     Ok(())

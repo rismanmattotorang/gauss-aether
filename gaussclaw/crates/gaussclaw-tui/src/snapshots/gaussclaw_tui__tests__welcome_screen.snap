@@ -1,12 +1,13 @@
 ---
-source: crates/gaussclaw-tui/src/lib.rs
+source: gaussclaw/crates/gaussclaw-tui/src/lib.rs
+assertion_line: 788
 expression: buffer_text(&buf)
 ---
  GaussClaw  v0.0.1  — Hermes port on Gauss-Aether                               
  session=s1  model=anthropic/claude-3.5-sonnet  turn=0  chain=deadbeef  taint=⊥ 
 ────────────────────────────────────────────────────────────────────────────────
- · Welcome to GaussClaw. The TUI skeleton lands in this slice; real agent       
-dispatch arrives later in Phase 1. Try `/help`.                                 
+ · Welcome to GaussClaw. Type a message, or `/help` for a tour of slash         
+commands.                                                                       
                                                                                 
 ────────────────────────────────────────────────────────────────────────────────
 ┌ input ───────────────────────────────────────────────────────────────────────┐

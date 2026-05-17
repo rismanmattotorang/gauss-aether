@@ -1,15 +1,16 @@
 ---
-source: crates/gaussclaw-tui/src/lib.rs
+source: gaussclaw/crates/gaussclaw-tui/src/lib.rs
+assertion_line: 804
 expression: buffer_text(&buf)
 ---
  GaussClaw  v0.0.1  — Hermes port on Gauss-Aether                               
  session=s1  model=anthropic/claude-3.5-sonnet  turn=1  chain=cafef00d  taint=us
 ────────────────────────────────────────────────────────────────────────────────
- · Welcome to GaussClaw. The TUI skeleton lands in this slice; real agent       
-dispatch arrives later in Phase 1. Try `/help`.                                 
+ · Welcome to GaussClaw. Type a message, or `/help` for a tour of slash         
+commands.                                                                       
  › hello world                                                                  
- ◀ (stub) gaussclaw-tui does not yet dispatch to a provider; real agent         
-execution lands later in Phase 1 (Task 9, three-plane routing).                 
+ ◀ (stub) Real provider dispatch lands once `gaussclaw-agent::run_turn` is wired
+into the surface plane. Current model: anthropic/claude-3.5-sonnet, taint floor:
 ────────────────────────────────────────────────────────────────────────────────
 ┌ input ───────────────────────────────────────────────────────────────────────┐
 │ Type a message. Enter to submit · Shift+Enter to insert newline · /help for c│
