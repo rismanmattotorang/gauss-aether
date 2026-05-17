@@ -53,6 +53,7 @@ crates/
 ├── gaussclaw-cli            # clap subcommands: model · tools · config · gateway · setup · update · doctor
 ├── gaussclaw-tui            # Ratatui + crossterm; full-screen interactive shell (replaces React+Ink)
 ├── gaussclaw-web            # Axum dashboard backend + embedded React 19 / Vite / Tailwind v4 frontend
+├── gaussclaw-desktop        # Tauri 2 desktop app; reuses gaussclaw-web frontend; replaces Hermes Electron
 ├── gaussclaw-website        # Docusaurus content tree + i18n (en, zh-Hans); CI-built static site
 ├── gaussclaw-surfaces       # Thin adapters: REST · WS · OAI-compat relay (ChannelTrait impls)
 ├── gaussclaw-channels       # ~20 messaging adapters (Slack, Discord, Telegram, Matrix, …)
@@ -77,6 +78,7 @@ crates/
 | `hermes/ui-tui/` | TypeScript · React · forked **Ink** | `gaussclaw-tui` | Rust · **Ratatui + crossterm** | No Node runtime; cold-start sub-10 ms; receipt-aware status bar |
 | `hermes/web/` (frontend) | React 19 · Vite · Tailwind v4 · shadcn-style | `gaussclaw-web` (`/frontend`) | **Retained** verbatim, served via `rust-embed` | Zero behavioural drift; same `StatusPage` / `ConfigPage` / `EnvPage` |
 | `hermes/web/` (backend) | FastAPI · **POSIX PTY** (WSL2-only) | `gaussclaw-web` (`/backend`) | Rust · **Axum** · WebSocket streaming | No PTY; runs on Linux / macOS / Windows native; capability-gated config writes |
+| Hermes Desktop ([hermes-ai.net/desktop](https://hermes-ai.net/desktop/)) | **Electron 39** · Chromium-bundled · HTTP-over-localhost:8642 · unsigned | `gaussclaw-desktop` | **Tauri 2** · system WebView · typed IPC sidecar · Ed25519-signed | ~10× smaller installer; ~3× lower RAM; sub-500 ms cold start; code-signed on all 3 OSes; mobile (iOS/Android) path via Tauri 2 mobile |
 | `hermes/tui_gateway/` | Python TUI ↔ gateway IPC | folded into `gaussclaw-tui` + `gaussclaw-gateway` plane | Rust · in-process channel | One process; no IPC ceremony |
 | `hermes/website/` | **Docusaurus** + i18n (zh-Hans) | `gaussclaw-website` | **Docusaurus** retained + new `mdBook` API reference | Preserves URL structure + i18n; adds rustdoc-aware crate API site |
 | `hermes` CLI | Python `click` | `gaussclaw-cli` | Rust · `clap` v4 | Static binary; identical subcommands and flags |
@@ -168,7 +170,77 @@ Each milestone produces a shippable binary. Phase N+1 validates against Phase N'
    - The Vite dev server proxies `/api/*` to the Axum backend during development (mirrors Hermes's FastAPI proxy).
    - **Optional Leptos variant** tracked in v2 (`/frontend-leptos`) for a fully-Rust WASM dashboard. Not GA-blocking.
 
-5. **Website (`gaussclaw-website`).** Two surfaces:
+5. **Desktop app (`gaussclaw-desktop`).** A native cross-platform desktop application built on **Tauri 2 + Rust**, designed as a strict superset of the upstream **Hermes Desktop** (Electron 39 + Python backend over HTTP at `127.0.0.1:8642`). It reuses the same React 19 / Vite / Tailwind v4 frontend from `gaussclaw-web` — no second codebase — and wires it to the `gaussclaw` daemon as a Tauri **sidecar** over typed IPC instead of HTTP.
+
+   **Stack.**
+   - [Tauri 2](https://tauri.app) Rust shell rendering through the OS-native WebView (WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux). No Chromium bundled.
+   - Shared frontend: the exact `gaussclaw-web/frontend` React 19 + Vite + Tailwind v4 + shadcn-style codebase, compiled once and consumed by both the web dashboard and the desktop shell. A `BUILD_TARGET=desktop` env switch enables Tauri-only features (tray menu, hotkey overlay, native file dialogs).
+   - Sidecar: the shipping `gaussclaw` binary registered via `tauri.conf.json > tauri.bundle.externalBin`; lifetime managed by Tauri. IPC over typed `#[tauri::command]` and `tauri::Window::emit` events — no localhost HTTP socket, no PTY.
+   - Tauri 2 plugins: `tauri-plugin-window-state`, `tauri-plugin-global-shortcut`, `tauri-plugin-notification`, `tauri-plugin-autostart`, `tauri-plugin-clipboard-manager`, `tauri-plugin-fs` (capability-scoped), `tauri-plugin-shell` (capability-scoped), `tauri-plugin-updater` (Ed25519-signed manifests), `tauri-plugin-deep-link`, `tauri-plugin-single-instance`, `tauri-plugin-os`, `tauri-plugin-store`, `tauri-plugin-dialog`, `tauri-plugin-process`.
+
+   **Screen parity** with Hermes Desktop's 12 windows — preserved by name, navigation, and search semantics (SQLite FTS5 there → SurrealDB FTS here):
+   `Chat`, `Sessions`, `Agents`, `Skills`, `Models`, `Memory`, `Soul`, `Tools`, `Schedules`, `Gateway`, `Office`, `Settings`.
+
+   **Slash-command parity.** All 22 Hermes Desktop slash commands accepted in the Chat window, plus the GaussClaw-specific `/receipt`, `/taint`, `/caps`, `/sandbox` overlays introduced in the TUI.
+
+   **Toolset parity.** All 14 Hermes Desktop toolsets (web, browser, terminal, file, code, vision, …) ship as Skill Manifests in `gaussclaw-tools`. Each toolset is toggleable from the `Tools` window, with the toggle producing a capability-set delta the kernel honours immediately (no daemon restart).
+
+   **Gateway parity.** All 16 messaging gateways from Hermes Desktop wired through `gaussclaw-channels` and visible in the `Gateway` window.
+
+   **Additive screens** (already in `gaussclaw-web` frontend; ride the same Tauri shell):
+   `Receipt` (chain head, Merkle proof verifier, TSA attestation viewer), `Lineage` (interactive conversation graph), `Sandbox` (per-tool layer status with fuel/epoch counters), `Providers` (catalogue, polyhedral-equivalence badges, OpenRouter / NotDiamond aggregator views, cost telemetry), `Export` (trajectory envelope inspector, taint-filter mode toggle, federated-pool publisher).
+
+   **Office / 3D view.** Hermes's `Office` Claw3d window is preserved through three.js inside the WebView (the React frontend already drives it). An optional **Bevy** companion window via Tauri multi-window is tracked as v2 for GPU-accelerated scenes.
+
+   **Desktop-native features that close Hermes Desktop's gaps.**
+   - **System tray** with quick-toggle for the gateway, recent sessions, capability hold/release, and a one-click `Pause all turns` kill switch routed through the Approval plane.
+   - **Global hotkey** (default `Cmd/Ctrl+Shift+H`, configurable) summons a Spotlight-style quick-prompt overlay that dispatches a one-shot turn without focusing the main window.
+   - **Native OS notifications** for tool-approval prompts, deadline elapses, gateway-arriving messages, receipt-chain anchor events.
+   - **Single-instance lock** (Hermes Electron does not guarantee this; double-clicks on the launcher can produce duplicated tray icons).
+   - **Deep links**: `gaussclaw://session/{id}`, `gaussclaw://skill/install/{url}` for one-click skill installs from skill-marketplace sources.
+   - **Autostart on login** opt-in (`tauri-plugin-autostart`).
+   - **Window-state restoration** per monitor, per workspace.
+   - **Clipboard monitor** surfaced as a `clipboard:read` Skill Manifest — capability-gated; off by default.
+   - **Drag-and-drop files** into Chat routed through Tauri's scoped `fs` plugin, dropped contents default to taint `user`.
+   - **Multi-window** for `Skills` inspector, `Office` 3D view, `Memory` editor, `Sandbox` monitor (each a separate Tauri window).
+   - **Accessibility**: WebView reads the same ARIA tree as `gaussclaw-web`; keyboard navigation parity with the TUI keybindings where applicable.
+
+   **Capability-model alignment (the structural win).**
+   Tauri 2 ships a permission system — `tauri.conf.json > app.security.capabilities[]` — that scopes every plugin call (fs read, shell exec, network fetch, clipboard, …) to a declared allowlist. **This permission system maps directly onto Gauss-Aether's capability lattice 𝒦.** `gaussclaw-desktop`'s build pipeline emits the Tauri capability JSON *from the same Skill Manifest declarations the kernel reads at admission time*. A tool's `caps = ["fs:read:./data"]` produces the matching Tauri scoped FS permission as a build-time artefact. The desktop shell's front-door capability discipline therefore is the same artefact as the agent's tool-execution capability discipline — there is no second policy to drift.
+
+   **Sidecar IPC over typed commands.**
+   The shipping `gaussclaw` daemon runs as a Tauri sidecar; the frontend talks to it through `invoke('gc_command', payload)` which serialises over the platform IPC channel (Unix domain sockets / Windows named pipes). This **eliminates** the Hermes Desktop `localhost:8642` HTTP attack surface, removes HTTP framing overhead, and lets the IPC payload be signed by `gauss-attest` for inter-process authenticity. Streaming responses arrive through Tauri `event` channels, not SSE.
+
+   **Distribution & signing.**
+
+   | Platform | Bundles | Signing |
+   |---|---|---|
+   | macOS | Universal `.dmg` (aarch64 + x86_64), `.app` | Apple Developer ID + notarization + stapling in CI |
+   | Windows | `.msi` (WiX), `.exe` (NSIS), winget manifest | Authenticode signing in CI; EV cert preferred |
+   | Linux | `.AppImage`, `.deb`, `.rpm`, Flatpak | GPG-signed; Flathub manifest |
+   | iOS (v2) | TestFlight `.ipa` via Tauri 2 mobile | App Store signing |
+   | Android (v2) | `.apk`, `.aab` via Tauri 2 mobile | Play Console / F-Droid |
+
+   **Auto-update.**
+   `tauri-plugin-updater` consumes Ed25519-signed update manifests; the signing key is held by `gauss-attest`. Each released installer's hash is also chained into the public receipt log, giving every shipped binary a verifiable provenance edge — a property Hermes Desktop's electron-updater does not provide.
+
+   **Footprint targets** (vs. Hermes Desktop Electron 39 baseline):
+
+   |  | Hermes Desktop | GaussClaw Desktop target |
+   |---|---|---|
+   | Installer size | ~150 MB | **≤ 20 MB** |
+   | On-disk size | ~300 MB | **≤ 50 MB** |
+   | RAM idle | ~250 MB | **≤ 80 MB** |
+   | Cold start (warm cache) | ~3 s | **≤ 500 ms** |
+   | Code-signed | No | **Yes (3 OSes)** |
+   | Notarized (macOS) | No | **Yes** |
+   | Auto-update integrity | TLS-only | **Ed25519-signed + chained receipt** |
+   | Mobile path | None | **Tauri 2 mobile (v2)** |
+   | IPC channel | HTTP on localhost:8642 | **OS-native IPC (no socket)** |
+
+   **Phase placement.** Frontend reuse and Tauri shell scaffolding land in Phase 1 alongside `gaussclaw-web` (the shared frontend is built once). Code-signing, notarization, signed auto-update manifests, and Flathub/winget submissions finalise in Phase 5 as part of the GA release artefact set.
+
+6. **Website (`gaussclaw-website`).** Two surfaces:
 
    **User-facing site (`/site`).**
    - **Docusaurus retained** — same generator Hermes uses, same theme structure, same i18n folder layout (English + `zh-Hans`).
@@ -184,20 +256,20 @@ Each milestone produces a shippable binary. Phase N+1 validates against Phase N'
 
    **CI:** `ascii-guard`-equivalent lint preserved; new lint checks that every page references at least one canonical anchor (axiom, theorem, or Hermes-module path).
 
-6. **Thin surface adapters (`gaussclaw-surfaces`).** REST (Axum routes serving `/v1/...`), WS (axum WebSocket upgrades, same wire shape as Hermes), OAI-compat relay (`/v1/chat/completions`, `/v1/completions`, `/v1/models` with SSE streaming).
+7. **Thin surface adapters (`gaussclaw-surfaces`).** REST (Axum routes serving `/v1/...`), WS (axum WebSocket upgrades, same wire shape as Hermes), OAI-compat relay (`/v1/chat/completions`, `/v1/completions`, `/v1/models` with SSE streaming).
 
-7. **Channel adapters (`gaussclaw-channels`).** One module per messaging platform, each a `ChannelTrait` impl. Auth secrets handled by `gauss-attest` secret store; never round-tripped to the Python shim.
+8. **Channel adapters (`gaussclaw-channels`).** One module per messaging platform, each a `ChannelTrait` impl. Auth secrets handled by `gauss-attest` secret store; never round-tripped to the Python shim.
 
-8. **Shim subprocess.** `PythonShimExecutor` in `gaussclaw-agent` fork-execs legacy Hermes with stdio JSON-RPC. Every routed message is an RPC call; every streamed token re-emitted on the Gauss-Aether wire. Removed phase-by-phase as native executors land.
+9. **Shim subprocess.** `PythonShimExecutor` in `gaussclaw-agent` fork-execs legacy Hermes with stdio JSON-RPC. Every routed message is an RPC call; every streamed token re-emitted on the Gauss-Aether wire. Removed phase-by-phase as native executors land.
 
-9. **Three-plane routing.** All surfaces route through `gauss-gateway`:
+10. **Three-plane routing.** All surfaces route through `gauss-gateway`:
    - **Conversation plane:** CLI, TUI, REST, WS, OAI-compat relay, web chat, messaging channels.
    - **Daemon plane:** Scheduled / background turns, gateway long-poll workers.
    - **Approval plane:** Tool-call approval prompts surfaced through TUI overlays, web `ApprovalPage`, and Slack/Discord interactive messages.
 
-10. **OAI-compat relay parity.** Parametrise the **OpenAI Python SDK end-to-end test suite** against both Hermes and GaussClaw back-ends.
+11. **OAI-compat relay parity.** Parametrise the **OpenAI Python SDK end-to-end test suite** against both Hermes and GaussClaw back-ends.
 
-11. **Audit-trace recording.** Every adapter writes a turn-entry trace (surface, ts, headers, body hash) into `gauss-audit` *before* dispatch.
+12. **Audit-trace recording.** Every adapter writes a turn-entry trace (surface, ts, headers, body hash) into `gauss-audit` *before* dispatch.
 
 ### Crate dependency edges
 
@@ -205,6 +277,10 @@ Each milestone produces a shippable binary. Phase N+1 validates against Phase N'
 gaussclaw-cli       → gaussclaw-agent, gaussclaw-tui, gaussclaw-web, gaussclaw-config
 gaussclaw-tui       → gauss-gateway, gauss-traits, ratatui, crossterm, tui-textarea
 gaussclaw-web       → gauss-gateway, gauss-health, gauss-sag, axum, rust-embed
+gaussclaw-desktop   → gaussclaw-web (frontend reuse), gauss-attest (updater key),
+                       tauri v2 + plugins (window-state, global-shortcut,
+                       notification, autostart, clipboard-manager, fs, shell,
+                       updater, deep-link, single-instance, os, store, dialog)
 gaussclaw-website   → (build-only: docusaurus, mdbook; no runtime deps)
 gaussclaw-surfaces  → gauss-gateway, gauss-traits, axum
 gaussclaw-channels  → gauss-gateway, gauss-traits, gauss-attest
@@ -218,6 +294,7 @@ gaussclaw-bin       → all of the above
 - [ ] **CLI parity:** every Hermes subcommand and flag accepted by `gaussclaw-cli`; `gaussclaw --help` and per-subcommand help diff clean against a frozen Hermes corpus.
 - [ ] **TUI parity:** every Hermes Ink screen, keybinding, and slash command available in `gaussclaw-tui`; insta snapshot tests green for every documented screen state; latency p99 for first-token render ≤ 20 ms above provider latency.
 - [ ] **Web dashboard parity:** `StatusPage`, `ConfigPage`, `EnvPage` work against the Axum backend with no client-side changes from the Hermes upstream frontend; Playwright e2e suite green on Linux, macOS, Windows native (no WSL2 required).
+- [ ] **Desktop app shell:** `gaussclaw-desktop` builds a Tauri 2 development bundle on macOS, Windows, Linux that loads the shared frontend, attaches the `gaussclaw` sidecar via typed IPC, and renders all 12 Hermes Desktop screens. Tray, global hotkey, native notifications, and single-instance lock pass functional tests. Code-signing / notarization deferred to GA.
 - [ ] **Website parity:** Docusaurus site builds, deploys to a static host, serves both English and `zh-Hans`; redirect map from the Hermes URL structure tested.
 - [ ] OAI-compat relay passes **100 %** of the OpenAI Python SDK's official end-to-end suite, parametrised by both backends.
 - [ ] Trajectory export under shim regime produces files **byte-identical** to those produced by raw Hermes on the same input traffic (run via `gaussclaw-conformance::replay_corpus`).
@@ -560,12 +637,19 @@ The envelope is **optional** for consumers that ignore it; **mandatory** for fed
 6. **Six-metric operational profile.** Cold start, tool overhead, audit cost, hybrid recall, crash recovery, multi-tenant safety. Must tie or lead the best baseline on every metric.
 7. **`gaussclaw doctor`.** Self-Diagnostic Health Engine (`gauss-health`) command that runs invariants ℐ, prints federated attestations, surfaces any drift.
 8. **Migration UX.** `gaussclaw import hermes ./hermes-config.toml` produces a GaussClaw config with the legacy executor enabled and a phase-by-phase opt-in checklist.
-9. **Website + dashboard GA.** Finalise `gaussclaw-website`:
+9. **Desktop GA artefacts (`gaussclaw-desktop`).** Finalise the Tauri 2 desktop release:
+   - Set up CI signing jobs: Apple Developer ID + notarization (macOS), Authenticode (Windows), GPG (Linux), each gated on `gauss-attest` key release.
+   - Build the universal macOS `.dmg`, Windows `.msi`/`.exe`, Linux `.AppImage`/`.deb`/`.rpm`; submit winget and Flathub manifests.
+   - Wire `tauri-plugin-updater` to a signed manifest endpoint; every release binary's hash is anchored in the public receipt chain.
+   - Measure and gate footprint targets (installer ≤ 20 MB, RAM ≤ 80 MB, cold start ≤ 500 ms) per OS.
+   - Smoke-test deep links (`gaussclaw://session/{id}`, `gaussclaw://skill/install/{url}`), tray, global hotkey, single-instance lock, autostart, drag-and-drop, native notifications, multi-window flows.
+   - Confirm the Tauri capability JSON is emitted from the same Skill Manifests the kernel reads, with a CI lint that fails on drift.
+10. **Website + dashboard GA.** Finalise `gaussclaw-website`:
    - All Docusaurus sections complete and proofread in English + `zh-Hans`.
    - `ReceiptPage`, `LineagePage`, `SandboxPage`, `ProvidersPage`, `ExportPage` ship in `gaussclaw-web`'s frontend with documented walkthroughs in the site.
    - mdBook API reference auto-builds from `cargo doc --workspace`.
    - Deploy target set up (GitHub Pages or Cloudflare Pages); HTTPS, redirect map from Hermes URL space, and 301 from `hermes-agent.nousresearch.com`-style paths configured for the official deployment.
-10. **Public bug-bounty period.** Two weeks during which Hermes remains co-deployed for any GA-blocking regression.
+11. **Public bug-bounty period.** Two weeks during which Hermes remains co-deployed for any GA-blocking regression. Includes the desktop app: bounty pays for any IPC-bypass, capability-escalation, or update-manifest-forgery finding.
 
 ### Crate dependency edges
 
@@ -585,6 +669,13 @@ gaussclaw-bin    → gaussclaw-export, gaussclaw-fed
 - [ ] `gaussclaw import hermes` round-trips a real Hermes deployment in under 60 s.
 - [ ] **Website live** with English + `zh-Hans` content, mdBook API reference, working migration guide; Lighthouse score ≥ 95 on every section.
 - [ ] **Single-binary shipping.** `gaussclaw` is one static binary that includes the TUI, the embedded web dashboard frontend, and all subcommands; no Node/Python runtime required at runtime.
+- [ ] **Desktop GA release artefacts.**
+  - macOS universal `.dmg` signed with Apple Developer ID, notarized, stapled.
+  - Windows `.msi` and `.exe` signed with Authenticode; winget manifest accepted.
+  - Linux `.AppImage`, `.deb`, `.rpm` GPG-signed; Flathub manifest accepted.
+  - Installer size **≤ 20 MB**, on-disk **≤ 50 MB**, RAM idle **≤ 80 MB**, cold start **≤ 500 ms** measured on each OS.
+  - `tauri-plugin-updater` consumes Ed25519-signed manifests; every release binary's SHA-256 is anchored in the public receipt chain via `gauss-attest`.
+  - Tauri capability JSON emitted from the same Skill Manifests the kernel reads; no policy drift between front-door and tool-dispatch capabilities.
 
 ### Rollback
 
@@ -631,7 +722,8 @@ fallback = ["openrouter/anthropic/claude-3.5-sonnet"]
 3. **CLI parity.** Hermes `--help` corpus diffed against `gaussclaw --help`; every subcommand exit-code and stderr shape locked.
 4. **TUI snapshot.** `insta` golden snapshots of every documented Ink screen state, re-rendered through Ratatui and diffed.
 5. **Web e2e.** Playwright suite driving the React frontend against both Hermes FastAPI and GaussClaw Axum backends; identical user-visible behaviour on Linux / macOS / Windows native.
-6. **Axiom regressions.** Every PR runs the `gauss-conformance` suite to guarantee A1–A9 / T1–T12 hold.
+6. **Desktop e2e.** [WebdriverIO + tauri-driver](https://v2.tauri.app/develop/tests/webdriver/) suite that boots the Tauri shell on macOS, Windows, Linux, drives all 12 Hermes-parity screens, exercises tray / hotkey / notifications / deep links, and asserts the IPC payload schema against the same OpenAPI-style contract the Axum backend serves.
+7. **Axiom regressions.** Every PR runs the `gauss-conformance` suite to guarantee A1–A9 / T1–T12 hold.
 
 ### Risk register (operational mitigations)
 
