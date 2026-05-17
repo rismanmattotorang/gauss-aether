@@ -8,14 +8,14 @@ projects.**
 [![Rust](https://img.shields.io/badge/Rust-1.83+-orange.svg)](rust-toolchain.toml)
 [![Tests](https://img.shields.io/badge/tests-299%20passing-brightgreen.svg)]()
 [![Runtime](https://img.shields.io/badge/Gauss--Aether-1.0%20ready-blueviolet.svg)]()
-[![Agent](https://img.shields.io/badge/GaussClaw-planning%20%2B%20scaffolding-orange.svg)](GAUSSCLAW_ROADMAP.md)
+[![Agent](https://img.shields.io/badge/GaussClaw-planning%20%2B%20scaffolding-orange.svg)](gaussclaw/ROADMAP.md)
 
 This repository houses two projects that ship together:
 
 | Project | What it is | Status |
 |---|---|---|
-| **Gauss-Aether** | The runtime — an axiomatic OS-style kernel for LLM agents whose safety invariants are mechanically checked, not policy documents. 22 `gauss-*` crates. | 1.0 ready · 299 tests green |
-| **GaussClaw** | The agent on top — a Rust port of the [Hermes agent](https://github.com/nousresearch/hermes-agent) that preserves every Hermes ergonomic primitive while running every turn under Gauss-Aether's kernel discipline. 19 `gaussclaw-*` crates. | Plan + scaffolding ([roadmap](GAUSSCLAW_ROADMAP.md)) |
+| **[Gauss-Aether](gauss-aether/)** | The runtime — an axiomatic OS-style kernel for LLM agents whose safety invariants are mechanically checked, not policy documents. 22 `gauss-*` crates under [`gauss-aether/crates/`](gauss-aether/crates/). | 1.0 ready · 299 tests green |
+| **[GaussClaw](gaussclaw/)** | The agent on top — a Rust port of the [Hermes agent](https://github.com/nousresearch/hermes-agent) that preserves every Hermes ergonomic primitive while running every turn under Gauss-Aether's kernel discipline. 19 `gaussclaw-*` crates under [`gaussclaw/crates/`](gaussclaw/crates/). | Phases 1–5 shipped ([roadmap](gaussclaw/ROADMAP.md)) |
 
 Gauss-Aether is a clean-room reimplementation of an LLM agent runtime
 whose **safety invariants are mechanically checked**, not policy
@@ -61,7 +61,7 @@ proof skeleton and a Docusaurus website tree:
 - **22 `gauss-*` crates** — the Gauss-Aether runtime (this section).
 - **19 `gaussclaw-*` crates** — the GaussClaw agent (see
   [§ GaussClaw](#gaussclaw--the-agent-on-top) below and the full
-  [`GAUSSCLAW_ROADMAP.md`](GAUSSCLAW_ROADMAP.md)).
+  [`gaussclaw/ROADMAP.md`](gaussclaw/ROADMAP.md)).
 
 The `gauss-*` crates partition into seven layers:
 
@@ -125,8 +125,8 @@ The full crate purposes:
 GaussClaw ports the [Hermes](https://github.com/nousresearch/hermes-agent)
 agent into Rust and binds it to the Gauss-Aether kernel without losing a
 single Hermes ergonomic primitive. The plan and exit criteria live in
-[`GAUSSCLAW_ROADMAP.md`](GAUSSCLAW_ROADMAP.md); the crate skeletons live
-in `crates/gaussclaw-*`.
+[`gaussclaw/ROADMAP.md`](gaussclaw/ROADMAP.md); the crate skeletons live
+in [`gaussclaw/crates/`](gaussclaw/crates/).
 
 ### Crate map
 
@@ -157,7 +157,7 @@ in `crates/gaussclaw-*`.
 
 Five phases, 24 weeks, four milestones plus GA. Full plan with exit
 criteria, rollback paths, and per-task dependency edges in
-[`GAUSSCLAW_ROADMAP.md`](GAUSSCLAW_ROADMAP.md).
+[`gaussclaw/ROADMAP.md`](gaussclaw/ROADMAP.md).
 
 | Phase | Weeks | Milestone | Headline deliverable | Locks |
 |---|---|---|---|---|
@@ -354,8 +354,8 @@ crates.
 
 **Gauss-Aether (runtime).**
 
-- **[`SPECS.md`](SPECS.md)** — normative engineering specification (the source paper's recipe).
-- **[`ROADMAP.md`](ROADMAP.md)** — phased development plan, axiom / theorem locks per phase.
+- **[`gauss-aether/SPECS.md`](gauss-aether/SPECS.md)** — normative engineering specification (the source paper's recipe).
+- **[`gauss-aether/ROADMAP.md`](gauss-aether/ROADMAP.md)** — phased development plan, axiom / theorem locks per phase.
 - **[`docs/QUICKSTART.md`](docs/QUICKSTART.md)** — end-to-end embed walkthrough.
 - **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — crate-by-crate architecture tour.
 - **[`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)** — contributor guide + the `specT` style guide.
@@ -365,8 +365,8 @@ crates.
 
 **GaussClaw (agent).**
 
-- **[`GaussClaw.pdf`](GaussClaw.pdf)** — the source paper: full architectural plan + theorems.
-- **[`GAUSSCLAW_ROADMAP.md`](GAUSSCLAW_ROADMAP.md)** — 5-phase, 24-week, milestoned port plan with exit criteria, rollback paths, and dependency edges.
+- **[`gaussclaw/SPEC.pdf`](gaussclaw/SPEC.pdf)** — the source paper: full architectural plan + theorems.
+- **[`gaussclaw/ROADMAP.md`](gaussclaw/ROADMAP.md)** — 5-phase, 24-week, milestoned port plan with exit criteria, rollback paths, and dependency edges.
 - **[`website/README.md`](website/README.md)** — Docusaurus content tree + mdBook API reference.
 
 ---
