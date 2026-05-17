@@ -65,9 +65,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check advisories bans licenses sources
+      - uses: dtolnay/rust-toolchain@stable
+      # Pin cargo-deny to a version that supports CVSS-4.0 advisory
+      # metadata (RustSec started shipping CVSS-4.0 entries in 2026
+      # and older cargo-deny releases choke on them). 0.19.6 is the
+      # first release that round-trips the new format cleanly.
+      - run: cargo install --locked cargo-deny --version 0.19.6
+      - run: cargo deny check advisories bans licenses sources
 
   msrv:
     name: MSRV (1.83)
