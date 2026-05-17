@@ -425,6 +425,48 @@ mod tests {
         );
     }
 
+    // ── TSA anchor (wall-clock proof) ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn anchor_now_records_an_anchor() {
+        use std::sync::Arc;
+        use gauss_audit::SimulatorTsaClient;
+        let tsa = Arc::new(SimulatorTsaClient::from_seed([0x11; 32]));
+        let s = SessionStore::open_in_memory().await.unwrap().with_tsa(tsa);
+        let sess = s.create_session("tui", "m").await;
+        s.append_turn(&sess.id, None, "user", "anchor-me", TaintLabel::User)
+            .await
+            .unwrap();
+        let head_before = s.chain_head().await.unwrap();
+        let anchor = s.anchor_now().await.expect("anchor");
+        assert_eq!(anchor.anchored_at_index, head_before.length);
+        let anchors = s.anchors().await;
+        assert_eq!(anchors.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn anchor_without_tsa_returns_error() {
+        let s = fresh_store().await;
+        let err = s.anchor_now().await.unwrap_err();
+        assert!(matches!(err, StoreError::Backend(_)));
+    }
+
+    #[tokio::test]
+    async fn multiple_anchors_accumulate_in_history() {
+        use std::sync::Arc;
+        use gauss_audit::SimulatorTsaClient;
+        let tsa = Arc::new(SimulatorTsaClient::from_seed([0x22; 32]));
+        let s = SessionStore::open_in_memory().await.unwrap().with_tsa(tsa);
+        let sess = s.create_session("tui", "m").await;
+        for i in 0..3 {
+            s.append_turn(&sess.id, None, "user", format!("t{i}"), TaintLabel::User)
+                .await
+                .unwrap();
+            s.anchor_now().await.unwrap();
+        }
+        assert_eq!(s.anchors().await.len(), 3);
+    }
+
     #[tokio::test]
     async fn verify_chain_catches_in_memory_tamper() {
         let s = fresh_store().await;

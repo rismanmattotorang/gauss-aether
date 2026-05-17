@@ -40,7 +40,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use gauss_audit::{Ed25519Signer, ReceiptSigner, SignedReceipt};
+use gauss_audit::{Anchor, Ed25519Signer, ReceiptSigner, SignedReceipt, TsaClient};
 use gauss_core::TurnId;
 use gauss_memory::SurrealMemory;
 use gauss_traits::{AppendEntry, HybridQuery, MemoryBackend, RecallHit};
@@ -96,6 +96,10 @@ pub struct SessionStore {
     /// [`Self::append_turn`] also produces a [`SignedReceipt`] proving
     /// non-repudiation under EUF-CMA (Theorem T11 of the source paper).
     signer: Option<Arc<ReceiptSigner<Ed25519Signer>>>,
+    /// Optional TSA client for periodic wall-clock anchoring of the
+    /// chain head. Operators call [`Self::anchor_now`] manually or
+    /// run a background loop (slice 7+ ships the loop).
+    tsa: Option<Arc<dyn TsaClient>>,
 }
 
 #[derive(Default)]
@@ -116,6 +120,8 @@ pub(crate) struct State {
     /// Persisted payload bytes for receipt verification (the exact bytes
     /// the signer signed over).
     pub(crate) receipt_payloads: HashMap<u64, Vec<u8>>,
+    /// TSA anchors of the chain head over time (insert-ordered).
+    pub(crate) anchors: Vec<Anchor>,
     /// Next turn id to allocate.
     pub(crate) next_turn_id: u64,
 }
@@ -141,7 +147,42 @@ impl SessionStore {
             memory,
             state: Mutex::new(State::default()),
             signer: None,
+            tsa: None,
         }
+    }
+
+    /// Attach a [`TsaClient`] for wall-clock anchoring. Operators
+    /// trigger anchors via [`Self::anchor_now`]; a periodic background
+    /// loop is left to the deployment (see `gaussclaw-bin` for the
+    /// reference wiring).
+    #[must_use]
+    pub fn with_tsa(mut self, tsa: Arc<dyn TsaClient>) -> Self {
+        self.tsa = Some(tsa);
+        self
+    }
+
+    /// Anchor the current chain head with the attached TSA, append the
+    /// returned anchor to the in-memory anchor history, and return it.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::Backend`] when no TSA is attached or the
+    /// TSA call fails.
+    pub async fn anchor_now(&self) -> StoreResult<Anchor> {
+        let tsa = self.tsa.as_ref().ok_or_else(|| {
+            StoreError::Backend(gauss_core::GaussError::AnchorFailed(
+                "no TSA client attached".into(),
+            ))
+        })?;
+        let snap = self.memory.chain_head().await?;
+        let head = gauss_audit::ChainHead::from_bytes(snap.digest);
+        let anchor = tsa.anchor(head, snap.length).await?;
+        self.state.lock().await.anchors.push(anchor.clone());
+        Ok(anchor)
+    }
+
+    /// All anchors held in memory, in insertion order.
+    pub async fn anchors(&self) -> Vec<Anchor> {
+        self.state.lock().await.anchors.clone()
     }
 
     /// Attach an Ed25519 receipt signer. Every subsequent

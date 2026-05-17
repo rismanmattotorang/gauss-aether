@@ -2823,7 +2823,10 @@ version = "0.0.1"
 dependencies = [
  "axum",
  "clap",
+ "gauss-audit",
+ "gauss-core",
  "gaussclaw-cli",
+ "gaussclaw-store",
  "gaussclaw-surfaces",
  "insta",
  "serde_json",

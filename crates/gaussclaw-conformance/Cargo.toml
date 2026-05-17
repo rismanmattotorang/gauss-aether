@@ -14,6 +14,8 @@ workspace = true
 [dependencies]
 gaussclaw-cli      = { workspace = true }
 gaussclaw-surfaces = { workspace = true }
+gaussclaw-store    = { workspace = true }
+gauss-core         = { workspace = true }
 clap               = { workspace = true }
 
 [dev-dependencies]
@@ -22,3 +24,4 @@ axum         = { workspace = true }
 tokio        = { workspace = true, features = ["test-util", "macros"] }
 tower        = { workspace = true }
 serde_json   = { workspace = true }
+gauss-audit  = { workspace = true }
