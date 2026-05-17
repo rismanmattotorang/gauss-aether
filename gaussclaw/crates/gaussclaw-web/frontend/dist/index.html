@@ -1,51 +1,252 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>GaussClaw Dashboard</title>
-    <style>
-      :root { color-scheme: dark; }
-      body {
-        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-        background: #0a0a0a;
-        color: #e2e2e2;
-        margin: 0;
-        padding: 2rem;
-        line-height: 1.5;
-      }
-      main { max-width: 720px; margin: 0 auto; }
-      h1 { color: #67e8f9; }
-      code { background: #1f1f1f; padding: 0.1em 0.4em; border-radius: 3px; }
-      .row { margin-top: 1.25rem; }
-      .key { color: #a3a3a3; }
-      a { color: #67e8f9; }
-    </style>
-  </head>
-  <body>
-    <main>
-      <h1>GaussClaw Dashboard</h1>
-      <p>
-        The Rust + Axum backend is live. The React 19 + Vite + Tailwind frontend
-        ports verbatim from the upstream Hermes dashboard and lands in a follow-on
-        slice. Until then this placeholder confirms the server is reachable and
-        the embedded-asset pipeline is working.
-      </p>
-      <p>The API surface is already wired:</p>
-      <div class="row"><span class="key">GET </span><code>/api/status</code></div>
-      <div class="row"><span class="key">GET </span><code>/api/health</code></div>
-      <div class="row"><span class="key">GET </span><code>/api/config</code></div>
-      <div class="row"><span class="key">GET </span><code>/api/config/schema</code></div>
-      <div class="row"><span class="key">GET </span><code>/api/sessions</code></div>
-      <div class="row"><span class="key">GET </span><code>/api/providers</code></div>
-      <div class="row"><span class="key">GET </span><code>/api/tools</code></div>
-      <div class="row"><span class="key">GET </span><code>/api/receipt/head</code></div>
-      <div class="row"><span class="key">WS  </span><code>/api/chat/ws</code></div>
-      <p style="margin-top: 2rem; color: #737373; font-size: 0.9rem;">
-        See <code>GAUSSCLAW_ROADMAP.md</code> Phase 1 Task 4 for the frontend
-        port plan. The dashboard runs natively on Linux, macOS, and Windows; no
-        PTY required, no WSL2 constraint.
-      </p>
-    </main>
-  </body>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0a0f1a" />
+  <title>GaussClaw Dashboard</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <aside class="sidebar" aria-label="Primary navigation">
+    <header class="brand">
+      <svg class="brand-logo" viewBox="0 0 64 64" aria-hidden="true">
+        <defs>
+          <linearGradient id="brand-g" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#67e8f9"/>
+            <stop offset="1" stop-color="#0891b2"/>
+          </linearGradient>
+        </defs>
+        <path d="M32 4 L56 18 L56 40 C56 49 48 56 32 60 C16 56 8 49 8 40 L8 18 Z"
+              stroke="url(#brand-g)" stroke-width="3" stroke-linejoin="round" fill="none"/>
+        <circle cx="32" cy="32" r="3.4" fill="url(#brand-g)"/>
+      </svg>
+      <div class="brand-text">
+        <strong>GaussClaw</strong>
+        <span id="brand-version" class="brand-version">v—</span>
+      </div>
+    </header>
+
+    <nav class="nav" role="tablist">
+      <button class="nav-item active" role="tab" data-view="chat"     aria-selected="true">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 6.5v9c0 1.4-1.1 2.5-2.5 2.5H8l-5 4V8.5C3 7.1 4.1 6 5.5 6h13c1.4 0 2.5 1.1 2.5 2.5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        Chat
+      </button>
+      <button class="nav-item" role="tab" data-view="sessions" aria-selected="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M3 9h18M7 5v14" stroke="currentColor" stroke-width="1.7"/></svg>
+        Sessions
+      </button>
+      <button class="nav-item" role="tab" data-view="tools"    aria-selected="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.7 6.3a4 4 0 015.4 5.4L11 21l-6-2 .8-3 9-9.6z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        Tools
+      </button>
+      <button class="nav-item" role="tab" data-view="receipts" aria-selected="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h10l4 4v14H6z M9 12h6M9 16h6M9 8h3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        Receipts
+      </button>
+      <button class="nav-item" role="tab" data-view="health"   aria-selected="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/></svg>
+        Health
+      </button>
+      <button class="nav-item" role="tab" data-view="settings" aria-selected="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M19.4 12a7.4 7.4 0 00-.1-1.3l2.1-1.7-2-3.4-2.5 1a7.5 7.5 0 00-2.3-1.3L14 2.5h-4l-.6 2.7a7.5 7.5 0 00-2.3 1.3l-2.5-1-2 3.4 2.1 1.7c-.1.4-.1.9-.1 1.3s0 .9.1 1.3L2.6 14.7l2 3.4 2.5-1a7.5 7.5 0 002.3 1.3l.6 2.7h4l.6-2.7a7.5 7.5 0 002.3-1.3l2.5 1 2-3.4-2.1-1.7c.1-.4.1-.9.1-1.3z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        Settings
+      </button>
+    </nav>
+
+    <footer class="sidebar-foot">
+      <div class="status-line">
+        <span class="status-dot" id="conn-dot" aria-hidden="true"></span>
+        <span id="conn-label">connecting…</span>
+      </div>
+      <div class="status-line muted">
+        <span class="kbd">⌘K</span> command palette
+      </div>
+      <a class="status-line muted" href="https://github.com/rismanmattotorang/gauss-aether" target="_blank" rel="noopener">
+        GitHub →
+      </a>
+    </footer>
+  </aside>
+
+  <main class="content">
+
+    <!-- ───────────── Chat ───────────── -->
+    <section class="view active" id="view-chat">
+      <header class="view-head">
+        <h1>Chat</h1>
+        <p class="muted">Streaming over WebSocket · <span id="chat-session-id">new session</span></p>
+        <div class="view-head-actions">
+          <button class="chip" id="chat-new">+ New session</button>
+          <button class="chip" id="chat-clear">Clear</button>
+        </div>
+      </header>
+
+      <div class="chat-shell">
+        <div class="chat-transcript" id="chat-transcript" aria-live="polite">
+          <div class="msg system">
+            <div class="msg-meta"><span class="msg-role">system</span></div>
+            <div class="msg-body">
+              <p>Welcome to <strong>GaussClaw</strong>. Type a message below — every turn is signed,
+              chained, and replayable from the <a href="#" data-view-link="receipts">Receipts</a> tab.</p>
+            </div>
+          </div>
+        </div>
+
+        <aside class="chat-activity" aria-label="Tool activity">
+          <h2>Activity</h2>
+          <p class="muted small">Live tool events appear here. Hermes can't show this — GaussClaw lifts every
+          tool through the kernel admit gate and surfaces capabilities, taint, and sandbox layers in real
+          time.</p>
+          <ol class="activity-list" id="activity-list">
+            <li class="empty">No tool activity yet.</li>
+          </ol>
+        </aside>
+      </div>
+
+      <form class="composer" id="composer">
+        <div class="composer-meta">
+          <span class="composer-chip" id="composer-model" title="Active model">model: <strong>—</strong></span>
+          <span class="composer-chip" id="composer-taint" title="Taint floor">taint: <strong>⊥</strong></span>
+          <span class="composer-chip" id="composer-caps"  title="Active capabilities">caps: <strong>—</strong></span>
+        </div>
+        <textarea id="composer-input"
+                  placeholder="Ask anything · Shift+Enter for newline · Enter to submit"
+                  rows="2"
+                  autocomplete="off"
+                  spellcheck="false"></textarea>
+        <div class="composer-foot">
+          <span class="composer-hint">⌘↵ submit · ⌘E open in $EDITOR</span>
+          <button type="submit" class="btn-primary">Send</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- ───────────── Sessions ───────────── -->
+    <section class="view" id="view-sessions">
+      <header class="view-head">
+        <h1>Sessions</h1>
+        <p class="muted">Full-text + vector search over every conversation. Drop a session id to resume.</p>
+        <div class="view-head-actions">
+          <input id="sessions-search" type="search" placeholder="Search… (FTS5)" />
+        </div>
+      </header>
+      <div class="card-list" id="sessions-list">
+        <div class="card placeholder">Loading sessions…</div>
+      </div>
+    </section>
+
+    <!-- ───────────── Tools ───────────── -->
+    <section class="view" id="view-tools">
+      <header class="view-head">
+        <h1>Tools</h1>
+        <p class="muted">Every registered tool, its capability requirement, its taint label, and the sandbox
+          layers it runs inside. Click a tool to inspect.</p>
+      </header>
+      <div class="tools-grid" id="tools-list">
+        <div class="card placeholder">Loading tool catalogue…</div>
+      </div>
+    </section>
+
+    <!-- ───────────── Receipts ───────────── -->
+    <section class="view" id="view-receipts">
+      <header class="view-head">
+        <h1>Receipt chain</h1>
+        <p class="muted">Every turn is hashed into a SHA-256 Merkle chain and signed with Ed25519. Anchored
+          to an RFC 3161 TSA every 1,000 entries.</p>
+      </header>
+
+      <div class="receipt-head" id="receipt-head">
+        <div class="receipt-stat">
+          <span class="receipt-stat-label">Chain head digest</span>
+          <code class="receipt-stat-value" id="receipt-digest">—</code>
+        </div>
+        <div class="receipt-stat">
+          <span class="receipt-stat-label">Latest turn</span>
+          <code class="receipt-stat-value" id="receipt-turn">—</code>
+        </div>
+        <div class="receipt-stat">
+          <span class="receipt-stat-label">Last TSA anchor</span>
+          <code class="receipt-stat-value" id="receipt-tsa">awaiting first 1,000-entry batch</code>
+        </div>
+        <button class="btn-secondary" id="receipt-copy">Copy head</button>
+      </div>
+
+      <div class="card-list" id="receipt-list">
+        <div class="card">
+          <header class="card-head">
+            <strong>verifying receipts</strong>
+            <span class="badge badge-ok">Ed25519</span>
+          </header>
+          <p class="muted small">Recent receipt list populates once the session store accumulates turns.
+            Use <code>gaussclaw receipt verify &lt;envelope.json&gt;</code> from the CLI to validate an export.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────────── Health ───────────── -->
+    <section class="view" id="view-health">
+      <header class="view-head">
+        <h1>Health</h1>
+        <p class="muted">The seven Self-Diagnostic Health Engine invariants from <code>gauss-health</code>.</p>
+      </header>
+      <div class="health-grid" id="health-grid">
+        <div class="card placeholder">Loading SDHE report…</div>
+      </div>
+    </section>
+
+    <!-- ───────────── Settings ───────────── -->
+    <section class="view" id="view-settings">
+      <header class="view-head">
+        <h1>Settings</h1>
+        <p class="muted">Provider, model, and runtime configuration. Writes require the
+          <code>cap:config:write</code> grant.</p>
+      </header>
+
+      <div class="settings-grid">
+        <article class="card">
+          <header class="card-head"><strong>Active provider</strong></header>
+          <div class="kv"><span>Profile</span><code id="cfg-profile">—</code></div>
+          <div class="kv"><span>Provider</span><code id="cfg-provider">—</code></div>
+          <div class="kv"><span>Model</span><code id="cfg-model">—</code></div>
+        </article>
+
+        <article class="card">
+          <header class="card-head"><strong>Provider catalogue</strong></header>
+          <div class="card-list-inline" id="providers-list">
+            <span class="muted small">Loading…</span>
+          </div>
+        </article>
+
+        <article class="card">
+          <header class="card-head"><strong>Telemetry</strong></header>
+          <p class="muted small">GaussClaw never pings home. All health and metric collection happens
+            locally; nothing is sent to a remote server unless you explicitly opt into a federated trajectory
+            pool.</p>
+        </article>
+
+        <article class="card">
+          <header class="card-head"><strong>Runtime</strong></header>
+          <div class="kv"><span>Binary</span><code>gaussclaw</code></div>
+          <div class="kv"><span>Runtime</span><code>gauss-aether 1.0</code></div>
+          <div class="kv"><span>License</span><code>MIT</code></div>
+        </article>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ───────────── Command palette ───────────── -->
+  <div class="palette-shell hidden" id="palette" role="dialog" aria-modal="true" aria-label="Command palette">
+    <div class="palette">
+      <input id="palette-input" placeholder="Type a command…" autocomplete="off" />
+      <ul id="palette-results"></ul>
+    </div>
+  </div>
+
+  <!-- ───────────── Toast ───────────── -->
+  <div class="toast-shell" id="toast-shell" aria-live="polite"></div>
+
+  <script src="/app.js" type="module"></script>
+</body>
 </html>
