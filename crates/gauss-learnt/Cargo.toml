@@ -1,0 +1,21 @@
+[package]
+name        = "gauss-learnt"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+description = "Learnt risk classifier Φ̂ (v2 horizon: logistic scorer wrapping the SAG rule table)."
+
+[lints]
+workspace = true
+
+[dependencies]
+gauss-core = { workspace = true }
+gauss-sag  = { workspace = true }
+serde      = { workspace = true }
+thiserror  = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

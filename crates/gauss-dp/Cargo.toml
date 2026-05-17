@@ -1,0 +1,18 @@
+[package]
+name        = "gauss-dp"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+description = "Differentially-private trajectory exporter (v2 horizon, Laplace + Gaussian mechanisms)."
+
+[lints]
+workspace = true
+
+[dependencies]
+gauss-core = { workspace = true }
+rand_core  = { workspace = true }
+serde      = { workspace = true }
+thiserror  = { workspace = true }

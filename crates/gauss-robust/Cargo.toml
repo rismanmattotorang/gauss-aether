@@ -1,0 +1,21 @@
+[package]
+name        = "gauss-robust"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+description = "Robust declassifiers — adversarially-tested taint downgrades (v2 horizon, paper §XVIII.E.6)."
+
+[lints]
+workspace = true
+
+[dependencies]
+gauss-core   = { workspace = true }
+gauss-kernel = { workspace = true }
+serde        = { workspace = true }
+thiserror    = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
