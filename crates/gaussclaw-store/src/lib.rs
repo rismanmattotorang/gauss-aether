@@ -72,7 +72,9 @@ pub mod types;
 
 pub use embed::{EMBED_DIM, mock_embed};
 pub use store::{SessionStore, StoreError, StoreResult};
-pub use types::{ChainHead, LineageEdge, Session, Turn, TurnCost, TurnHit, now_rfc3339};
+pub use types::{
+    ChainHead, LineageEdge, RouteRecord, Session, Turn, TurnCost, TurnHit, now_rfc3339,
+};
 
 #[cfg(test)]
 mod tests {
@@ -465,6 +467,142 @@ mod tests {
             s.anchor_now().await.unwrap();
         }
         assert_eq!(s.anchors().await.len(), 3);
+    }
+
+    // ── routed-turn receipts (router transparency, T7) ──────────────────────
+
+    #[tokio::test]
+    async fn append_routed_turn_persists_route_record() {
+        let s = fresh_store().await;
+        let sess = s.create_session("tui", "router").await;
+        let route = RouteRecord::new(
+            vec!["anthropic/claude-3.5-sonnet".into(), "openai/gpt-4o".into()],
+            "openai/gpt-4o",
+            "openai/gpt-4o",
+        );
+        let (t, _head) = s
+            .append_routed_turn(
+                &sess.id,
+                None,
+                "assistant",
+                "routed answer",
+                TaintLabel::User,
+                route.clone(),
+            )
+            .await
+            .unwrap();
+        let back = s.get_turn(t.id).await.unwrap();
+        let r = back.route.expect("route present");
+        assert_eq!(r.candidates.len(), 2);
+        assert_eq!(r.selected, "openai/gpt-4o");
+        assert_eq!(r.actual_model, "openai/gpt-4o");
+        assert!(r.is_transparent());
+        // `model_actual` in TurnCost mirrors the chosen leaf — Hermes
+        // consumers that only parse cost.model_actual see the right value.
+        assert_eq!(back.cost.model_actual, "openai/gpt-4o");
+    }
+
+    #[tokio::test]
+    async fn route_record_round_trips_through_chain() {
+        // The route record is part of the turn payload, so the chain
+        // head covers it. Mutating it in the in-memory mirror MUST
+        // make verify_chain fail.
+        let s = fresh_store().await;
+        let sess = s.create_session("tui", "router").await;
+        let route = RouteRecord::new(
+            vec!["openai/gpt-4o".into()],
+            "openai/gpt-4o",
+            "openai/gpt-4o",
+        );
+        let (t, _head) = s
+            .append_routed_turn(
+                &sess.id,
+                None,
+                "assistant",
+                "ans",
+                TaintLabel::User,
+                route,
+            )
+            .await
+            .unwrap();
+        {
+            let mut st = s.state.lock().await;
+            if let Some(entry) = st.turns.get_mut(&t.id) {
+                if let Some(r) = entry.route.as_mut() {
+                    r.selected = "openai/gpt-3.5-turbo".into();
+                }
+            }
+        }
+        let err = s.verify_chain().await.unwrap_err();
+        assert!(matches!(err, StoreError::ChainDivergence { .. }));
+    }
+
+    #[tokio::test]
+    async fn non_transparent_route_is_detectable() {
+        // Router said "gpt-4o" but the leaf reported "gpt-3.5-turbo".
+        // The record preserves both so audit can flag the violation.
+        let s = fresh_store().await;
+        let sess = s.create_session("tui", "router").await;
+        let route = RouteRecord::new(
+            vec!["openai/gpt-4o".into()],
+            "openai/gpt-4o",
+            "openai/gpt-3.5-turbo", // ← divergence
+        );
+        let (t, _head) = s
+            .append_routed_turn(
+                &sess.id,
+                None,
+                "assistant",
+                "ans",
+                TaintLabel::User,
+                route,
+            )
+            .await
+            .unwrap();
+        let back = s.get_turn(t.id).await.unwrap();
+        let r = back.route.unwrap();
+        assert!(!r.is_transparent());
+    }
+
+    #[tokio::test]
+    async fn routed_turn_receipt_signature_covers_route() {
+        // With an Ed25519 signer attached, the signed receipt's payload
+        // includes the route record. A consumer can verify the signed
+        // receipt over the canonical Turn payload and trust the route
+        // bytes were not tampered with.
+        let s = signed_store().await;
+        let sess = s.create_session("tui", "router").await;
+        let route = RouteRecord::new(
+            vec!["openai/gpt-4o".into(), "anthropic/claude-3.5-sonnet".into()],
+            "anthropic/claude-3.5-sonnet",
+            "anthropic/claude-3.5-sonnet",
+        );
+        let (t, _head) = s
+            .append_routed_turn(
+                &sess.id,
+                None,
+                "assistant",
+                "signed routed",
+                TaintLabel::User,
+                route,
+            )
+            .await
+            .unwrap();
+        let receipt = s.get_receipt(t.id).await.expect("receipt present");
+        assert_eq!(u64::try_from(receipt.turn_id.as_u128()).unwrap(), t.id);
+        assert!(s.verify_receipt(t.id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn unrouted_turn_has_no_route_record() {
+        let s = fresh_store().await;
+        let sess = s.create_session("tui", "direct").await;
+        let (t, _head) = s
+            .append_turn(&sess.id, None, "assistant", "direct", TaintLabel::User)
+            .await
+            .unwrap();
+        let back = s.get_turn(t.id).await.unwrap();
+        assert!(back.route.is_none());
     }
 
     #[tokio::test]

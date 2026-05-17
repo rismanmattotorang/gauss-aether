@@ -48,7 +48,7 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 
 use crate::embed::mock_embed;
-use crate::types::{ChainHead, LineageEdge, Session, Turn, TurnCost, TurnHit, now_rfc3339};
+use crate::types::{ChainHead, LineageEdge, RouteRecord, Session, Turn, TurnCost, TurnHit, now_rfc3339};
 
 // ─── errors ────────────────────────────────────────────────────────────────
 
@@ -266,10 +266,59 @@ impl SessionStore {
         content: impl Into<String>,
         taint: gauss_core::TaintLabel,
     ) -> StoreResult<(Turn, ChainHead)> {
-        let session_id = session_id.into();
-        let content = content.into();
-        let role = role.into();
+        self.append_turn_inner(
+            session_id.into(),
+            parent_id,
+            role.into(),
+            content.into(),
+            taint,
+            None,
+        )
+        .await
+    }
 
+    /// Append a turn that was dispatched through a meta-router.
+    ///
+    /// Same atomicity contract as [`Self::append_turn`], with one
+    /// addition: the [`RouteRecord`] is persisted in the turn payload,
+    /// so it falls under the same chain-protected, optionally Ed25519-
+    /// signed integrity surface as the turn content itself. Verifies
+    /// the paper's Theorem-T7 router-transparency property post hoc:
+    /// any consumer can compare `record.selected` to
+    /// `record.actual_model`, and the bytes can't be edited after the
+    /// fact without diverging the chain head.
+    ///
+    /// # Errors
+    /// Same as [`Self::append_turn`].
+    pub async fn append_routed_turn(
+        &self,
+        session_id: impl Into<String>,
+        parent_id: Option<u64>,
+        role: impl Into<String>,
+        content: impl Into<String>,
+        taint: gauss_core::TaintLabel,
+        route: RouteRecord,
+    ) -> StoreResult<(Turn, ChainHead)> {
+        self.append_turn_inner(
+            session_id.into(),
+            parent_id,
+            role.into(),
+            content.into(),
+            taint,
+            Some(route),
+        )
+        .await
+    }
+
+    async fn append_turn_inner(
+        &self,
+        session_id: String,
+        parent_id: Option<u64>,
+        role: String,
+        content: String,
+        taint: gauss_core::TaintLabel,
+        route: Option<RouteRecord>,
+    ) -> StoreResult<(Turn, ChainHead)> {
         // Hold the state mutex across the await so the chain head and
         // the in-memory mirror stay consistent: two concurrent appends
         // must serialise.
@@ -281,6 +330,16 @@ impl SessionStore {
         let turn_id = st.next_turn_id.saturating_add(1);
         st.next_turn_id = turn_id;
 
+        // If routed, mirror the chosen leaf into TurnCost.model_actual so
+        // existing Hermes-shape consumers (which only know about
+        // TurnCost) still see the routed model id without parsing the
+        // route record.
+        let cost = route.as_ref().map_or_else(TurnCost::default, |r| TurnCost {
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            model_actual: r.actual_model.clone(),
+        });
+
         let turn = Turn {
             id: turn_id,
             session_id: session_id.clone(),
@@ -289,7 +348,8 @@ impl SessionStore {
             content: content.clone(),
             ts: now_rfc3339(),
             taint,
-            cost: TurnCost::default(),
+            cost,
+            route,
         };
 
         let payload = serde_json::to_vec(&turn)?;
