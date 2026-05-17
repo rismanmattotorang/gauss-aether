@@ -21,7 +21,7 @@ pub mod polyhedral_provider;
 pub mod replay_corpus;
 
 pub use polyhedral_provider::{
-    HandleEquivalenceError, HandleEquivalenceReport, ProviderProbe, verify_handle_equivalence,
+    verify_handle_equivalence, HandleEquivalenceError, HandleEquivalenceReport, ProviderProbe,
 };
 
 #[cfg(test)]

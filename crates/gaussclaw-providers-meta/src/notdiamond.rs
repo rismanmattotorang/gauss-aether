@@ -118,9 +118,7 @@ impl RouterProvider for NotDiamondProvider {
         } else {
             candidates
                 .iter()
-                .filter(|id| {
-                    self.catalogue.get(id).is_some() && self.leaves.contains_key(*id)
-                })
+                .filter(|id| self.catalogue.get(id).is_some() && self.leaves.contains_key(*id))
                 .cloned()
                 .collect()
         };
@@ -186,7 +184,10 @@ mod tests {
                 .map(|m| m.content.as_str())
                 .unwrap_or("");
             if last.contains("code") {
-                candidates.iter().find(|c| c.starts_with("openai/")).cloned()
+                candidates
+                    .iter()
+                    .find(|c| c.starts_with("openai/"))
+                    .cloned()
             } else {
                 candidates.first().cloned()
             }
@@ -235,10 +236,7 @@ mod tests {
     #[tokio::test]
     async fn content_aware_strategy_dispatches_differently_on_content() {
         let r = sample_router(Arc::new(CodeAffineStrategy));
-        let p_code = Prompt::new(
-            "any",
-            vec![Message::new("user", "please write some code")],
-        );
+        let p_code = Prompt::new("any", vec![Message::new("user", "please write some code")]);
         let routed_code = r.route_complete(&p_code, &[]).await.unwrap();
         assert!(
             routed_code.selected.starts_with("openai/"),
@@ -266,10 +264,7 @@ mod tests {
     async fn router_satisfies_transparency_contract() {
         use gaussclaw_providers::router::check_transparency;
         let r = sample_router(Arc::new(FirstCandidateStrategy));
-        let p = Prompt::new(
-            "any",
-            vec![Message::new("user", "transparency check")],
-        );
+        let p = Prompt::new("any", vec![Message::new("user", "transparency check")]);
         let routed = r.route_complete(&p, &[]).await.unwrap();
         let mut leaf_prompt = p.clone();
         leaf_prompt.model = routed.selected.clone();

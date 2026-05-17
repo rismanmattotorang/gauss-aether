@@ -278,7 +278,13 @@ mod tests {
         let a = AuditTrace::new();
         let before = a.head().await;
         let after = a
-            .record_inbound("rest", "alice", b"hello", TaintLabel::User, Plane::Conversation)
+            .record_inbound(
+                "rest",
+                "alice",
+                b"hello",
+                TaintLabel::User,
+                Plane::Conversation,
+            )
             .await;
         assert_ne!(before.as_bytes(), after.as_bytes());
     }
@@ -287,7 +293,13 @@ mod tests {
     async fn turn_start_and_complete_chain_together() {
         let a = AuditTrace::new();
         let h1 = a
-            .record_turn_start("s1", "anthropic/claude-3.5-sonnet", "echo", Plane::Conversation, TaintLabel::User)
+            .record_turn_start(
+                "s1",
+                "anthropic/claude-3.5-sonnet",
+                "echo",
+                Plane::Conversation,
+                TaintLabel::User,
+            )
             .await;
         let h2 = a
             .record_turn_complete("s1", "anthropic/claude-3.5-sonnet", "echo", 10, 20, "stop")
@@ -322,8 +334,14 @@ mod tests {
     #[tokio::test]
     async fn body_hash_uses_blake3_hex() {
         let a = AuditTrace::new();
-        a.record_inbound("rest", "alice", b"hello", TaintLabel::User, Plane::Conversation)
-            .await;
+        a.record_inbound(
+            "rest",
+            "alice",
+            b"hello",
+            TaintLabel::User,
+            Plane::Conversation,
+        )
+        .await;
         // The hash function is publicly exposed; consumers can audit.
         assert_eq!(blake3_hex(b"hello").len(), 64);
     }
@@ -334,7 +352,10 @@ mod tests {
             PlaneLabel::from(Plane::Conversation),
             PlaneLabel::Conversation
         ));
-        assert!(matches!(PlaneLabel::from(Plane::Daemon), PlaneLabel::Daemon));
+        assert!(matches!(
+            PlaneLabel::from(Plane::Daemon),
+            PlaneLabel::Daemon
+        ));
         assert!(matches!(
             PlaneLabel::from(Plane::Approval),
             PlaneLabel::Approval

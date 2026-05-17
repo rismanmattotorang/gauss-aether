@@ -155,10 +155,7 @@ mod tests {
     }
 
     fn sample_prompt() -> Prompt {
-        Prompt::new(
-            "openai/gpt-4o",
-            vec![Message::new("user", "hello")],
-        )
+        Prompt::new("openai/gpt-4o", vec![Message::new("user", "hello")])
     }
 
     #[tokio::test]
@@ -180,7 +177,9 @@ mod tests {
         let _ = p.complete(&sample_prompt()).await.unwrap();
         let seen = mock.seen();
         let h = &seen[0].headers;
-        assert!(h.iter().any(|(k, v)| k == "authorization" && v == "Bearer sk-secret"));
+        assert!(h
+            .iter()
+            .any(|(k, v)| k == "authorization" && v == "Bearer sk-secret"));
     }
 
     #[tokio::test]

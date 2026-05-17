@@ -71,8 +71,7 @@ impl ToolTrait for Base64Tool {
                 let bytes = engine
                     .decode(input)
                     .map_err(|e| GaussError::Internal(format!("decode: {e}")))?;
-                String::from_utf8(bytes)
-                    .map_err(|e| GaussError::Internal(format!("utf8: {e}")))?
+                String::from_utf8(bytes).map_err(|e| GaussError::Internal(format!("utf8: {e}")))?
             }
             other => {
                 return Err(GaussError::Internal(format!(

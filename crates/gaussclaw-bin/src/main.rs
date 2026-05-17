@@ -12,7 +12,7 @@
     clippy::option_if_let_else,
     clippy::unnecessary_wraps,
     clippy::single_match_else,
-    clippy::uninlined_format_args,
+    clippy::uninlined_format_args
 )]
 
 use clap::Parser;
@@ -74,9 +74,7 @@ fn run_web(
         // /api/sessions, /api/receipt/head, and the chat WebSocket.
         // In-memory backend for the demo binary; production deployments
         // swap to a persistent SurrealMemory via SessionStore::with_memory.
-        let store = std::sync::Arc::new(
-            gaussclaw_store::SessionStore::open_in_memory().await?,
-        );
+        let store = std::sync::Arc::new(gaussclaw_store::SessionStore::open_in_memory().await?);
         let state = gaussclaw_web::ServerState::new(cfg, source).with_store(store);
         gaussclaw_web::serve(addr, state).await
     })
@@ -93,10 +91,9 @@ fn run_default_tui(cfg: &gaussclaw_config::Config) -> anyhow::Result<()> {
         turn: 0,
         chain_head: "00000000".into(), // populated in Phase 2 once gaussclaw-store is wired
         taint_floor: "⊥".into(),
-        caps: cfg
-            .caps
-            .as_ref()
-            .map_or(0, |c| u32::try_from(c.default_grant.len()).unwrap_or(u32::MAX)),
+        caps: cfg.caps.as_ref().map_or(0, |c| {
+            u32::try_from(c.default_grant.len()).unwrap_or(u32::MAX)
+        }),
     };
     gaussclaw_tui::run(status)
 }
@@ -116,13 +113,19 @@ fn dispatch(
         Command::Tools(sub) => match sub {
             ToolsCmd::List => run_tools_list(),
             ToolsCmd::Show { tool } => run_tools_show(&tool),
-            ToolsCmd::Enable { .. } => stub("tools enable", 3, "gaussclaw-skill + gaussclaw-config"),
-            ToolsCmd::Disable { .. } => stub("tools disable", 3, "gaussclaw-skill + gaussclaw-config"),
+            ToolsCmd::Enable { .. } => {
+                stub("tools enable", 3, "gaussclaw-skill + gaussclaw-config")
+            }
+            ToolsCmd::Disable { .. } => {
+                stub("tools disable", 3, "gaussclaw-skill + gaussclaw-config")
+            }
         },
         Command::Config(sub) => match sub {
             ConfigCmd::List => run_config_list(&cfg),
             ConfigCmd::Get { key } => run_config_get(&key, &cfg),
-            ConfigCmd::Set { key, value } => run_config_set(&key, &value, cfg_source.as_deref(), &cfg),
+            ConfigCmd::Set { key, value } => {
+                run_config_set(&key, &value, cfg_source.as_deref(), &cfg)
+            }
             ConfigCmd::Path => run_config_path(cfg_source.as_deref()),
         },
         Command::Gateway(sub) => match sub {
@@ -432,16 +435,15 @@ fn run_config_set(
                 .entry(String::from(*part))
                 .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
         }
-        let last = parts
-            .last()
-            .ok_or_else(|| anyhow::anyhow!("empty key"))?;
+        let last = parts.last().ok_or_else(|| anyhow::anyhow!("empty key"))?;
         cursor
             .as_table_mut()
             .ok_or_else(|| anyhow::anyhow!("key {key} terminus is not a table"))?
             .insert((*last).into(), parsed_value);
     }
-    let new_cfg: gaussclaw_config::Config =
-        tree.try_into().map_err(|e| anyhow::anyhow!("re-parse: {e}"))?;
+    let new_cfg: gaussclaw_config::Config = tree
+        .try_into()
+        .map_err(|e| anyhow::anyhow!("re-parse: {e}"))?;
     gaussclaw_config::save(&new_cfg, path)?;
     println!("set {key} = {value}");
     println!("saved → {}", path.display());

@@ -78,8 +78,8 @@ impl ToolTrait for RegexMatchTool {
             .get("text")
             .and_then(|v| v.as_str())
             .ok_or_else(|| GaussError::Internal("missing string field `text`".into()))?;
-        let re = Regex::new(pattern)
-            .map_err(|e| GaussError::Internal(format!("regex compile: {e}")))?;
+        let re =
+            Regex::new(pattern).map_err(|e| GaussError::Internal(format!("regex compile: {e}")))?;
         let captures: Vec<&str> = re
             .captures(text)
             .map(|c| {

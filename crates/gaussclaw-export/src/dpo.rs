@@ -94,7 +94,10 @@ pub fn into_dpo_pairs(turns: &[Turn], prefer_first_assistant: bool) -> Vec<DpoRe
             let parent_id = turns[i].id;
             let mut assistants: Vec<&Turn> = Vec::new();
             let mut j = i.saturating_add(1);
-            while j < turns.len() && turns[j].role == "assistant" && turns[j].parent_id == Some(parent_id) {
+            while j < turns.len()
+                && turns[j].role == "assistant"
+                && turns[j].parent_id == Some(parent_id)
+            {
                 assistants.push(&turns[j]);
                 j = j.saturating_add(1);
             }

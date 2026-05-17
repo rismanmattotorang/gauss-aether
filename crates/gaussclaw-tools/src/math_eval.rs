@@ -63,9 +63,7 @@ impl ToolTrait for MathEvalTool {
         let expr = args
             .get("expression")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                GaussError::Internal("missing string field `expression`".into())
-            })?;
+            .ok_or_else(|| GaussError::Internal("missing string field `expression`".into()))?;
         let mut parser = Parser::new(expr);
         let value = parser.parse_expr().map_err(GaussError::Internal)?;
         parser.expect_eof().map_err(GaussError::Internal)?;
@@ -206,10 +204,8 @@ impl<'a> Parser<'a> {
             }
         }
         let slice = &self.src[start..self.pos];
-        let s = std::str::from_utf8(slice)
-            .map_err(|_e| "non-utf8 number".to_string())?;
-        s.parse::<f64>()
-            .map_err(|e| format!("number parse: {e}"))
+        let s = std::str::from_utf8(slice).map_err(|_e| "non-utf8 number".to_string())?;
+        s.parse::<f64>().map_err(|e| format!("number parse: {e}"))
     }
 }
 
@@ -219,7 +215,10 @@ mod tests {
 
     async fn eval(expr: &str) -> Result<f64, String> {
         let t = MathEvalTool::new();
-        match t.invoke_raw(serde_json::json!({ "expression": expr })).await {
+        match t
+            .invoke_raw(serde_json::json!({ "expression": expr }))
+            .await
+        {
             Ok(v) => Ok(v["value"].as_f64().unwrap()),
             Err(GaussError::Internal(msg)) => Err(msg),
             Err(_) => Err("non-internal error".into()),

@@ -33,7 +33,11 @@ pub struct Session {
 impl Session {
     /// Build a fresh session with `now` timestamp.
     #[must_use]
-    pub fn new(id: impl Into<String>, surface: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        surface: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             created: now_rfc3339(),

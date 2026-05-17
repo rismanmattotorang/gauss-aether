@@ -46,7 +46,7 @@
     clippy::module_name_repetitions,
     clippy::too_many_lines,
     clippy::manual_contains,
-    dead_code,
+    dead_code
 )]
 
 use std::path::{Path, PathBuf};
@@ -106,8 +106,8 @@ pub struct MigrationReport {
 /// Returns [`MigrationError::Read`] / [`MigrationError::Parse`] on IO
 /// or parse failure.
 pub fn read_hermes_config(path: &Path) -> Result<Config, MigrationError> {
-    let body = std::fs::read_to_string(path)
-        .map_err(|e| MigrationError::Read(path.to_path_buf(), e))?;
+    let body =
+        std::fs::read_to_string(path).map_err(|e| MigrationError::Read(path.to_path_buf(), e))?;
     read_hermes_str(&body).map_err(|e| match e {
         MigrationError::Parse(_, err) => MigrationError::Parse(path.to_path_buf(), err),
         other => other,
@@ -122,8 +122,7 @@ pub fn read_hermes_config(path: &Path) -> Result<Config, MigrationError> {
 /// callers wrapping a real file should re-map it via
 /// [`read_hermes_config`].
 pub fn read_hermes_str(body: &str) -> Result<Config, MigrationError> {
-    toml::from_str(body)
-        .map_err(|e| MigrationError::Parse(PathBuf::from("<inline>"), e))
+    toml::from_str(body).map_err(|e| MigrationError::Parse(PathBuf::from("<inline>"), e))
 }
 
 /// Run the migration: input config in, output config + report out.
@@ -441,11 +440,7 @@ enabled = false
         let (_out, report) = migrate(input);
         // Drop the channels/provider/etc. items, keep only the
         // phase-indexed defaults items.
-        let phases: Vec<&str> = report
-            .checklist
-            .iter()
-            .map(|c| c.phase.as_str())
-            .collect();
+        let phases: Vec<&str> = report.checklist.iter().map(|c| c.phase.as_str()).collect();
         // At minimum we expect at least one P1 (surfaces), one P3
         // (tools / caps / taint), and one P5 (export) item.
         assert!(phases.iter().any(|p| *p == "P1"));
@@ -457,20 +452,14 @@ enabled = false
     fn checklist_flags_enabled_channels() {
         let input = read_hermes_str(HERMES_INPUT).unwrap();
         let (_out, report) = migrate(input);
-        assert!(report
-            .checklist
-            .iter()
-            .any(|c| c.area == "channels.slack"));
+        assert!(report.checklist.iter().any(|c| c.area == "channels.slack"));
     }
 
     #[test]
     fn checklist_flags_missing_fallback_chain() {
         let input = read_hermes_str(HERMES_INPUT).unwrap();
         let (_out, report) = migrate(input);
-        assert!(report
-            .checklist
-            .iter()
-            .any(|c| c.area == "provider.chain"));
+        assert!(report.checklist.iter().any(|c| c.area == "provider.chain"));
     }
 
     #[test]

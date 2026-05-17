@@ -25,9 +25,7 @@
 //! no verifiable surface at all.
 
 use gauss_audit::chain::{link, ChainHead};
-use gauss_audit::{
-    Anchor, AnchorKind, SimulatorTsaClient, ED25519_PUBLIC_KEY_LEN,
-};
+use gauss_audit::{Anchor, AnchorKind, SimulatorTsaClient, ED25519_PUBLIC_KEY_LEN};
 use thiserror::Error;
 
 use crate::envelope::Envelope;
@@ -218,14 +216,7 @@ mod tests {
         let body_bytes = serde_json::to_vec(&EnvelopeBody::Sft(body.clone())).unwrap();
         let prev = ChainHead::from_bytes([0u8; 32]);
         let receipt = signer
-            .sign_append(
-                TurnId::new(1),
-                0,
-                prev,
-                &body_bytes,
-                TaintLabel::User,
-                0,
-            )
+            .sign_append(TurnId::new(1), 0, prev, &body_bytes, TaintLabel::User, 0)
             .unwrap();
         let pk = *signer.backend().public_key();
         let env = EnvelopeBuilder::for_sft(body, receipt).build().unwrap();
@@ -277,14 +268,7 @@ mod tests {
         let body_bytes = serde_json::to_vec(&EnvelopeBody::Sft(body.clone())).unwrap();
         let prev = ChainHead::from_bytes([0u8; 32]);
         let receipt = signer
-            .sign_append(
-                TurnId::new(2),
-                0,
-                prev,
-                &body_bytes,
-                TaintLabel::User,
-                0,
-            )
+            .sign_append(TurnId::new(2), 0, prev, &body_bytes, TaintLabel::User, 0)
             .unwrap();
         let pk = *signer.backend().public_key();
         let post = ChainHead::from_bytes(receipt.post_head);
@@ -293,7 +277,8 @@ mod tests {
             .with_tsa(anchor)
             .build()
             .unwrap();
-        let root = TsaRoot::simulator(SimulatorTsaClient::from_seed([0x77; 32]).with_fixed_clock(123));
+        let root =
+            TsaRoot::simulator(SimulatorTsaClient::from_seed([0x77; 32]).with_fixed_clock(123));
         verify_envelope(&env, Some(&pk), Some(&root)).unwrap();
     }
 
@@ -305,14 +290,7 @@ mod tests {
         let body_bytes = serde_json::to_vec(&EnvelopeBody::Sft(body.clone())).unwrap();
         let prev = ChainHead::from_bytes([0u8; 32]);
         let receipt = signer
-            .sign_append(
-                TurnId::new(3),
-                0,
-                prev,
-                &body_bytes,
-                TaintLabel::User,
-                0,
-            )
+            .sign_append(TurnId::new(3), 0, prev, &body_bytes, TaintLabel::User, 0)
             .unwrap();
         let post = ChainHead::from_bytes(receipt.post_head);
         let anchor = producer_tsa.anchor(post, receipt.index).await.unwrap();

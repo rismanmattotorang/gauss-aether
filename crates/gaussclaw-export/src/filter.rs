@@ -209,8 +209,7 @@ mod tests {
     fn declassified_with_strict_declass_drops_user() {
         // A custom strict declass map: nothing declassifies. Only
         // already-Trusted records pass.
-        let f = TaintFilter::new(FilterMode::Declassified)
-            .with_declass_fn(|t| t);
+        let f = TaintFilter::new(FilterMode::Declassified).with_declass_fn(|t| t);
         let (kept, _report) = f.apply(fixture());
         assert_eq!(kept, vec!["trusted"]);
     }
@@ -226,12 +225,20 @@ mod tests {
 
     #[test]
     fn admits_is_consistent_with_apply() {
-        for mode in [FilterMode::Permissive, FilterMode::Strict, FilterMode::Declassified] {
+        for mode in [
+            FilterMode::Permissive,
+            FilterMode::Strict,
+            FilterMode::Declassified,
+        ] {
             let f = TaintFilter::new(mode);
             for (t, _) in fixture() {
                 let admits = f.admits(t);
                 let (kept, _) = f.apply([(t, "x")]);
-                assert_eq!(admits, !kept.is_empty(), "mismatch at mode={mode:?} t={t:?}");
+                assert_eq!(
+                    admits,
+                    !kept.is_empty(),
+                    "mismatch at mode={mode:?} t={t:?}"
+                );
             }
         }
     }

@@ -210,11 +210,21 @@ pub struct DesktopConfig {
     pub autostart: bool,
 }
 
-fn default_host() -> String { "127.0.0.1".into() }
-fn default_backend() -> String { "native".into() }
-fn default_declass() -> String { "default".into() }
-fn default_filter() -> String { "declassified".into() }
-const fn default_true() -> bool { true }
+fn default_host() -> String {
+    "127.0.0.1".into()
+}
+fn default_backend() -> String {
+    "native".into()
+}
+fn default_declass() -> String {
+    "default".into()
+}
+fn default_filter() -> String {
+    "declassified".into()
+}
+const fn default_true() -> bool {
+    true
+}
 
 // ─── loader ─────────────────────────────────────────────────────────────────
 
@@ -269,7 +279,13 @@ pub fn load(override_path: Option<&Path>) -> Result<(Config, LoadReport), Config
     fig = fig.merge(Env::prefixed("GAUSSCLAW_").split("__"));
 
     let cfg: Config = fig.extract()?;
-    Ok((cfg, LoadReport { source: found, probed }))
+    Ok((
+        cfg,
+        LoadReport {
+            source: found,
+            probed,
+        },
+    ))
 }
 
 /// Compute the search path for `gaussclaw.toml`.
@@ -423,11 +439,7 @@ foo = "bar"
     #[test]
     fn load_honours_override_path() {
         let tmp = tempfile_path("gaussclaw_load_override");
-        std::fs::write(
-            &tmp,
-            "[provider]\nname = \"openai\"\nmodel = \"gpt-4o\"\n",
-        )
-        .unwrap();
+        std::fs::write(&tmp, "[provider]\nname = \"openai\"\nmodel = \"gpt-4o\"\n").unwrap();
         let (cfg, report) = load(Some(&tmp)).expect("load");
         assert_eq!(cfg.provider.name, "openai");
         assert_eq!(report.source.as_ref(), Some(&tmp));

@@ -133,10 +133,11 @@ impl ProviderHandle for ReplicateProvider {
                 message: String::from_utf8_lossy(&create.body).into_owned(),
             });
         }
-        let v: Value = serde_json::from_slice(&create.body).map_err(|e| ProviderError::Upstream {
-            code: 0,
-            message: format!("replicate create parse: {e}"),
-        })?;
+        let v: Value =
+            serde_json::from_slice(&create.body).map_err(|e| ProviderError::Upstream {
+                code: 0,
+                message: format!("replicate create parse: {e}"),
+            })?;
         let poll_url = v["urls"]["get"]
             .as_str()
             .map(String::from)
@@ -185,8 +186,7 @@ impl ProviderHandle for ReplicateProvider {
                     } else {
                         pv["output"].as_str().unwrap_or("").to_string()
                     };
-                    let completion_tokens =
-                        u32::try_from(text.len() / 4).unwrap_or(u32::MAX);
+                    let completion_tokens = u32::try_from(text.len() / 4).unwrap_or(u32::MAX);
                     return Ok(Completion::new(
                         text,
                         prompt.model.clone(),
@@ -286,8 +286,8 @@ mod tests {
             create_resp("p2"),
             failed_resp("p2", "model OOM"),
         ]));
-        let p = ReplicateProvider::new(mock, "rep-key")
-            .with_poll_interval(Duration::from_millis(1));
+        let p =
+            ReplicateProvider::new(mock, "rep-key").with_poll_interval(Duration::from_millis(1));
         let err = p.complete(&sample_prompt()).await.unwrap_err();
         match err {
             ProviderError::Upstream { message, .. } => assert!(message.contains("OOM")),

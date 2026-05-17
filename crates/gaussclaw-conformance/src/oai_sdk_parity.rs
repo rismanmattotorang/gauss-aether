@@ -38,9 +38,9 @@
 
 #[cfg(test)]
 mod tests {
-    use axum::body::{Body, to_bytes};
+    use axum::body::{to_bytes, Body};
     use axum::http::{Method, Request, StatusCode};
-    use gaussclaw_surfaces::{SurfaceState, router};
+    use gaussclaw_surfaces::{router, SurfaceState};
     use tower::ServiceExt;
 
     fn live_router() -> axum::Router {
@@ -124,7 +124,10 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
 
         // Top-level fields.
-        assert!(body["id"].as_str().is_some(), "ChatCompletion.id must be str");
+        assert!(
+            body["id"].as_str().is_some(),
+            "ChatCompletion.id must be str"
+        );
         assert_eq!(
             body["object"], "chat.completion",
             "ChatCompletion.object must be exact"
@@ -133,7 +136,10 @@ mod tests {
             body["created"].is_number(),
             "ChatCompletion.created must be int"
         );
-        assert!(body["model"].as_str().is_some(), "ChatCompletion.model must be str");
+        assert!(
+            body["model"].as_str().is_some(),
+            "ChatCompletion.model must be str"
+        );
 
         // choices: list[Choice]
         let choices = body["choices"].as_array().expect("choices must be array");
@@ -228,7 +234,9 @@ mod tests {
         // Parse out data: lines and validate each chunk JSON.
         let mut chunks_seen = 0usize;
         for sse_line in body.lines() {
-            let Some(payload) = sse_line.strip_prefix("data: ") else { continue };
+            let Some(payload) = sse_line.strip_prefix("data: ") else {
+                continue;
+            };
             let payload = payload.trim();
             if payload == "[DONE]" {
                 continue;
@@ -251,7 +259,10 @@ mod tests {
                 if !fr.is_null() {
                     let s = fr.as_str().expect("finish_reason must be str when present");
                     assert!(
-                        matches!(s, "stop" | "length" | "tool_calls" | "tool" | "content_filter"),
+                        matches!(
+                            s,
+                            "stop" | "length" | "tool_calls" | "tool" | "content_filter"
+                        ),
                         "finish_reason must be canonical, got {s}"
                     );
                 }

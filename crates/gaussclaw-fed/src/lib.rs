@@ -53,12 +53,12 @@
     clippy::module_name_repetitions,
     clippy::single_match_else,
     clippy::large_enum_variant,
-    clippy::significant_drop_tightening,
+    clippy::significant_drop_tightening
 )]
 
 pub mod backend;
-pub mod pool;
 pub mod policy;
+pub mod pool;
 
 pub use backend::{InMemoryPoolBackend, PoolBackend, PoolEntry, PoolError, PoolResult};
 pub use policy::{AdmissionDecision, AdmissionPolicy, MaxTaintPolicy, PublisherAllowList};

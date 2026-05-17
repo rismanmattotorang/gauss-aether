@@ -162,7 +162,10 @@ mod tests {
 
     #[tokio::test]
     async fn complete_round_trips_through_mock() {
-        let mock = Arc::new(MockHttpBackend::new(vec![mock_response("hi from llama.cpp", false)]));
+        let mock = Arc::new(MockHttpBackend::new(vec![mock_response(
+            "hi from llama.cpp",
+            false,
+        )]));
         let p = LlamaCppProvider::new(mock);
         let c = p.complete(&sample_prompt()).await.unwrap();
         assert_eq!(c.text, "hi from llama.cpp");

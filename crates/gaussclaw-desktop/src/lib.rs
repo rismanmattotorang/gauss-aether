@@ -51,7 +51,7 @@
     clippy::doc_markdown,
     clippy::missing_docs_in_private_items,
     clippy::unused_async,
-    clippy::const_is_empty,
+    clippy::const_is_empty
 )]
 
 pub mod commands;
@@ -68,7 +68,11 @@ pub mod build_info {
     /// Crate version (`gaussclaw-desktop`).
     pub const VERSION: &str = env!("CARGO_PKG_VERSION");
     /// `"debug"` or `"release"`.
-    pub const PROFILE: &str = if cfg!(debug_assertions) { "debug" } else { "release" };
+    pub const PROFILE: &str = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
     /// Whether the binary linked the Tauri runtime.
     pub const TAURI_RUNTIME: bool = cfg!(feature = "tauri-runtime");
 }

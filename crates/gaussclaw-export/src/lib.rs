@@ -68,7 +68,7 @@
     clippy::large_enum_variant,
     clippy::single_match_else,
     clippy::drop_non_drop,
-    clippy::iter_cloned_collect,
+    clippy::iter_cloned_collect
 )]
 
 pub mod dpo;
@@ -77,8 +77,8 @@ pub mod filter;
 pub mod sft;
 pub mod verify;
 
-pub use dpo::{DpoRecord, DpoWriter, into_dpo_pairs};
+pub use dpo::{into_dpo_pairs, DpoRecord, DpoWriter};
 pub use envelope::{Envelope, EnvelopeBuilder, EnvelopeError, PositionWitness};
 pub use filter::{FilterMode, FilterReport, TaintFilter};
-pub use sft::{SftMessage, SftRecord, SftWriter, into_sft_records};
-pub use verify::{VerifyEnvelopeError, verify_envelope};
+pub use sft::{into_sft_records, SftMessage, SftRecord, SftWriter};
+pub use verify::{verify_envelope, VerifyEnvelopeError};

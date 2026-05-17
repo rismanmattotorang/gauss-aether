@@ -48,7 +48,9 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 
 use crate::embed::mock_embed;
-use crate::types::{ChainHead, LineageEdge, RouteRecord, Session, Turn, TurnCost, TurnHit, now_rfc3339};
+use crate::types::{
+    now_rfc3339, ChainHead, LineageEdge, RouteRecord, Session, Turn, TurnCost, TurnHit,
+};
 
 // ─── errors ────────────────────────────────────────────────────────────────
 
@@ -69,9 +71,7 @@ pub enum StoreError {
     #[error("serialise: {0}")]
     Serde(#[from] serde_json::Error),
     /// Chain verification: the reconstructed digest differs from the live one.
-    #[error(
-        "chain divergence at index {at}: local digest {local} != backend digest {backend}"
-    )]
+    #[error("chain divergence at index {at}: local digest {local} != backend digest {backend}")]
     ChainDivergence {
         /// Length at which divergence was detected.
         at: u64,
@@ -410,10 +410,7 @@ impl SessionStore {
                 signature_hex,
             };
             st.lineage.insert(turn_id, edge);
-            st.parent_children
-                .entry(p)
-                .or_default()
-                .push(turn_id);
+            st.parent_children.entry(p).or_default().push(turn_id);
         }
 
         st.turns.insert(turn_id, turn.clone());
@@ -444,7 +441,9 @@ impl SessionStore {
         let Some(ids) = st.session_turns.get(session_id) else {
             return Vec::new();
         };
-        ids.iter().filter_map(|id| st.turns.get(id).cloned()).collect()
+        ids.iter()
+            .filter_map(|id| st.turns.get(id).cloned())
+            .collect()
     }
 
     // ─── lineage ────────────────────────────────────────────────────────────
@@ -456,7 +455,9 @@ impl SessionStore {
         let mut out = Vec::new();
         let mut cursor = Some(turn_id);
         while let Some(id) = cursor {
-            let Some(t) = st.turns.get(&id).cloned() else { break };
+            let Some(t) = st.turns.get(&id).cloned() else {
+                break;
+            };
             cursor = t.parent_id;
             out.push(t);
         }
@@ -468,7 +469,11 @@ impl SessionStore {
         let st = self.state.lock().await;
         st.parent_children
             .get(&turn_id)
-            .map(|ids| ids.iter().filter_map(|id| st.turns.get(id).cloned()).collect())
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| st.turns.get(id).cloned())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -519,11 +524,7 @@ impl SessionStore {
 
     /// HNSW vector search for the deterministic mock embedding of `query`.
     /// Phase 4 swaps the mock embedding for a provider model.
-    pub async fn vector_search(
-        &self,
-        query_text: &str,
-        k: usize,
-    ) -> StoreResult<Vec<TurnHit>> {
+    pub async fn vector_search(&self, query_text: &str, k: usize) -> StoreResult<Vec<TurnHit>> {
         let q = mock_embed(query_text);
         let hits = self.memory.vector_search(&q, k).await?;
         Ok(self.materialize_hits(hits).await)
@@ -641,5 +642,11 @@ fn next_session_id() -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(&nanos.to_le_bytes());
     hasher.update(&count.to_le_bytes());
-    hasher.finalize().to_hex().to_string().chars().take(16).collect()
+    hasher
+        .finalize()
+        .to_hex()
+        .to_string()
+        .chars()
+        .take(16)
+        .collect()
 }

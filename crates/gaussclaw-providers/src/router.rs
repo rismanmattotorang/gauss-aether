@@ -105,7 +105,9 @@ pub fn check_transparency(
         ));
     }
     if routed.completion.text != direct.text {
-        return Err(RouterTransparencyError::TextDiverged(routed.selected.clone()));
+        return Err(RouterTransparencyError::TextDiverged(
+            routed.selected.clone(),
+        ));
     }
     if routed.completion.finish_reason != direct.finish_reason {
         return Err(RouterTransparencyError::FinishReasonDiverged(

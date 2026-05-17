@@ -70,7 +70,11 @@ impl GoogleProvider {
             match m.role.as_str() {
                 "system" => system_parts.push(m.content.clone()),
                 _ => {
-                    let role = if m.role == "assistant" { "model" } else { "user" };
+                    let role = if m.role == "assistant" {
+                        "model"
+                    } else {
+                        "user"
+                    };
                     contents.push(serde_json::json!({
                         "role": role,
                         "parts": [{"text": m.content}],
@@ -112,7 +116,10 @@ impl GoogleProvider {
             .as_str()
             .unwrap_or("")
             .to_string();
-        let finish_reason = match v["candidates"][0]["finishReason"].as_str().unwrap_or("STOP") {
+        let finish_reason = match v["candidates"][0]["finishReason"]
+            .as_str()
+            .unwrap_or("STOP")
+        {
             "STOP" => "stop",
             "MAX_TOKENS" => "length",
             "SAFETY" | "RECITATION" => "content_filter",
@@ -222,7 +229,10 @@ mod tests {
 
     #[tokio::test]
     async fn complete_round_trips_through_mock() {
-        let mock = Arc::new(MockHttpBackend::new(vec![mock_response("hi from gemini", "STOP")]));
+        let mock = Arc::new(MockHttpBackend::new(vec![mock_response(
+            "hi from gemini",
+            "STOP",
+        )]));
         let p = GoogleProvider::new(mock.clone(), "gk-test-key");
         let c = p.complete(&sample_prompt()).await.unwrap();
         assert_eq!(c.text, "hi from gemini");

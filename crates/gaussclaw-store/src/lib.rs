@@ -63,17 +63,17 @@
     clippy::missing_const_for_fn,
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
-    clippy::significant_drop_tightening,
+    clippy::significant_drop_tightening
 )]
 
 pub mod embed;
 pub mod store;
 pub mod types;
 
-pub use embed::{EMBED_DIM, mock_embed};
+pub use embed::{mock_embed, EMBED_DIM};
 pub use store::{SessionStore, StoreError, StoreResult};
 pub use types::{
-    ChainHead, LineageEdge, RouteRecord, Session, Turn, TurnCost, TurnHit, now_rfc3339,
+    now_rfc3339, ChainHead, LineageEdge, RouteRecord, Session, Turn, TurnCost, TurnHit,
 };
 
 #[cfg(test)]
@@ -139,9 +139,15 @@ mod tests {
         let s = fresh_store().await;
         let sess = s.create_session("tui", "m").await;
         for i in 0..3 {
-            s.append_turn(&sess.id, None, "user", format!("turn-{i}"), TaintLabel::User)
-                .await
-                .unwrap();
+            s.append_turn(
+                &sess.id,
+                None,
+                "user",
+                format!("turn-{i}"),
+                TaintLabel::User,
+            )
+            .await
+            .unwrap();
         }
         let updated = s.get_session(&sess.id).await.unwrap();
         assert_eq!(updated.turn_count, 3);
@@ -228,16 +234,16 @@ mod tests {
             .unwrap();
         let edge = s.lineage_edge(child.id).await.unwrap();
         assert_eq!(edge.commit_hex.len(), 64);
-        let sig = edge.signature_hex.expect("Ed25519 signature must be present");
+        let sig = edge
+            .signature_hex
+            .expect("Ed25519 signature must be present");
         assert_eq!(sig.len(), 128, "Ed25519 hex = 128 chars");
         // Verify the signature: reconstruct canonical bytes and check
         // against the store's public key.
         let pk_bytes = s.public_key().expect("public key");
         let pk = ed25519_dalek::VerifyingKey::from_bytes(&pk_bytes).expect("vk");
         let sig_bytes: [u8; 64] = (0..64)
-            .map(|i| {
-                u8::from_str_radix(&sig[i * 2..i * 2 + 2], 16).expect("hex")
-            })
+            .map(|i| u8::from_str_radix(&sig[i * 2..i * 2 + 2], 16).expect("hex"))
             .collect::<Vec<u8>>()
             .try_into()
             .unwrap();
@@ -246,8 +252,7 @@ mod tests {
         let head = s.chain_head().await.unwrap();
         let mut head_bytes = [0u8; 32];
         for (i, slot) in head_bytes.iter_mut().enumerate() {
-            *slot =
-                u8::from_str_radix(&head.digest_hex[i * 2..i * 2 + 2], 16).expect("hex");
+            *slot = u8::from_str_radix(&head.digest_hex[i * 2..i * 2 + 2], 16).expect("hex");
         }
         let mut canonical = Vec::new();
         canonical.extend_from_slice(&root.id.to_le_bytes());
@@ -263,9 +268,15 @@ mod tests {
     async fn fts_search_finds_a_turn() {
         let s = fresh_store().await;
         let sess = s.create_session("tui", "m").await;
-        s.append_turn(&sess.id, None, "user", "the quick brown fox", TaintLabel::User)
-            .await
-            .unwrap();
+        s.append_turn(
+            &sess.id,
+            None,
+            "user",
+            "the quick brown fox",
+            TaintLabel::User,
+        )
+        .await
+        .unwrap();
         s.append_turn(&sess.id, None, "user", "lazy dog jumps", TaintLabel::User)
             .await
             .unwrap();
@@ -313,7 +324,10 @@ mod tests {
         // alpha=1.0 → FTS-only weight; alpha=0.0 → vector-only.
         // alpha=0.5 → equal merge. The unique-marker text guarantees
         // the BM25 channel ranks the target first.
-        let hits = s.hybrid_search("unique_marker_alpha", 5, 0.7).await.unwrap();
+        let hits = s
+            .hybrid_search("unique_marker_alpha", 5, 0.7)
+            .await
+            .unwrap();
         assert!(!hits.is_empty(), "exact-marker hybrid must produce hits");
         let found = hits.iter().any(|h| h.turn.id == target_id);
         assert!(
@@ -352,11 +366,9 @@ mod tests {
     // ── signed receipts (Ed25519, EUF-CMA) ──────────────────────────────────
 
     async fn signed_store() -> SessionStore {
-        use std::sync::Arc;
         use gauss_audit::{Ed25519Signer, ReceiptSigner};
-        let signer = Arc::new(ReceiptSigner::new(
-            Ed25519Signer::from_seed([0x42; 32]),
-        ));
+        use std::sync::Arc;
+        let signer = Arc::new(ReceiptSigner::new(Ed25519Signer::from_seed([0x42; 32])));
         SessionStore::open_in_memory()
             .await
             .unwrap()
@@ -431,8 +443,8 @@ mod tests {
 
     #[tokio::test]
     async fn anchor_now_records_an_anchor() {
-        use std::sync::Arc;
         use gauss_audit::SimulatorTsaClient;
+        use std::sync::Arc;
         let tsa = Arc::new(SimulatorTsaClient::from_seed([0x11; 32]));
         let s = SessionStore::open_in_memory().await.unwrap().with_tsa(tsa);
         let sess = s.create_session("tui", "m").await;
@@ -455,8 +467,8 @@ mod tests {
 
     #[tokio::test]
     async fn multiple_anchors_accumulate_in_history() {
-        use std::sync::Arc;
         use gauss_audit::SimulatorTsaClient;
+        use std::sync::Arc;
         let tsa = Arc::new(SimulatorTsaClient::from_seed([0x22; 32]));
         let s = SessionStore::open_in_memory().await.unwrap().with_tsa(tsa);
         let sess = s.create_session("tui", "m").await;
@@ -515,14 +527,7 @@ mod tests {
             "openai/gpt-4o",
         );
         let (t, _head) = s
-            .append_routed_turn(
-                &sess.id,
-                None,
-                "assistant",
-                "ans",
-                TaintLabel::User,
-                route,
-            )
+            .append_routed_turn(&sess.id, None, "assistant", "ans", TaintLabel::User, route)
             .await
             .unwrap();
         {
@@ -549,14 +554,7 @@ mod tests {
             "openai/gpt-3.5-turbo", // ← divergence
         );
         let (t, _head) = s
-            .append_routed_turn(
-                &sess.id,
-                None,
-                "assistant",
-                "ans",
-                TaintLabel::User,
-                route,
-            )
+            .append_routed_turn(&sess.id, None, "assistant", "ans", TaintLabel::User, route)
             .await
             .unwrap();
         let back = s.get_turn(t.id).await.unwrap();

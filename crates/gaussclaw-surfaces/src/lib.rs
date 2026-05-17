@@ -25,20 +25,20 @@
 #![allow(
     clippy::doc_markdown,
     clippy::missing_docs_in_private_items,
-    clippy::module_name_repetitions,
+    clippy::module_name_repetitions
 )]
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::Router;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
+use axum::Router;
 use futures_util::stream::{self, Stream};
 use gauss_core::TaintLabel;
 use gauss_gateway::openai::{OpenAiChatMessage, OpenAiChatRequest};
@@ -127,10 +127,7 @@ impl SurfaceState {
     /// a shared [`SessionStore`]. Sessions persist; `/v1/chat/completions`
     /// requests carrying an `X-GaussClaw-Session: <id>` header are
     /// appended into the named session.
-    pub fn new_with_store(
-        default_model: impl Into<String>,
-        store: Arc<SessionStore>,
-    ) -> Self {
+    pub fn new_with_store(default_model: impl Into<String>, store: Arc<SessionStore>) -> Self {
         let kernel = KernelHandle::permissive();
         let audit = AuditTrace::new();
         let policy = Arc::new(
@@ -191,7 +188,9 @@ pub struct CreateSessionRequest {
     pub model: String,
 }
 
-fn default_surface() -> String { "rest".into() }
+fn default_surface() -> String {
+    "rest".into()
+}
 
 /// One session row in the JSON listing.
 #[derive(Debug, Serialize)]
@@ -362,7 +361,13 @@ async fn handle_chat_completions(
     let req_bytes = serde_json::to_vec(&req).unwrap_or_default();
     state
         .audit
-        .record_inbound("/v1/chat/completions", "sdk", &req_bytes, TaintLabel::User, plane)
+        .record_inbound(
+            "/v1/chat/completions",
+            "sdk",
+            &req_bytes,
+            TaintLabel::User,
+            plane,
+        )
         .await;
     let model = if req.model.is_empty() {
         state.default_model.clone()
@@ -544,7 +549,10 @@ async fn handle_completions(
             plane,
         )
         .await;
-    if let Err(e) = state.kernel.admit(gauss_core::CapToken::NETWORK_GET, TaintLabel::User) {
+    if let Err(e) = state
+        .kernel
+        .admit(gauss_core::CapToken::NETWORK_GET, TaintLabel::User)
+    {
         return (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({
@@ -610,10 +618,7 @@ async fn handle_completions(
 // ─── raw chat WebSocket ─────────────────────────────────────────────────────
 
 #[axum::debug_handler]
-async fn handle_chat_ws(
-    State(state): State<SurfaceState>,
-    ws: WebSocketUpgrade,
-) -> Response {
+async fn handle_chat_ws(State(state): State<SurfaceState>, ws: WebSocketUpgrade) -> Response {
     // Admit-gate + audit-record BEFORE the WS upgrade completes. A
     // refused upgrade never produces a socket.
     let plane = state.kernel.plane_for(SurfaceRequest::UserSync);
@@ -621,7 +626,10 @@ async fn handle_chat_ws(
         .audit
         .record_inbound("/v1/chat/ws", "sdk", b"", TaintLabel::User, plane)
         .await;
-    if let Err(e) = state.kernel.admit(gauss_core::CapToken::NETWORK_GET, TaintLabel::User) {
+    if let Err(e) = state
+        .kernel
+        .admit(gauss_core::CapToken::NETWORK_GET, TaintLabel::User)
+    {
         return (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({
@@ -690,10 +698,7 @@ async fn chat_socket(mut socket: WebSocket, state: SurfaceState) {
 use gauss_gateway::turn::{TurnRequest, TurnResponse};
 
 #[axum::debug_handler]
-async fn handle_turn(
-    State(state): State<SurfaceState>,
-    Json(req): Json<TurnRequest>,
-) -> Response {
+async fn handle_turn(State(state): State<SurfaceState>, Json(req): Json<TurnRequest>) -> Response {
     // Admit-gate + audit-record. The /v1/turn shape is internal-only
     // (raw GaussClaw rather than OAI-mapped), but the kernel discipline
     // is uniform.
@@ -703,7 +708,10 @@ async fn handle_turn(
         .audit
         .record_inbound("/v1/turn", "sdk", body_bytes, TaintLabel::User, plane)
         .await;
-    if let Err(e) = state.kernel.admit(gauss_core::CapToken::NETWORK_GET, TaintLabel::User) {
+    if let Err(e) = state
+        .kernel
+        .admit(gauss_core::CapToken::NETWORK_GET, TaintLabel::User)
+    {
         return (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({
@@ -720,13 +728,7 @@ async fn handle_turn(
     );
     let _completion = state.policy.run(prompt, TaintLabel::User).await;
     let head = state.audit.head().await;
-    Json(TurnResponse::ok(
-        req.turn_id,
-        vec![],
-        head.to_hex(),
-        0,
-    ))
-    .into_response()
+    Json(TurnResponse::ok(req.turn_id, vec![], head.to_hex(), 0)).into_response()
 }
 
 #[axum::debug_handler]
@@ -756,7 +758,10 @@ pub fn router(state: SurfaceState) -> Router {
             "/v1/sessions",
             get(handle_list_sessions).post(handle_create_session),
         )
-        .route("/v1/sessions/{session_id}/turns", get(handle_list_session_turns))
+        .route(
+            "/v1/sessions/{session_id}/turns",
+            get(handle_list_session_turns),
+        )
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -771,13 +776,12 @@ pub async fn serve(addr: SocketAddr, state: SurfaceState) -> anyhow::Result<()> 
     Ok(())
 }
 
-
 // ─── tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::{Body, to_bytes};
+    use axum::body::{to_bytes, Body};
     use axum::http::{Method, Request, StatusCode};
     use tower::ServiceExt;
 
@@ -895,7 +899,10 @@ mod tests {
         let (status, body) = post_json("/v1/completions", req).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["object"], "text_completion");
-        assert!(body["choices"][0]["text"].as_str().unwrap().contains("say hi"));
+        assert!(body["choices"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("say hi"));
     }
 
     #[tokio::test]
@@ -928,18 +935,19 @@ mod tests {
 
     /// Helper: state under a BOTTOM-grant kernel that denies every admit.
     fn denied_state() -> SurfaceState {
-        use std::sync::Arc;
-        use gauss_kernel::PrivilegedKernel;
         use gauss_core::CapToken;
-        let kernel = gaussclaw_agent::KernelHandle::new(Arc::new(
-            PrivilegedKernel::new(CapToken::BOTTOM),
-        ));
+        use gauss_kernel::PrivilegedKernel;
+        use std::sync::Arc;
+        let kernel =
+            gaussclaw_agent::KernelHandle::new(Arc::new(PrivilegedKernel::new(CapToken::BOTTOM)));
         SurfaceState::with_kernel("anthropic/claude-3.5-sonnet", kernel)
     }
 
-    async fn post_json_with(state: SurfaceState, uri: &str, body: serde_json::Value)
-        -> (StatusCode, serde_json::Value)
-    {
+    async fn post_json_with(
+        state: SurfaceState,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
         let app = router(state);
         let resp = app
             .oneshot(
@@ -977,9 +985,9 @@ mod tests {
 
     #[tokio::test]
     async fn admit_denial_returns_403() {
-        use std::sync::Arc;
-        use gauss_kernel::PrivilegedKernel;
         use gauss_core::CapToken;
+        use gauss_kernel::PrivilegedKernel;
+        use std::sync::Arc;
 
         // Build a kernel with the empty capability set — every admit
         // call must refuse, including the NETWORK_GET that
@@ -1219,7 +1227,13 @@ mod tests {
         );
         let sess = store.create_session("rest", "echo").await;
         let _ = store
-            .append_turn(&sess.id, None, "user", "hello", gauss_core::TaintLabel::User)
+            .append_turn(
+                &sess.id,
+                None,
+                "user",
+                "hello",
+                gauss_core::TaintLabel::User,
+            )
             .await
             .unwrap();
         let state = SurfaceState::new_with_store("echo", store);

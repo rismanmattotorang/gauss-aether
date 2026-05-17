@@ -54,7 +54,10 @@ impl CohereProvider {
             .iter()
             .map(|m| serde_json::json!({"role": m.role, "content": m.content}))
             .collect();
-        let model = prompt.model.strip_prefix("cohere/").unwrap_or(&prompt.model);
+        let model = prompt
+            .model
+            .strip_prefix("cohere/")
+            .unwrap_or(&prompt.model);
         let mut body = serde_json::json!({
             "model":    model,
             "messages": messages,
@@ -162,7 +165,10 @@ mod tests {
 
     #[tokio::test]
     async fn complete_round_trips_through_mock() {
-        let mock = Arc::new(MockHttpBackend::new(vec![mock_response("hi from cohere", "COMPLETE")]));
+        let mock = Arc::new(MockHttpBackend::new(vec![mock_response(
+            "hi from cohere",
+            "COMPLETE",
+        )]));
         let p = CohereProvider::new(mock.clone(), "co-test-key");
         let c = p.complete(&sample_prompt()).await.unwrap();
         assert_eq!(c.text, "hi from cohere");

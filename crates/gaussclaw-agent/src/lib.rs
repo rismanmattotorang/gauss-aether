@@ -21,8 +21,8 @@
 pub mod audit;
 
 pub use audit::{
-    AuditEntry, AuditTrace, InboundRecord, OutboundRecord, PlaneLabel, TurnCompleteRecord,
-    TurnStartRecord, blake3_hex,
+    blake3_hex, AuditEntry, AuditTrace, InboundRecord, OutboundRecord, PlaneLabel,
+    TurnCompleteRecord, TurnStartRecord,
 };
 
 use std::sync::Arc;
@@ -791,10 +791,7 @@ mod tests {
         use gauss_kernel::PrivilegedKernel;
         // Bottom grant blocks every cap → every admit fails.
         let empty = Arc::new(PrivilegedKernel::new(CapToken::BOTTOM));
-        let tp = TurnPolicy::new(
-            KernelHandle::new(empty),
-            Arc::new(EchoProvider::default()),
-        );
+        let tp = TurnPolicy::new(KernelHandle::new(empty), Arc::new(EchoProvider::default()));
         let prompt = Prompt::new("m", vec![Message::new("user", "hi")]);
         let err = tp.run(prompt, TaintLabel::User).await.unwrap_err();
         assert!(matches!(err, TurnError::Denied(_)), "got {err:?}");
@@ -808,11 +805,8 @@ mod tests {
         // whose lower-bound requires FILESYSTEM_READ should make every
         // turn refuse, even though the bare required_cap is satisfied.
         let kernel = Arc::new(PrivilegedKernel::new(CapToken::NETWORK_GET));
-        let tp = TurnPolicy::new(
-            KernelHandle::new(kernel),
-            Arc::new(EchoProvider::default()),
-        )
-        .with_catalogue_lower_bound(CapToken::FILESYSTEM_READ);
+        let tp = TurnPolicy::new(KernelHandle::new(kernel), Arc::new(EchoProvider::default()))
+            .with_catalogue_lower_bound(CapToken::FILESYSTEM_READ);
         let prompt = Prompt::new("m", vec![Message::new("user", "hi")]);
         let err = tp.run(prompt, TaintLabel::User).await.unwrap_err();
         assert!(matches!(err, TurnError::Denied(_)), "got {err:?}");
@@ -826,11 +820,8 @@ mod tests {
         // succeeds, completion returns normally.
         let grant = CapToken::NETWORK_GET.join(CapToken::FILESYSTEM_READ);
         let kernel = Arc::new(PrivilegedKernel::new(grant));
-        let tp = TurnPolicy::new(
-            KernelHandle::new(kernel),
-            Arc::new(EchoProvider::default()),
-        )
-        .with_catalogue_lower_bound(CapToken::FILESYSTEM_READ);
+        let tp = TurnPolicy::new(KernelHandle::new(kernel), Arc::new(EchoProvider::default()))
+            .with_catalogue_lower_bound(CapToken::FILESYSTEM_READ);
         let prompt = Prompt::new("m", vec![Message::new("user", "hi")]);
         let out = tp.run(prompt, TaintLabel::User).await.expect("admit");
         assert!(out.text.contains("hi"));
@@ -886,10 +877,7 @@ mod tests {
         )
         .with_store(store.clone());
 
-        let prompt = Prompt::new(
-            "echo",
-            vec![Message::new("user", "marker-789")],
-        );
+        let prompt = Prompt::new("echo", vec![Message::new("user", "marker-789")]);
         let _ = tp
             .run_in_session(prompt, TaintLabel::User, Some(&sess.id))
             .await
@@ -988,11 +976,8 @@ mod tests {
         use gauss_kernel::PrivilegedKernel;
         // Empty grant: file_read requires FILESYSTEM_READ → admit fails.
         let empty = Arc::new(PrivilegedKernel::new(CapToken::BOTTOM));
-        let tp = TurnPolicy::new(
-            KernelHandle::new(empty),
-            Arc::new(EchoProvider::default()),
-        )
-        .with_tools(Arc::new(gaussclaw_tools::default_registry()));
+        let tp = TurnPolicy::new(KernelHandle::new(empty), Arc::new(EchoProvider::default()))
+            .with_tools(Arc::new(gaussclaw_tools::default_registry()));
         let err = tp
             .dispatch_tool(
                 "file_read",
@@ -1017,12 +1002,9 @@ mod tests {
         let empty = Arc::new(PrivilegedKernel::new(CapToken::BOTTOM));
         let audit = AuditTrace::new();
         let head_before = audit.head().await;
-        let tp = TurnPolicy::new(
-            KernelHandle::new(empty),
-            Arc::new(EchoProvider::default()),
-        )
-        .with_audit(audit.clone())
-        .with_tools(Arc::new(gaussclaw_tools::default_registry()));
+        let tp = TurnPolicy::new(KernelHandle::new(empty), Arc::new(EchoProvider::default()))
+            .with_audit(audit.clone())
+            .with_tools(Arc::new(gaussclaw_tools::default_registry()));
 
         let _err = tp
             .dispatch_tool(

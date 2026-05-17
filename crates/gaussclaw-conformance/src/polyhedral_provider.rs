@@ -150,24 +150,26 @@ pub async fn verify_handle_equivalence(
     let total = probes.len();
     let mut passed = 0_usize;
     for (i, probe) in probes.iter().enumerate() {
-        let p_out = p.complete(&probe.prompt).await.map_err(|e| {
-            HandleEquivalenceError {
+        let p_out = p
+            .complete(&probe.prompt)
+            .await
+            .map_err(|e| HandleEquivalenceError {
                 probe_index: i,
                 probe_name: probe.name.clone(),
                 reason: format!("provider-p error: {e}"),
                 p_canonical: Vec::new(),
                 q_canonical: Vec::new(),
-            }
-        })?;
-        let q_out = q.complete(&probe.prompt).await.map_err(|e| {
-            HandleEquivalenceError {
+            })?;
+        let q_out = q
+            .complete(&probe.prompt)
+            .await
+            .map_err(|e| HandleEquivalenceError {
                 probe_index: i,
                 probe_name: probe.name.clone(),
                 reason: format!("provider-q error: {e}"),
                 p_canonical: Vec::new(),
                 q_canonical: Vec::new(),
-            }
-        })?;
+            })?;
         let p_canonical = canonical_bytes(&p_out);
         let q_canonical = canonical_bytes(&q_out);
         if p_canonical != q_canonical {
@@ -220,8 +222,8 @@ mod tests {
     use super::*;
     use gaussclaw_agent::{Message, TokenCount};
     use gaussclaw_providers::{
-        AnthropicProvider, OpenAIProvider,
         backend::{HttpResponse, MockHttpBackend},
+        AnthropicProvider, OpenAIProvider,
     };
     use std::sync::Arc;
 
@@ -309,12 +311,7 @@ mod tests {
         // agree with each other but not with the contract.
         let p = anthropic_with("hi", "m");
         let q = openai_with("hi", "m");
-        let expected = Completion::new(
-            "expected-text",
-            "m",
-            "stop",
-            TokenCount::new(0, 0),
-        );
+        let expected = Completion::new("expected-text", "m", "stop", TokenCount::new(0, 0));
         let pr = probe("p1", "m").with_expected(expected);
         let err = verify_handle_equivalence(&p, &q, &[pr])
             .await

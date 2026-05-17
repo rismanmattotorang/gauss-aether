@@ -99,8 +99,7 @@ impl HuggingFaceProvider {
             .or_else(|| v["generated_text"].as_str())
             .unwrap_or("")
             .to_string();
-        let completion_tokens =
-            u32::try_from(text.len() / 4).unwrap_or(u32::MAX);
+        let completion_tokens = u32::try_from(text.len() / 4).unwrap_or(u32::MAX);
         let prompt_tokens: u32 = prompt
             .messages
             .iter()

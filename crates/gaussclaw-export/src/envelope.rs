@@ -264,8 +264,8 @@ mod hex_bytes {
 mod tests {
     use super::*;
     use crate::sft::{SftMessage, SftRecord};
-    use gauss_audit::{Ed25519Signer, ReceiptSigner};
     use gauss_audit::chain::{link, ChainHead};
+    use gauss_audit::{Ed25519Signer, ReceiptSigner};
     use gauss_core::{TaintLabel, TurnId};
 
     fn sample_receipt() -> SignedReceipt {
@@ -326,7 +326,10 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             err,
-            EnvelopeError::WitnessIndexExceedsChain { index: 100, length: 5 }
+            EnvelopeError::WitnessIndexExceedsChain {
+                index: 100,
+                length: 5
+            }
         ));
     }
 
@@ -366,14 +369,7 @@ mod tests {
         let body_bytes = serde_json::to_vec(&EnvelopeBody::Sft(body.clone())).unwrap();
         let prev = ChainHead::from_bytes([0u8; 32]);
         let receipt = signer
-            .sign_append(
-                TurnId::new(9),
-                0,
-                prev,
-                &body_bytes,
-                TaintLabel::User,
-                0,
-            )
+            .sign_append(TurnId::new(9), 0, prev, &body_bytes, TaintLabel::User, 0)
             .unwrap();
         // Sanity: link reconstruction agrees with receipt.post_head.
         let post = link(prev, &body_bytes);

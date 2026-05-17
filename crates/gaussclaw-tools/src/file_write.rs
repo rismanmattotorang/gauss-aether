@@ -80,9 +80,7 @@ impl ToolTrait for FileWriteTool {
         let content = args
             .get("content")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                GaussError::Internal("missing string field `content`".into())
-            })?;
+            .ok_or_else(|| GaussError::Internal("missing string field `content`".into()))?;
         // Path-traversal defence: refuse any path that contains a
         // `ParentDir` component (`..`). A substring check would
         // false-positive a legit filename like `..foo`; using
@@ -94,9 +92,7 @@ impl ToolTrait for FileWriteTool {
             .components()
             .any(|c| matches!(c, std::path::Component::ParentDir))
         {
-            return Err(GaussError::Internal(
-                "path traversal (`..`) refused".into(),
-            ));
+            return Err(GaussError::Internal("path traversal (`..`) refused".into()));
         }
         tokio::fs::write(path, content)
             .await

@@ -225,9 +225,15 @@ mod tests {
     async fn into_sft_records_carries_leading_system_into_each_record() {
         let s = SessionStore::open_in_memory().await.unwrap();
         let sess = s.create_session("tui", "m").await;
-        s.append_turn(&sess.id, None, "system", "you are helpful", TaintLabel::Trusted)
-            .await
-            .unwrap();
+        s.append_turn(
+            &sess.id,
+            None,
+            "system",
+            "you are helpful",
+            TaintLabel::Trusted,
+        )
+        .await
+        .unwrap();
         s.append_turn(&sess.id, None, "user", "q1", TaintLabel::User)
             .await
             .unwrap();

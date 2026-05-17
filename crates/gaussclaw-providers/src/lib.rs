@@ -60,7 +60,7 @@
     clippy::missing_const_for_fn,
     clippy::needless_pass_by_value,
     clippy::single_match_else,
-    clippy::map_unwrap_or,
+    clippy::map_unwrap_or
 )]
 
 pub mod anthropic;
@@ -91,9 +91,9 @@ pub use llama_cpp::LlamaCppProvider;
 pub use ollama::OllamaProvider;
 pub use openai::OpenAIProvider;
 pub use openai_compat::{
-    OpenAICompatProvider, anyscale, cerebras, deepseek, fireworks, groq, mistral, octoai,
-    perplexity, tgi, together, vllm, xai,
+    anyscale, cerebras, deepseek, fireworks, groq, mistral, octoai, perplexity, tgi, together,
+    vllm, xai, OpenAICompatProvider,
 };
-pub use postconditions::{PostconditionError, check_postconditions};
+pub use postconditions::{check_postconditions, PostconditionError};
 pub use replicate::ReplicateProvider;
 pub use router::{RoutedCompletion, RouterProvider, RouterTransparencyError};

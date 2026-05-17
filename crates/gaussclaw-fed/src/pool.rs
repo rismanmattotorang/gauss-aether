@@ -14,7 +14,7 @@
 //! publisher signed.
 
 use gauss_audit::ED25519_PUBLIC_KEY_LEN;
-use gaussclaw_export::{verify::TsaRoot, Envelope, verify_envelope};
+use gaussclaw_export::{verify::TsaRoot, verify_envelope, Envelope};
 
 use crate::backend::{PoolBackend, PoolEntry, PoolError, PoolResult};
 use crate::policy::{AdmissionDecision, AdmissionPolicy};
@@ -46,7 +46,10 @@ impl ObjectKey {
     /// Render the canonical S3-style key.
     #[must_use]
     pub fn as_path(&self) -> String {
-        format!("{}/{}/{}.env.json", self.org, self.chain_head_hex, self.turn_id)
+        format!(
+            "{}/{}/{}.env.json",
+            self.org, self.chain_head_hex, self.turn_id
+        )
     }
 }
 
@@ -161,10 +164,7 @@ impl<B: PoolBackend, P: AdmissionPolicy> FederatedPool<B, P> {
         org: &str,
         pin_publisher_key: Option<&[u8; ED25519_PUBLIC_KEY_LEN]>,
     ) -> PoolResult<Vec<Envelope>> {
-        let entries = self
-            .backend
-            .list(&format!("{org}/"))
-            .await?;
+        let entries = self.backend.list(&format!("{org}/")).await?;
         let mut out = Vec::with_capacity(entries.len());
         for e in entries {
             let Ok(env) = serde_json::from_slice::<Envelope>(&e.bytes) else {
@@ -264,7 +264,9 @@ mod tests {
         env.receipt.signature[0] = env.receipt.signature[0].wrapping_add(1);
         let err = pool.publish("acme", &env, Some(&pk)).await.unwrap_err();
         match err {
-            PoolError::Verification(msg) => assert!(msg.contains("signature") || msg.contains("Signature")),
+            PoolError::Verification(msg) => {
+                assert!(msg.contains("signature") || msg.contains("Signature"))
+            }
             other => panic!("expected Verification, got {other:?}"),
         }
     }

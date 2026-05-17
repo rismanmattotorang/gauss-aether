@@ -39,7 +39,7 @@
     clippy::doc_markdown,
     clippy::len_zero,
     clippy::assigning_clones,
-    clippy::map_unwrap_or,
+    clippy::map_unwrap_or
 )]
 
 pub mod notdiamond;

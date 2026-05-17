@@ -171,7 +171,10 @@ impl Catalogue {
     /// the router is permitted to pick freely.
     #[must_use]
     pub fn capability_upper_bound(&self) -> CapToken {
-        let bits = self.models.iter().fold(0u64, |acc, m| acc | m.cap_required.bits());
+        let bits = self
+            .models
+            .iter()
+            .fold(0u64, |acc, m| acc | m.cap_required.bits());
         CapToken::from_bits(bits)
     }
 }
@@ -188,12 +191,7 @@ mod tests {
                 200_000,
                 CapToken::NETWORK_GET,
             ),
-            LeafModel::new(
-                "openai/gpt-4o",
-                "openai",
-                128_000,
-                CapToken::NETWORK_GET,
-            ),
+            LeafModel::new("openai/gpt-4o", "openai", 128_000, CapToken::NETWORK_GET),
             LeafModel::new(
                 "ollama/llama3",
                 "ollama",

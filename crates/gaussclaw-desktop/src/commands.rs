@@ -163,9 +163,18 @@ pub async fn chat(state: &ServerState, message: &str) -> Envelope<String> {
     // WAL-before-effect: audit-record before admit.
     state
         .audit()
-        .record_inbound("gc_chat", "desktop", message.as_bytes(), TaintLabel::User, plane)
+        .record_inbound(
+            "gc_chat",
+            "desktop",
+            message.as_bytes(),
+            TaintLabel::User,
+            plane,
+        )
         .await;
-    if let Err(e) = state.kernel().admit(CapToken::NETWORK_GET, TaintLabel::User) {
+    if let Err(e) = state
+        .kernel()
+        .admit(CapToken::NETWORK_GET, TaintLabel::User)
+    {
         return Envelope::err("denied", format!("{e:?}"));
     }
     // Phase 1 leaves the actual provider dispatch to `gaussclaw-surfaces`;
@@ -251,13 +260,16 @@ mod tests {
         let before = unwrap_ok(receipt_head(&s).await).digest;
         let _ = chat(&s, "ping").await;
         let after = unwrap_ok(receipt_head(&s).await).digest;
-        assert_ne!(before, after, "chat must advance audit head (WAL-before-effect)");
+        assert_ne!(
+            before, after,
+            "chat must advance audit head (WAL-before-effect)"
+        );
     }
 
     #[tokio::test]
     async fn chat_denied_when_kernel_lacks_caps() {
-        use std::sync::Arc;
         use gauss_kernel::PrivilegedKernel;
+        use std::sync::Arc;
         let mut cfg = Config::default();
         cfg.provider.name = "anthropic".into();
         let bottom = Arc::new(PrivilegedKernel::new(CapToken::BOTTOM));
