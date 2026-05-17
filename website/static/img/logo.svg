@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#67e8f9"/>
+      <stop offset="1" stop-color="#0891b2"/>
+    </linearGradient>
+  </defs>
+  <!-- Outer claw -->
+  <path d="M32 4 L56 18 L56 40 C56 49 48 56 32 60 C16 56 8 49 8 40 L8 18 Z"
+        stroke="url(#g)" stroke-width="3" stroke-linejoin="round"/>
+  <!-- Inner claw -->
+  <path d="M32 14 L46 22 L46 38 C46 44 41 49 32 51 C23 49 18 44 18 38 L18 22 Z"
+        stroke="url(#g)" stroke-width="2" stroke-linejoin="round" opacity="0.55"/>
+  <!-- Core dot -->
+  <circle cx="32" cy="32" r="3.4" fill="url(#g)"/>
+</svg>
