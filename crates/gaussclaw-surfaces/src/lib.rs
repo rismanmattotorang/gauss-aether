@@ -380,41 +380,113 @@ pub struct CompletionsChoice {
 async fn handle_completions(
     State(state): State<SurfaceState>,
     Json(req): Json<CompletionsRequest>,
-) -> Json<CompletionsResponse> {
+) -> Response {
+    // Uniform structural treatment: every wire surface goes through the
+    // audit-WAL and kernel admit gate before any dispatch.
+    let plane = state.kernel.plane_for(SurfaceRequest::SdkChat);
+    state
+        .audit
+        .record_inbound(
+            "/v1/completions",
+            "sdk",
+            req.prompt.as_bytes(),
+            TaintLabel::User,
+            plane,
+        )
+        .await;
+    if let Err(e) = state.kernel.admit(gauss_core::CapToken::NETWORK_GET, TaintLabel::User) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": { "code": "denied", "message": format!("admit failed: {e:?}") }
+            })),
+        )
+            .into_response();
+    }
     let model = if req.model.is_empty() {
-        state.default_model
+        state.default_model.clone()
     } else {
-        req.model
+        req.model.clone()
     };
+    // Run the agent loop with the legacy single-prompt shape converted
+    // to a one-message chat conversation. Real provider dispatch happens
+    // through the same TurnPolicy as /v1/chat/completions.
+    let prompt = Prompt::new(
+        model.clone(),
+        vec![Message::new("user", req.prompt.clone())],
+    );
+    let completion = match state.policy.run(prompt, TaintLabel::User).await {
+        Ok(c) => c,
+        Err(gaussclaw_agent::TurnError::Provider(e)) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({
+                    "error": { "code": "provider_error", "message": format!("{e}") }
+                })),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": { "code": "agent_error", "message": format!("{e}") }
+                })),
+            )
+                .into_response();
+        }
+    };
+    let prompt_tokens = completion.usage.prompt;
+    let completion_tokens = completion.usage.completion;
     Json(CompletionsResponse {
-        id: "cmpl-stub",
+        id: "cmpl",
         object: "text_completion",
         created: 0,
         model,
         choices: vec![CompletionsChoice {
-            text: format!("(gaussclaw stub) legacy /v1/completions; prompt: {}", req.prompt),
+            text: completion.text,
             index: 0,
             finish_reason: "stop",
         }],
         usage: ChatUsage {
-            prompt_tokens: u32::try_from(req.prompt.len() / 4).unwrap_or(u32::MAX),
-            completion_tokens: 16,
-            total_tokens: 0,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens.saturating_add(completion_tokens),
         },
     })
+    .into_response()
 }
 
 // ─── raw chat WebSocket ─────────────────────────────────────────────────────
 
 #[axum::debug_handler]
-async fn handle_chat_ws(ws: WebSocketUpgrade) -> Response {
-    ws.on_upgrade(chat_socket)
+async fn handle_chat_ws(
+    State(state): State<SurfaceState>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    // Admit-gate + audit-record BEFORE the WS upgrade completes. A
+    // refused upgrade never produces a socket.
+    let plane = state.kernel.plane_for(SurfaceRequest::UserSync);
+    state
+        .audit
+        .record_inbound("/v1/chat/ws", "sdk", b"", TaintLabel::User, plane)
+        .await;
+    if let Err(e) = state.kernel.admit(gauss_core::CapToken::NETWORK_GET, TaintLabel::User) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": { "code": "denied", "message": format!("admit failed: {e:?}") }
+            })),
+        )
+            .into_response();
+    }
+    ws.on_upgrade(move |socket| chat_socket(socket, state))
 }
 
-async fn chat_socket(mut socket: WebSocket) {
+async fn chat_socket(mut socket: WebSocket, state: SurfaceState) {
     let banner = serde_json::json!({
         "kind": "system",
-        "body": "gaussclaw-surfaces /v1/chat/ws — provider dispatch lands in slice 3c"
+        "body": "gaussclaw-surfaces /v1/chat/ws connected — each text frame becomes a turn"
     });
     if socket
         .send(WsMessage::Text(banner.to_string().into()))
@@ -431,10 +503,23 @@ async fn chat_socket(mut socket: WebSocket) {
             WsMessage::Close(_) => return,
             _ => continue,
         };
-        let reply = serde_json::json!({
-            "kind": "assistant",
-            "body": format!("(stub echo) {body}")
-        });
+        // Each text frame is a turn. Run it through the same TurnPolicy
+        // the unary surface uses — uniform agent dispatch across every
+        // wire path.
+        let prompt = Prompt::new(
+            state.default_model.clone(),
+            vec![Message::new("user", body)],
+        );
+        let reply = match state.policy.run(prompt, TaintLabel::User).await {
+            Ok(c) => serde_json::json!({
+                "kind": "assistant",
+                "body": c.text,
+            }),
+            Err(e) => serde_json::json!({
+                "kind": "error",
+                "body": format!("{e}"),
+            }),
+        };
         if socket
             .send(WsMessage::Text(reply.to_string().into()))
             .await
@@ -456,10 +541,42 @@ use gauss_gateway::turn::{TurnRequest, TurnResponse};
 
 #[axum::debug_handler]
 async fn handle_turn(
-    State(_state): State<SurfaceState>,
+    State(state): State<SurfaceState>,
     Json(req): Json<TurnRequest>,
-) -> Json<TurnResponse> {
-    Json(TurnResponse::ok(req.turn_id, vec![], "0".repeat(64), 0))
+) -> Response {
+    // Admit-gate + audit-record. The /v1/turn shape is internal-only
+    // (raw GaussClaw rather than OAI-mapped), but the kernel discipline
+    // is uniform.
+    let plane = state.kernel.plane_for(SurfaceRequest::SdkChat);
+    let body_bytes = req.body.as_bytes();
+    state
+        .audit
+        .record_inbound("/v1/turn", "sdk", body_bytes, TaintLabel::User, plane)
+        .await;
+    if let Err(e) = state.kernel.admit(gauss_core::CapToken::NETWORK_GET, TaintLabel::User) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": { "code": "denied", "message": format!("admit failed: {e:?}") }
+            })),
+        )
+            .into_response();
+    }
+    // Run the prompt through the agent loop and return the live chain
+    // head — no more all-zero placeholder.
+    let prompt = Prompt::new(
+        state.default_model.clone(),
+        vec![Message::new("user", req.body.clone())],
+    );
+    let _completion = state.policy.run(prompt, TaintLabel::User).await;
+    let head = state.audit.head().await;
+    Json(TurnResponse::ok(
+        req.turn_id,
+        vec![],
+        head.to_hex(),
+        0,
+    ))
+    .into_response()
 }
 
 #[axum::debug_handler]
@@ -652,6 +769,55 @@ mod tests {
         // gauss-gateway::HealthResponse field names.
         assert_eq!(body["report"]["ok"], true);
         assert_eq!(body["report"]["overall"], "green");
+    }
+
+    /// Helper: state under a BOTTOM-grant kernel that denies every admit.
+    fn denied_state() -> SurfaceState {
+        use std::sync::Arc;
+        use gauss_kernel::PrivilegedKernel;
+        use gauss_core::CapToken;
+        let kernel = gaussclaw_agent::KernelHandle::new(Arc::new(
+            PrivilegedKernel::new(CapToken::BOTTOM),
+        ));
+        SurfaceState::with_kernel("anthropic/claude-3.5-sonnet", kernel)
+    }
+
+    async fn post_json_with(state: SurfaceState, uri: &str, body: serde_json::Value)
+        -> (StatusCode, serde_json::Value)
+    {
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn legacy_completions_admit_denial_returns_403() {
+        let req = serde_json::json!({ "model": "m", "prompt": "x" });
+        let (status, body) = post_json_with(denied_state(), "/v1/completions", req).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"]["code"], "denied");
+    }
+
+    #[tokio::test]
+    async fn raw_turn_admit_denial_returns_403() {
+        let req = serde_json::json!({ "turn_id": 1, "body": "x" });
+        let (status, body) = post_json_with(denied_state(), "/v1/turn", req).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"]["code"], "denied");
     }
 
     #[tokio::test]

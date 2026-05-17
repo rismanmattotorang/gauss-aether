@@ -49,7 +49,6 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use async_trait::async_trait;
 use gauss_core::{CapToken, GaussError, TaintLabel};
@@ -516,13 +515,13 @@ impl ChannelRegistry {
 // ─── helpers ───────────────────────────────────────────────────────────────
 
 fn rfc3339_now() -> String {
-    let secs = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    // Lightweight RFC3339-ish "seconds since epoch as ISO Z" — enough for
-    // the test surface, and the adapter can override with a real RFC3339
-    // string when one is available from the upstream service.
-    format!("1970-01-01T00:00:{secs:09}Z")
+    // Real RFC3339, second-precision UTC. Adapters that have a wire
+    // timestamp from the upstream service should override this with that
+    // value via [`ChannelMessage`] — but the default is now a real
+    // RFC3339 string accepted by any conforming parser.
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
 }
 
 // `SurfaceRequest` is forwarded through `ChannelRegistry::send` indirectly

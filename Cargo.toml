@@ -152,6 +152,9 @@ sha2   = "0.10"
 hmac   = "0.12"
 subtle = "2"
 
+# Time — real RFC3339 timestamps for audit records and channel messages.
+time = { version = "0.3", default-features = false, features = ["std", "formatting", "macros"] }
+
 # Composite sandbox — Phase 3. The default WASM layer is wasmi (pure-Rust,
 # fast compile, supports fuel metering). Phase 10 swaps to wasmtime for the
 # production hardening profile; the trait surface is identical (ADR-0009).

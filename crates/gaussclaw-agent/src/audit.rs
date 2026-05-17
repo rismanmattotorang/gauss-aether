@@ -155,12 +155,12 @@ pub fn blake3_hex(bytes: &[u8]) -> String {
     h.finalize().to_hex().to_string()
 }
 
-/// Cheap RFC3339-shaped timestamp.
+/// RFC3339 timestamp (UTC, second precision). Real RFC3339 — accepted
+/// by any conforming parser, including the Phase 2 replay tooling.
 fn rfc3339_now() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    format!("1970-01-01T00:00:{secs:09}Z")
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
 }
 
 /// Tamper-evident audit trail. Cheap to clone; internally `Arc<Mutex<_>>`.
