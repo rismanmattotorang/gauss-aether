@@ -234,10 +234,36 @@ pub struct TokenCount {
 }
 
 impl TokenCount {
+    /// Build a fresh token count. Required because the struct is
+    /// `#[non_exhaustive]`.
+    #[must_use]
+    pub const fn new(prompt: u32, completion: u32) -> Self {
+        Self { prompt, completion }
+    }
+
     /// Sum of prompt + completion tokens (saturating).
     #[must_use]
     pub const fn total(&self) -> u32 {
         self.prompt.saturating_add(self.completion)
+    }
+}
+
+impl Completion {
+    /// Build a fresh completion. Required because the struct is
+    /// `#[non_exhaustive]`.
+    #[must_use]
+    pub fn new(
+        text: impl Into<String>,
+        model: impl Into<String>,
+        finish_reason: impl Into<String>,
+        usage: TokenCount,
+    ) -> Self {
+        Self {
+            text: text.into(),
+            model: model.into(),
+            finish_reason: finish_reason.into(),
+            usage,
+        }
     }
 }
 

@@ -6,9 +6,19 @@ rust-version.workspace = true
 license.workspace      = true
 repository.workspace   = true
 authors.workspace      = true
-description = "OpenRouter aggregator and NotDiamond learned router under RouterProviderTrait."
+description = "Meta-routers: OpenRouter (aggregator) and NotDiamond (learned router) under the RouterProvider trait."
 
 [lints]
 workspace = true
 
 [dependencies]
+gauss-core         = { workspace = true }
+gaussclaw-agent    = { workspace = true }
+gaussclaw-providers = { workspace = true }
+async-trait        = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+thiserror          = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

@@ -2877,10 +2877,29 @@ version = "0.0.1"
 [[package]]
 name = "gaussclaw-providers"
 version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "gauss-core",
+ "gaussclaw-agent",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
 
 [[package]]
 name = "gaussclaw-providers-meta"
 version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "gauss-core",
+ "gaussclaw-agent",
+ "gaussclaw-providers",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
 
 [[package]]
 name = "gaussclaw-skill"
