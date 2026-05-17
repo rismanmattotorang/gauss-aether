@@ -240,6 +240,27 @@ pub fn tgi(backend: Arc<dyn HttpBackend>) -> OpenAICompatProvider {
     OpenAICompatProvider::new(backend, "tgi", "http://localhost:3000", String::new())
 }
 
+/// Builder factory for **OctoAI** (`https://text.octoai.run`).
+#[must_use]
+pub fn octoai(backend: Arc<dyn HttpBackend>, api_key: impl Into<String>) -> OpenAICompatProvider {
+    OpenAICompatProvider::new(backend, "octoai", "https://text.octoai.run", api_key)
+}
+
+/// Builder factory for **Anyscale Endpoints**
+/// (`https://api.endpoints.anyscale.com`).
+#[must_use]
+pub fn anyscale(
+    backend: Arc<dyn HttpBackend>,
+    api_key: impl Into<String>,
+) -> OpenAICompatProvider {
+    OpenAICompatProvider::new(
+        backend,
+        "anyscale",
+        "https://api.endpoints.anyscale.com",
+        api_key,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,6 +373,22 @@ mod tests {
         let p = tgi(mock.clone());
         let _ = p.complete(&sample_prompt("tgi/llama")).await.unwrap();
         assert!(mock.seen()[0].url.contains("localhost:3000"));
+    }
+
+    #[tokio::test]
+    async fn octoai_uses_correct_url() {
+        let mock = Arc::new(MockHttpBackend::new(vec![mock_response("x")]));
+        let p = octoai(mock.clone(), "octo-x");
+        let _ = p.complete(&sample_prompt("octoai/mixtral")).await.unwrap();
+        assert!(mock.seen()[0].url.contains("text.octoai.run"));
+    }
+
+    #[tokio::test]
+    async fn anyscale_uses_correct_url() {
+        let mock = Arc::new(MockHttpBackend::new(vec![mock_response("x")]));
+        let p = anyscale(mock.clone(), "any-x");
+        let _ = p.complete(&sample_prompt("anyscale/llama")).await.unwrap();
+        assert!(mock.seen()[0].url.contains("api.endpoints.anyscale.com"));
     }
 
     #[tokio::test]
