@@ -276,6 +276,84 @@ mod tests {
         s.verify_chain().await.expect("clean store must verify");
     }
 
+    // ── signed receipts (Ed25519, EUF-CMA) ──────────────────────────────────
+
+    async fn signed_store() -> SessionStore {
+        use std::sync::Arc;
+        use gauss_audit::{Ed25519Signer, ReceiptSigner};
+        let signer = Arc::new(ReceiptSigner::new(
+            Ed25519Signer::from_seed([0x42; 32]),
+        ));
+        SessionStore::open_in_memory()
+            .await
+            .unwrap()
+            .with_signer(signer)
+    }
+
+    #[tokio::test]
+    async fn signer_attaches_a_public_key() {
+        let s = signed_store().await;
+        assert!(s.public_key().is_some());
+        // Length is 32 (Ed25519 public key).
+        let pk = s.public_key().unwrap();
+        assert_eq!(pk.len(), 32);
+        // Unsigned store has no public key.
+        let u = fresh_store().await;
+        assert!(u.public_key().is_none());
+    }
+
+    #[tokio::test]
+    async fn signed_receipt_round_trips() {
+        let s = signed_store().await;
+        let sess = s.create_session("tui", "m").await;
+        let (turn, _head) = s
+            .append_turn(&sess.id, None, "user", "signed", TaintLabel::User)
+            .await
+            .unwrap();
+        let receipt = s.get_receipt(turn.id).await.expect("receipt present");
+        assert_eq!(u64::try_from(receipt.turn_id.as_u128()).unwrap(), turn.id);
+        // Verification against the stored payload succeeds.
+        assert!(s.verify_receipt(turn.id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn unsigned_store_has_no_receipt() {
+        let s = fresh_store().await;
+        let sess = s.create_session("tui", "m").await;
+        let (t, _) = s
+            .append_turn(&sess.id, None, "user", "x", TaintLabel::User)
+            .await
+            .unwrap();
+        assert!(s.get_receipt(t.id).await.is_none());
+        // verify_receipt returns false (no receipt to verify), not Err.
+        assert!(!s.verify_receipt(t.id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn tampered_payload_fails_signature_verify() {
+        let s = signed_store().await;
+        let sess = s.create_session("tui", "m").await;
+        let (t, _) = s
+            .append_turn(&sess.id, None, "user", "original", TaintLabel::User)
+            .await
+            .unwrap();
+        // Tamper with the stored payload — the signature should fail
+        // because the digest no longer matches.
+        {
+            let mut st = s.state.lock().await;
+            if let Some(p) = st.receipt_payloads.get_mut(&t.id) {
+                p[0] = p[0].wrapping_add(1);
+            }
+        }
+        let err = s.verify_receipt(t.id).await.unwrap_err();
+        // `gauss_audit::SignedReceipt::verify` returns
+        // `GaussError::SignatureInvalid` on mismatch.
+        assert!(
+            matches!(err, StoreError::Backend(_)),
+            "expected Backend(SignatureInvalid), got {err:?}"
+        );
+    }
+
     #[tokio::test]
     async fn verify_chain_catches_in_memory_tamper() {
         let s = fresh_store().await;

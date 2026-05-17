@@ -40,6 +40,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use gauss_audit::{Ed25519Signer, ReceiptSigner, SignedReceipt};
 use gauss_core::TurnId;
 use gauss_memory::SurrealMemory;
 use gauss_traits::{AppendEntry, HybridQuery, MemoryBackend, RecallHit};
@@ -91,6 +92,10 @@ pub type StoreResult<T> = Result<T, StoreError>;
 pub struct SessionStore {
     memory: Arc<SurrealMemory>,
     pub(crate) state: Mutex<State>,
+    /// Optional Ed25519 receipt signer. When attached, every
+    /// [`Self::append_turn`] also produces a [`SignedReceipt`] proving
+    /// non-repudiation under EUF-CMA (Theorem T11 of the source paper).
+    signer: Option<Arc<ReceiptSigner<Ed25519Signer>>>,
 }
 
 #[derive(Default)]
@@ -105,6 +110,12 @@ pub(crate) struct State {
     pub(crate) parent_children: HashMap<u64, Vec<u64>>,
     /// Lineage edges keyed by child turn id.
     pub(crate) lineage: HashMap<u64, LineageEdge>,
+    /// Ed25519-signed receipts keyed by turn id. Only populated when a
+    /// signer is attached to the store.
+    pub(crate) receipts: HashMap<u64, SignedReceipt>,
+    /// Persisted payload bytes for receipt verification (the exact bytes
+    /// the signer signed over).
+    pub(crate) receipt_payloads: HashMap<u64, Vec<u8>>,
     /// Next turn id to allocate.
     pub(crate) next_turn_id: u64,
 }
@@ -129,7 +140,30 @@ impl SessionStore {
         Self {
             memory,
             state: Mutex::new(State::default()),
+            signer: None,
         }
+    }
+
+    /// Attach an Ed25519 receipt signer. Every subsequent
+    /// [`Self::append_turn`] produces a signed, verifiable receipt.
+    /// Until a signer is attached, the store operates in the chain-
+    /// protected-but-unsigned mode (Hermes-equivalent on integrity,
+    /// stronger on tamper-evidence; signing adds non-repudiation).
+    #[must_use]
+    pub fn with_signer(mut self, signer: Arc<ReceiptSigner<Ed25519Signer>>) -> Self {
+        self.signer = Some(signer);
+        self
+    }
+
+    /// The signer's public verifying key, if a signer is attached.
+    #[must_use]
+    pub fn public_key(&self) -> Option<[u8; 32]> {
+        self.signer.as_ref().map(|s| {
+            // Disambiguate from the inherent `Ed25519Signer::public_key`
+            // (which returns `&[u8; 32]`) — we want the SigningBackend
+            // trait method which returns by value.
+            <gauss_audit::Ed25519Signer as gauss_audit::SigningBackend>::public_key(s.backend())
+        })
     }
 
     /// Borrow the underlying memory backend.
@@ -218,10 +252,35 @@ impl SessionStore {
         };
 
         let payload = serde_json::to_vec(&turn)?;
-        let entry = AppendEntry::new(TurnId::new(u128::from(turn_id)), payload, taint)
+        // Capture the prev_head BEFORE the append so we can sign the
+        // exact chain transition the receipt witnesses.
+        let prev_head_snap = self.memory.chain_head().await?;
+        let prev_head_arr: [u8; 32] = prev_head_snap.digest;
+        let prev_head = gauss_audit::ChainHead::from_bytes(prev_head_arr);
+        let entry = AppendEntry::new(TurnId::new(u128::from(turn_id)), payload.clone(), taint)
             .with_text(content)
             .with_embedding(mock_embed(&turn.content));
         let ack = self.memory.append(entry).await?;
+
+        // Optional Ed25519 signature over (turn_id, index, prev_head,
+        // payload_digest, post_head, taint, signed_at_ms). A consumer
+        // can verify the receipt with the stored payload and the
+        // public key — no trust in the store needed.
+        if let Some(signer) = &self.signer {
+            let signed_at_ms = std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as u64);
+            let receipt = signer.sign_append(
+                TurnId::new(u128::from(turn_id)),
+                ack.index,
+                prev_head,
+                &payload,
+                taint,
+                signed_at_ms,
+            )?;
+            st.receipts.insert(turn_id, receipt);
+            st.receipt_payloads.insert(turn_id, payload);
+        }
 
         // Sign the lineage edge with BLAKE3 of (parent || child ||
         // chain-head-after-append). Any tampering in any of those
@@ -302,6 +361,38 @@ impl SessionStore {
     /// Look up the signed [`LineageEdge`] for a child turn.
     pub async fn lineage_edge(&self, child_id: u64) -> Option<LineageEdge> {
         self.state.lock().await.lineage.get(&child_id).cloned()
+    }
+
+    // ─── signed receipts ────────────────────────────────────────────────────
+
+    /// Look up the signed receipt for a turn. Returns `None` when no
+    /// signer is attached or the turn is unknown.
+    pub async fn get_receipt(&self, turn_id: u64) -> Option<SignedReceipt> {
+        self.state.lock().await.receipts.get(&turn_id).cloned()
+    }
+
+    /// Verify the signed receipt for a turn against the stored payload.
+    /// Returns `Ok(false)` if there is no receipt (e.g. no signer
+    /// attached) or no payload recorded; `Ok(true)` on successful
+    /// verification; `Err` on signature / digest mismatch.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::Backend`] wrapping the underlying
+    /// `gauss-audit::verify` error when the signature does not bind
+    /// the stored payload.
+    pub async fn verify_receipt(&self, turn_id: u64) -> StoreResult<bool> {
+        let (receipt, payload) = {
+            let st = self.state.lock().await;
+            let Some(r) = st.receipts.get(&turn_id).cloned() else {
+                return Ok(false);
+            };
+            let Some(p) = st.receipt_payloads.get(&turn_id).cloned() else {
+                return Ok(false);
+            };
+            (r, p)
+        };
+        receipt.verify(&payload)?;
+        Ok(true)
     }
 
     // ─── search ─────────────────────────────────────────────────────────────
