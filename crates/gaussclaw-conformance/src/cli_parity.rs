@@ -14,7 +14,8 @@
 /// `docs/HERMES_ADAPTER_MATRIX.md`. Any addition or removal in upstream
 /// Hermes is reflected here in lock-step.
 pub const HERMES_SUBCOMMANDS: &[&str] = &[
-    "model", "tools", "config", "gateway", "setup", "update", "doctor",
+    "model", "tools", "config", "gateway", "setup", "update",
+    "doctor",
     // `web` is a GaussClaw extension — see SUBCOMMANDS for the parity flag.
 ];
 
@@ -50,8 +51,7 @@ mod tests {
     /// GaussClaw extensions are permitted; missing Hermes commands are not.
     #[test]
     fn hermes_subcommands_are_all_covered() {
-        let claw: std::collections::BTreeSet<&str> =
-            SUBCOMMANDS.iter().map(|(n, _)| *n).collect();
+        let claw: std::collections::BTreeSet<&str> = SUBCOMMANDS.iter().map(|(n, _)| *n).collect();
         let missing: Vec<&&str> = HERMES_SUBCOMMANDS
             .iter()
             .filter(|h| !claw.contains(*h))
@@ -66,8 +66,7 @@ mod tests {
     /// be in the upstream Hermes list. Prevents accidental over-claim.
     #[test]
     fn parity_flags_are_truthful() {
-        let hermes: std::collections::BTreeSet<&str> =
-            HERMES_SUBCOMMANDS.iter().copied().collect();
+        let hermes: std::collections::BTreeSet<&str> = HERMES_SUBCOMMANDS.iter().copied().collect();
         for (name, claims_parity) in SUBCOMMANDS {
             if *claims_parity {
                 assert!(

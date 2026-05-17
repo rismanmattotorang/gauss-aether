@@ -162,7 +162,9 @@ mod tests {
         let s = SessionStore::open_in_memory().await.unwrap();
         let sess = s.create_session("rest", "echo").await;
         replay_into(&s, &corpus, &sess.id).await;
-        s.verify_chain().await.expect("clean 1000-turn chain must verify");
+        s.verify_chain()
+            .await
+            .expect("clean 1000-turn chain must verify");
         let head = s.chain_head().await.unwrap();
         assert_eq!(head.length, 1000);
     }
@@ -171,8 +173,8 @@ mod tests {
     /// individually. EUF-CMA non-repudiation (T11) at corpus scale.
     #[tokio::test]
     async fn replay_with_signer_produces_verifying_receipts_per_turn() {
-        use std::sync::Arc;
         use gauss_audit::{Ed25519Signer, ReceiptSigner};
+        use std::sync::Arc;
         let signer = Arc::new(ReceiptSigner::new(Ed25519Signer::from_seed([0x55; 32])));
         let s = SessionStore::open_in_memory()
             .await

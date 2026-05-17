@@ -44,8 +44,9 @@
 #![allow(
     clippy::doc_markdown,
     clippy::missing_const_for_fn,
-    clippy::unused_async,
+    clippy::unused_async
 )]
+#![allow(rustdoc::broken_intra_doc_links)]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -58,7 +59,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 use thiserror::Error;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{mpsc, Mutex};
 
 // ─── errors ─────────────────────────────────────────────────────────────────
 
@@ -118,7 +119,10 @@ pub struct InMemorySecretStore {
 impl InMemorySecretStore {
     /// Insert a (handle → bytes) pair.
     pub fn insert(&self, handle: impl Into<String>, value: impl Into<Vec<u8>>) {
-        self.inner.write().unwrap().insert(handle.into(), value.into());
+        self.inner
+            .write()
+            .unwrap()
+            .insert(handle.into(), value.into());
     }
 }
 
@@ -152,7 +156,11 @@ pub struct ChannelMessage {
 impl ChannelMessage {
     /// Build a message with the adversarial-taint default.
     #[must_use]
-    pub fn new(channel: impl Into<String>, sender: impl Into<String>, body: impl Into<String>) -> Self {
+    pub fn new(
+        channel: impl Into<String>,
+        sender: impl Into<String>,
+        body: impl Into<String>,
+    ) -> Self {
         Self {
             channel: channel.into(),
             sender: sender.into(),
@@ -254,8 +262,7 @@ type HmacSha256 = Hmac<Sha256>;
 pub fn hmac_verify(secret: &[u8], body: &[u8], provided_hex: &str) -> ChannelResult<()> {
     let candidate = hex_decode(provided_hex.trim_start_matches("sha256="))
         .map_err(|()| ChannelError::BadSignature)?;
-    let mut mac =
-        HmacSha256::new_from_slice(secret).map_err(|_| ChannelError::BadSignature)?;
+    let mut mac = HmacSha256::new_from_slice(secret).map_err(|_| ChannelError::BadSignature)?;
     mac.update(body);
     let expected = mac.finalize().into_bytes();
     if expected.as_slice().ct_eq(&candidate).into() {
@@ -414,8 +421,7 @@ impl InMemoryChannel {
         self.kernel
             .admit(self.required_caps(), self.default_taint)
             .map_err(ChannelError::Denied)?;
-        let msg =
-            ChannelMessage::new(&self.id, sender, body).with_taint(self.default_taint);
+        let msg = ChannelMessage::new(&self.id, sender, body).with_taint(self.default_taint);
         self.inbox.lock().await.push(msg);
         Ok(())
     }
@@ -604,7 +610,10 @@ mod tests {
         );
         let body = b"event payload";
         let sig = sign(b"shh", body);
-        let msg = ch.handle_webhook(body, &sig, "github/dependabot").await.unwrap();
+        let msg = ch
+            .handle_webhook(body, &sig, "github/dependabot")
+            .await
+            .unwrap();
         assert_eq!(msg.channel, "webhook:test");
         assert_eq!(msg.sender, "github/dependabot");
         assert_eq!(msg.taint, TaintLabel::Web);
@@ -646,8 +655,8 @@ mod tests {
 
     #[tokio::test]
     async fn webhook_denied_when_kernel_lacks_caps() {
-        use std::sync::Arc as StdArc;
         use gauss_kernel::PrivilegedKernel;
+        use std::sync::Arc as StdArc;
 
         let secrets = Arc::new(InMemorySecretStore::default());
         secrets.insert("S", b"shh".to_vec());
@@ -685,7 +694,9 @@ mod tests {
         ));
         reg.register(ch.clone()).await;
         assert_eq!(reg.len().await, 1);
-        reg.send("test", OutboundMessage::new("a", "hi")).await.unwrap();
+        reg.send("test", OutboundMessage::new("a", "hi"))
+            .await
+            .unwrap();
         let outbox = ch.drain_outbox().await;
         assert_eq!(outbox.len(), 1);
     }
@@ -714,7 +725,10 @@ mod tests {
     async fn env_secret_store_reads_env() {
         std::env::set_var("GAUSSCLAW_TEST_SECRET", "abc");
         let s = EnvSecretStore;
-        assert_eq!(s.get("GAUSSCLAW_TEST_SECRET").as_deref(), Some(b"abc".as_slice()));
+        assert_eq!(
+            s.get("GAUSSCLAW_TEST_SECRET").as_deref(),
+            Some(b"abc".as_slice())
+        );
         std::env::remove_var("GAUSSCLAW_TEST_SECRET");
     }
 }

@@ -27,13 +27,8 @@ use thiserror::Error;
 
 /// One canonical finish-reason value, matching the OpenAI SDK + the
 /// roadmap `ProviderTrait` postcondition.
-const CANONICAL_FINISH_REASONS: &[&str] = &[
-    "stop",
-    "length",
-    "tool",
-    "tool_calls",
-    "content_filter",
-];
+const CANONICAL_FINISH_REASONS: &[&str] =
+    &["stop", "length", "tool", "tool_calls", "content_filter"];
 
 /// Postcondition violation.
 #[derive(Debug, Error)]
@@ -47,9 +42,7 @@ pub enum PostconditionError {
     #[error("completion exceeds max_tokens budget: {len} bytes > {limit}")]
     OverMaxTokens { len: usize, limit: usize },
     /// `usage.total_tokens` is inconsistent with prompt + completion.
-    #[error(
-        "inconsistent usage: total {total} != prompt {prompt} + completion {completion}"
-    )]
+    #[error("inconsistent usage: total {total} != prompt {prompt} + completion {completion}")]
     InconsistentUsage {
         total: u32,
         prompt: u32,
@@ -63,9 +56,14 @@ pub enum PostconditionError {
 /// Returns the first violated invariant. The provider driver should
 /// surface this as a [`gaussclaw_agent::ProviderError::Upstream`] so
 /// the agent loop treats it as a provider fault, not an admit denial.
-pub fn check_postconditions(c: &Completion, max_tokens: Option<u32>) -> Result<(), PostconditionError> {
+pub fn check_postconditions(
+    c: &Completion,
+    max_tokens: Option<u32>,
+) -> Result<(), PostconditionError> {
     if !CANONICAL_FINISH_REASONS.contains(&c.finish_reason.as_str()) {
-        return Err(PostconditionError::InvalidFinishReason(c.finish_reason.clone()));
+        return Err(PostconditionError::InvalidFinishReason(
+            c.finish_reason.clone(),
+        ));
     }
     if let Some(limit) = max_tokens {
         let byte_limit = (limit as usize).saturating_mul(4);
@@ -127,8 +125,7 @@ mod tests {
         for reason in CANONICAL_FINISH_REASONS {
             let mut c = good_completion();
             c.finish_reason = (*reason).into();
-            check_postconditions(&c, None)
-                .unwrap_or_else(|e| panic!("{reason} should pass: {e}"));
+            check_postconditions(&c, None).unwrap_or_else(|e| panic!("{reason} should pass: {e}"));
         }
     }
 

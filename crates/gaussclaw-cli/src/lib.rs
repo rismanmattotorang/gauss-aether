@@ -30,7 +30,7 @@ use clap::{Parser, Subcommand};
                   per-subcommand --help for argument details. The full \
                   development plan lives in GAUSSCLAW_ROADMAP.md.",
     propagate_version = true,
-    arg_required_else_help = false,
+    arg_required_else_help = false
 )]
 pub struct Cli {
     /// Path to an alternate `gaussclaw.toml`. If omitted, the loader walks
@@ -310,7 +310,7 @@ pub const SUBCOMMANDS: &[(&str, bool)] = &[
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Command, dispatch_id, SUBCOMMANDS};
+    use super::{dispatch_id, Cli, Command, SUBCOMMANDS};
     use clap::{CommandFactory, Parser};
 
     #[test]
@@ -322,17 +322,17 @@ mod tests {
     #[test]
     fn every_subcommand_in_the_table_parses() {
         let leaf: &[(&str, &[&str])] = &[
-            ("chat",    &["gaussclaw", "chat"]),
-            ("model",   &["gaussclaw", "model", "list"]),
-            ("tools",   &["gaussclaw", "tools", "list"]),
-            ("config",  &["gaussclaw", "config", "list"]),
+            ("chat", &["gaussclaw", "chat"]),
+            ("model", &["gaussclaw", "model", "list"]),
+            ("tools", &["gaussclaw", "tools", "list"]),
+            ("config", &["gaussclaw", "config", "list"]),
             ("gateway", &["gaussclaw", "gateway", "status"]),
-            ("setup",   &["gaussclaw", "setup"]),
-            ("update",  &["gaussclaw", "update"]),
-            ("doctor",  &["gaussclaw", "doctor"]),
-            ("import",  &["gaussclaw", "import", "/tmp/cfg.toml"]),
+            ("setup", &["gaussclaw", "setup"]),
+            ("update", &["gaussclaw", "update"]),
+            ("doctor", &["gaussclaw", "doctor"]),
+            ("import", &["gaussclaw", "import", "/tmp/cfg.toml"]),
             ("receipt", &["gaussclaw", "receipt", "head"]),
-            ("web",     &["gaussclaw", "web"]),
+            ("web", &["gaussclaw", "web"]),
         ];
         for (id, argv) in leaf {
             let parsed = Cli::try_parse_from(argv.iter().copied())

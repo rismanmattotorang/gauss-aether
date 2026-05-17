@@ -33,7 +33,11 @@ pub struct Session {
 impl Session {
     /// Build a fresh session with `now` timestamp.
     #[must_use]
-    pub fn new(id: impl Into<String>, surface: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        surface: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             created: now_rfc3339(),
@@ -65,6 +69,65 @@ pub struct Turn {
     pub taint: TaintLabel,
     /// Cost telemetry (Phase 4 populates the dollars/tokens fields).
     pub cost: TurnCost,
+    /// **Meta-router transparency record.** Present iff the turn was
+    /// dispatched through a [`gaussclaw_providers::RouterProvider`]
+    /// (or equivalent meta-router): captures the candidate leaf set,
+    /// the router's selection, and the actual model id reported by the
+    /// chosen leaf. Absent for direct leaf dispatch.
+    ///
+    /// Because [`Turn`] is what the receipt chain hashes over, any
+    /// after-the-fact edit to the route record diverges the chain head
+    /// and fails [`crate::SessionStore::verify_chain`]. With an Ed25519
+    /// signer attached, the signed receipt provides non-repudiation on
+    /// the same bytes (Theorem T11). Hermes upstream has no equivalent
+    /// transparency surface.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<RouteRecord>,
+}
+
+/// Meta-router transparency record persisted with a routed turn.
+///
+/// Companion to [`Turn::route`]. Records what the router considered,
+/// what it chose, and what actually answered — the three quantities
+/// that together prove the router behaved transparently (paper
+/// Theorem T7, "router-transparency").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct RouteRecord {
+    /// Leaf model ids the router considered, in catalogue order.
+    pub candidates: Vec<String>,
+    /// The leaf the router selected for this turn.
+    pub selected: String,
+    /// Model id reported by the chosen leaf in its [`Completion`].
+    /// Should equal `selected` under a transparent router; a mismatch
+    /// is a router-transparency violation and is recorded here so
+    /// audit can detect it.
+    ///
+    /// [`Completion`]: gaussclaw_agent::Completion
+    pub actual_model: String,
+}
+
+impl RouteRecord {
+    /// Build a record from the three transparency-relevant strings.
+    #[must_use]
+    pub fn new(
+        candidates: Vec<String>,
+        selected: impl Into<String>,
+        actual_model: impl Into<String>,
+    ) -> Self {
+        Self {
+            candidates,
+            selected: selected.into(),
+            actual_model: actual_model.into(),
+        }
+    }
+
+    /// True iff the router was transparent: the selected leaf id
+    /// equals the model id the leaf reported back.
+    #[must_use]
+    pub fn is_transparent(&self) -> bool {
+        self.selected == self.actual_model
+    }
 }
 
 /// Cost telemetry.

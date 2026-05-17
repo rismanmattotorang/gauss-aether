@@ -60,13 +60,13 @@ impl<I, O> PolyhedralProbeSet<I, O> {
 
     /// Number of probes.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.probes.len()
     }
 
     /// True iff there are no probes.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.probes.is_empty()
     }
 }

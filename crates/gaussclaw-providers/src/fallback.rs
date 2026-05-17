@@ -32,9 +32,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use gaussclaw_agent::{
-    Completion, Prompt, ProviderError, ProviderHandle, ProviderResult,
-};
+use gaussclaw_agent::{Completion, Prompt, ProviderError, ProviderHandle, ProviderResult};
 use thiserror::Error;
 
 /// One attempt record — used by the audit trail when a fallback walks
@@ -94,11 +92,7 @@ impl core::fmt::Debug for FallbackChain {
             .field("len", &self.members.len())
             .field(
                 "providers",
-                &self
-                    .members
-                    .iter()
-                    .map(|p| p.name())
-                    .collect::<Vec<_>>(),
+                &self.members.iter().map(|p| p.name()).collect::<Vec<_>>(),
             )
             .finish()
     }

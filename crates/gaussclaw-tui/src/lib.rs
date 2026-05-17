@@ -35,16 +35,16 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use ratatui::Frame;
-use ratatui::Terminal;
 use ratatui::backend::{Backend, CrosstermBackend, TestBackend};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::Frame;
+use ratatui::Terminal;
 use tui_textarea::TextArea;
 
 // ─── status bar info ────────────────────────────────────────────────────────
@@ -167,8 +167,7 @@ impl App<'_> {
                 KeyCode::Char('c' | 'd') => return Tick::Quit,
                 KeyCode::Char('l') => {
                     self.history.clear();
-                    self.history
-                        .push(Entry::System("Session cleared.".into()));
+                    self.history.push(Entry::System("Session cleared.".into()));
                     return Tick::Continue;
                 }
                 _ => {}
@@ -240,8 +239,7 @@ impl App<'_> {
             }
             "clear" | "new" => {
                 self.history.clear();
-                self.history
-                    .push(Entry::System("Session cleared.".into()));
+                self.history.push(Entry::System("Session cleared.".into()));
                 return;
             }
             "receipt" | "taint" | "caps" | "sandbox" => {
@@ -376,9 +374,7 @@ fn prefixed_lines(prefix: &str, body: &str, colour: Color) -> Vec<Line<'static>>
             Line::from(vec![
                 Span::styled(
                     format!(" {prefix} "),
-                    Style::default()
-                        .fg(colour)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(colour).add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(line.to_string()),
             ])
@@ -414,9 +410,7 @@ Keybindings:
 pub fn snapshot_render(app: &App<'_>, width: u16, height: u16) -> Buffer {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("test terminal");
-    terminal
-        .draw(|frame| app.render(frame))
-        .expect("draw");
+    terminal.draw(|frame| app.render(frame)).expect("draw");
     terminal.backend().buffer().clone()
 }
 
@@ -440,7 +434,7 @@ pub fn buffer_text(buf: &Buffer) -> String {
 ///
 /// Owns the terminal setup and teardown: enters the alternate screen,
 /// enables raw mode + bracketed paste, and restores them on exit (even
-/// on panic via the [`TerminalGuard`]).
+/// on panic, via an internal Drop guard).
 pub fn run(initial: StatusInfo) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -455,10 +449,7 @@ pub fn run(initial: StatusInfo) -> Result<()> {
     Ok(())
 }
 
-fn run_event_loop<B: Backend>(
-    terminal: &mut Terminal<B>,
-    app: &mut App<'_>,
-) -> Result<()> {
+fn run_event_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App<'_>) -> Result<()> {
     loop {
         terminal.draw(|f| app.render(f))?;
         if crossterm::event::poll(Duration::from_millis(250))? {

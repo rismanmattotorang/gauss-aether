@@ -97,10 +97,10 @@ pub fn linux_default_composite(
     wasm: gauss_sandbox::WasmSandbox,
     read_only_fs: bool,
 ) -> Arc<WorkerSpawner> {
-    use gauss_sandbox::CompositeSandboxBuilder;
     use gauss_sandbox::bwrap_layer::BwrapSandbox;
     use gauss_sandbox::landlock_layer::LandlockSandbox;
     use gauss_sandbox::seccomp_layer::SeccompSandbox;
+    use gauss_sandbox::CompositeSandboxBuilder;
 
     let landlock = if read_only_fs {
         LandlockSandbox::read_only()

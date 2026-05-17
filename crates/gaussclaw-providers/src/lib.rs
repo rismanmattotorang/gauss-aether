@@ -59,29 +59,42 @@
     clippy::option_if_let_else,
     clippy::missing_const_for_fn,
     clippy::needless_pass_by_value,
+    clippy::single_match_else,
+    clippy::map_unwrap_or
 )]
+#![allow(rustdoc::broken_intra_doc_links)]
 
 pub mod anthropic;
 pub mod backend;
 pub mod catalogue;
+pub mod cohere;
 pub mod fallback;
+pub mod google;
+pub mod huggingface;
+pub mod llama_cpp;
 pub mod ollama;
 pub mod openai;
 pub mod openai_compat;
 pub mod postconditions;
+pub mod replicate;
 pub mod router;
 
 pub use anthropic::AnthropicProvider;
 pub use backend::{HttpBackend, HttpError, HttpRequest, HttpResponse, MockHttpBackend};
 pub use catalogue::{Catalogue, CostHints, LeafModel};
+pub use cohere::CohereProvider;
 pub use fallback::{
     AttemptRecord, FallbackBuildError, FallbackChain, FallbackChainBuilder, FallbackResult,
 };
+pub use google::GoogleProvider;
+pub use huggingface::HuggingFaceProvider;
+pub use llama_cpp::LlamaCppProvider;
 pub use ollama::OllamaProvider;
 pub use openai::OpenAIProvider;
 pub use openai_compat::{
-    OpenAICompatProvider, cerebras, deepseek, fireworks, groq, mistral, perplexity, tgi,
-    together, vllm, xai,
+    anyscale, cerebras, deepseek, fireworks, groq, mistral, octoai, perplexity, tgi, together,
+    vllm, xai, OpenAICompatProvider,
 };
-pub use postconditions::{PostconditionError, check_postconditions};
+pub use postconditions::{check_postconditions, PostconditionError};
+pub use replicate::ReplicateProvider;
 pub use router::{RoutedCompletion, RouterProvider, RouterTransparencyError};

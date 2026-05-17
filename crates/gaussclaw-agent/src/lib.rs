@@ -21,8 +21,8 @@
 pub mod audit;
 
 pub use audit::{
-    AuditEntry, AuditTrace, InboundRecord, OutboundRecord, PlaneLabel, TurnCompleteRecord,
-    TurnStartRecord, blake3_hex,
+    blake3_hex, AuditEntry, AuditTrace, InboundRecord, OutboundRecord, PlaneLabel,
+    TurnCompleteRecord, TurnStartRecord,
 };
 
 use std::sync::Arc;
@@ -416,6 +416,16 @@ pub struct TurnPolicy {
     spawner: Arc<gauss_hwca::WorkerSpawner>,
     /// Capability that every turn must satisfy. Default `NETWORK_GET`.
     required_cap: CapToken,
+    /// Optional capability lower-bound contributed by a meta-router's
+    /// catalogue — the **intersection** of every leaf's `cap_required`.
+    ///
+    /// When set, the admit gate must satisfy
+    /// `required_cap ⊔ catalogue_lower_bound`. The intuition: the
+    /// lower-bound is the minimum capability mask every leaf agrees on,
+    /// so a grant that doesn't dominate it cannot reach **any** leaf in
+    /// the catalogue. The kernel refuses the turn before the router is
+    /// even consulted. Hermes has no equivalent gate.
+    catalogue_lower_bound: Option<CapToken>,
 }
 
 impl TurnPolicy {
@@ -429,6 +439,7 @@ impl TurnPolicy {
             tools: None,
             spawner: Arc::new(gauss_hwca::WorkerSpawner::new()),
             required_cap: CapToken::NETWORK_GET,
+            catalogue_lower_bound: None,
         }
     }
 
@@ -553,6 +564,33 @@ impl TurnPolicy {
         self
     }
 
+    /// Attach a meta-router catalogue's capability lower-bound.
+    ///
+    /// The lower-bound is the intersection (bit-AND) of every leaf's
+    /// `cap_required` in the catalogue. With this set, every turn's
+    /// admit cap becomes `required_cap ⊔ catalogue_lower_bound`, so the
+    /// kernel refuses a turn whose grant doesn't dominate the bound —
+    /// i.e. a turn from which **no** leaf in the catalogue is
+    /// reachable. The router never sees an admit it can't honour.
+    ///
+    /// Callers compute the bound from
+    /// `gaussclaw_providers::Catalogue::capability_lower_bound` and pass
+    /// it here, keeping the agent crate free of a back-dep on the
+    /// provider plane.
+    #[must_use]
+    pub const fn with_catalogue_lower_bound(mut self, bound: CapToken) -> Self {
+        self.catalogue_lower_bound = Some(bound);
+        self
+    }
+
+    /// The capability the admit gate actually checks: the configured
+    /// `required_cap` joined with the catalogue lower-bound (if any).
+    #[must_use]
+    pub fn effective_required_cap(&self) -> CapToken {
+        self.catalogue_lower_bound
+            .map_or(self.required_cap, |b| self.required_cap.join(b))
+    }
+
     /// Borrow the kernel handle.
     pub const fn kernel(&self) -> &KernelHandle {
         &self.kernel
@@ -628,7 +666,7 @@ impl TurnPolicy {
             parent_id = Some(user_turn.id);
         }
 
-        self.kernel.admit(self.required_cap, taint)?;
+        self.kernel.admit(self.effective_required_cap(), taint)?;
         let completion = self.provider.complete(&prompt).await?;
 
         if let (Some(store), Some(sid)) = (&self.store, session_id) {
@@ -753,13 +791,65 @@ mod tests {
         use gauss_kernel::PrivilegedKernel;
         // Bottom grant blocks every cap → every admit fails.
         let empty = Arc::new(PrivilegedKernel::new(CapToken::BOTTOM));
-        let tp = TurnPolicy::new(
-            KernelHandle::new(empty),
-            Arc::new(EchoProvider::default()),
-        );
+        let tp = TurnPolicy::new(KernelHandle::new(empty), Arc::new(EchoProvider::default()));
         let prompt = Prompt::new("m", vec![Message::new("user", "hi")]);
         let err = tp.run(prompt, TaintLabel::User).await.unwrap_err();
         assert!(matches!(err, TurnError::Denied(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn catalogue_lower_bound_augments_admit_cap() {
+        use gauss_core::CapToken;
+        use gauss_kernel::PrivilegedKernel;
+        // Grant carries NETWORK_GET but NOT FILESYSTEM_READ. A catalogue
+        // whose lower-bound requires FILESYSTEM_READ should make every
+        // turn refuse, even though the bare required_cap is satisfied.
+        let kernel = Arc::new(PrivilegedKernel::new(CapToken::NETWORK_GET));
+        let tp = TurnPolicy::new(KernelHandle::new(kernel), Arc::new(EchoProvider::default()))
+            .with_catalogue_lower_bound(CapToken::FILESYSTEM_READ);
+        let prompt = Prompt::new("m", vec![Message::new("user", "hi")]);
+        let err = tp.run(prompt, TaintLabel::User).await.unwrap_err();
+        assert!(matches!(err, TurnError::Denied(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn catalogue_lower_bound_satisfied_admits_turn() {
+        use gauss_core::CapToken;
+        use gauss_kernel::PrivilegedKernel;
+        // Grant covers both NETWORK_GET and FILESYSTEM_READ → admit
+        // succeeds, completion returns normally.
+        let grant = CapToken::NETWORK_GET.join(CapToken::FILESYSTEM_READ);
+        let kernel = Arc::new(PrivilegedKernel::new(grant));
+        let tp = TurnPolicy::new(KernelHandle::new(kernel), Arc::new(EchoProvider::default()))
+            .with_catalogue_lower_bound(CapToken::FILESYSTEM_READ);
+        let prompt = Prompt::new("m", vec![Message::new("user", "hi")]);
+        let out = tp.run(prompt, TaintLabel::User).await.expect("admit");
+        assert!(out.text.contains("hi"));
+    }
+
+    #[test]
+    fn effective_required_cap_joins_bound() {
+        use gauss_core::CapToken;
+        let tp = TurnPolicy::new(
+            KernelHandle::permissive(),
+            Arc::new(EchoProvider::default()),
+        )
+        .with_required_cap(CapToken::NETWORK_GET)
+        .with_catalogue_lower_bound(CapToken::FILESYSTEM_READ);
+        let eff = tp.effective_required_cap();
+        assert!(eff.contains(CapToken::NETWORK_GET));
+        assert!(eff.contains(CapToken::FILESYSTEM_READ));
+    }
+
+    #[test]
+    fn effective_required_cap_without_bound_is_required_cap() {
+        use gauss_core::CapToken;
+        let tp = TurnPolicy::new(
+            KernelHandle::permissive(),
+            Arc::new(EchoProvider::default()),
+        )
+        .with_required_cap(CapToken::NETWORK_GET);
+        assert_eq!(tp.effective_required_cap(), CapToken::NETWORK_GET);
     }
 
     #[test]
@@ -787,10 +877,7 @@ mod tests {
         )
         .with_store(store.clone());
 
-        let prompt = Prompt::new(
-            "echo",
-            vec![Message::new("user", "marker-789")],
-        );
+        let prompt = Prompt::new("echo", vec![Message::new("user", "marker-789")]);
         let _ = tp
             .run_in_session(prompt, TaintLabel::User, Some(&sess.id))
             .await
@@ -889,11 +976,8 @@ mod tests {
         use gauss_kernel::PrivilegedKernel;
         // Empty grant: file_read requires FILESYSTEM_READ → admit fails.
         let empty = Arc::new(PrivilegedKernel::new(CapToken::BOTTOM));
-        let tp = TurnPolicy::new(
-            KernelHandle::new(empty),
-            Arc::new(EchoProvider::default()),
-        )
-        .with_tools(Arc::new(gaussclaw_tools::default_registry()));
+        let tp = TurnPolicy::new(KernelHandle::new(empty), Arc::new(EchoProvider::default()))
+            .with_tools(Arc::new(gaussclaw_tools::default_registry()));
         let err = tp
             .dispatch_tool(
                 "file_read",
@@ -918,12 +1002,9 @@ mod tests {
         let empty = Arc::new(PrivilegedKernel::new(CapToken::BOTTOM));
         let audit = AuditTrace::new();
         let head_before = audit.head().await;
-        let tp = TurnPolicy::new(
-            KernelHandle::new(empty),
-            Arc::new(EchoProvider::default()),
-        )
-        .with_audit(audit.clone())
-        .with_tools(Arc::new(gaussclaw_tools::default_registry()));
+        let tp = TurnPolicy::new(KernelHandle::new(empty), Arc::new(EchoProvider::default()))
+            .with_audit(audit.clone())
+            .with_tools(Arc::new(gaussclaw_tools::default_registry()));
 
         let _err = tp
             .dispatch_tool(

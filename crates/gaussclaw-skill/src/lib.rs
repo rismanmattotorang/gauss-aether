@@ -352,9 +352,8 @@ type = "object"
             schema: serde_json::Value::Null,
         };
         let cap = m.cap_required().unwrap();
-        let expected = CapToken::from_bits(
-            CapToken::FILESYSTEM_READ.bits() | CapToken::NETWORK_GET.bits(),
-        );
+        let expected =
+            CapToken::from_bits(CapToken::FILESYSTEM_READ.bits() | CapToken::NETWORK_GET.bits());
         assert_eq!(cap.bits(), expected.bits());
     }
 

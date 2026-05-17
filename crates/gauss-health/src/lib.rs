@@ -236,13 +236,13 @@ impl HealthEngine {
 
     /// Number of installed invariants.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.invariants.len()
     }
 
     /// True iff no invariants are installed.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.invariants.is_empty()
     }
 

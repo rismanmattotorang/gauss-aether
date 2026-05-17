@@ -96,9 +96,9 @@ impl ToolTrait for ShellTool {
         }
         let mut parts = Vec::with_capacity(argv_value.len());
         for a in argv_value {
-            let s = a.as_str().ok_or_else(|| {
-                GaussError::Internal("argv entries must be strings".into())
-            })?;
+            let s = a
+                .as_str()
+                .ok_or_else(|| GaussError::Internal("argv entries must be strings".into()))?;
             parts.push(s.to_string());
         }
         let program = &parts[0];

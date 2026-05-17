@@ -35,16 +35,17 @@
 //! for the dashboard surface.
 
 #![allow(clippy::doc_markdown)]
+#![allow(rustdoc::broken_intra_doc_links)]
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
+use axum::Router;
 use gauss_core::{CapToken, TaintLabel};
 use gaussclaw_agent::{AuditTrace, KernelHandle, SurfaceRequest};
 use gaussclaw_config::Config;
@@ -230,7 +231,11 @@ impl ServerState {
         Self {
             config: Arc::new(config),
             config_source,
-            profile: if cfg!(debug_assertions) { "debug" } else { "release" },
+            profile: if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            },
             kernel,
             audit,
             store: None,
@@ -402,7 +407,11 @@ async fn chat_socket(mut socket: WebSocket) {
             "body": "chat WebSocket connected — agent dispatch lands in slice 5 (three-plane routing)"
         }
     });
-    if socket.send(Message::Text(banner.to_string().into())).await.is_err() {
+    if socket
+        .send(Message::Text(banner.to_string().into()))
+        .await
+        .is_err()
+    {
         return;
     }
     while let Some(msg) = socket.recv().await {
@@ -421,7 +430,11 @@ async fn chat_socket(mut socket: WebSocket) {
                 "body": format!("(stub echo) {body}")
             }
         });
-        if socket.send(Message::Text(reply.to_string().into())).await.is_err() {
+        if socket
+            .send(Message::Text(reply.to_string().into()))
+            .await
+            .is_err()
+        {
             return;
         }
     }
@@ -441,7 +454,11 @@ async fn handle_asset(Path(path): Path<String>) -> impl IntoResponse {
 
 fn serve_embedded(path: &str) -> Response {
     // Map "/" -> "index.html" and reject path traversal up front.
-    let key = if path.is_empty() || path == "/" { "index.html" } else { path };
+    let key = if path.is_empty() || path == "/" {
+        "index.html"
+    } else {
+        path
+    };
     if key.contains("..") {
         return (
             StatusCode::BAD_REQUEST,
@@ -465,7 +482,13 @@ fn serve_embedded(path: &str) -> Response {
         None => {
             // SPA fallback: unknown paths get the index so client-side routing works.
             FrontendAssets::get("index.html").map_or_else(
-                || (StatusCode::NOT_FOUND, Json(Err::new("not_found", "asset missing"))).into_response(),
+                || {
+                    (
+                        StatusCode::NOT_FOUND,
+                        Json(Err::new("not_found", "asset missing")),
+                    )
+                        .into_response()
+                },
                 |content| {
                     let mut resp = (StatusCode::OK, content.data.to_vec()).into_response();
                     resp.headers_mut().insert(
@@ -488,7 +511,10 @@ pub fn router(state: ServerState) -> Router {
         // API
         .route("/api/status", get(handle_status))
         .route("/api/health", get(handle_health))
-        .route("/api/config", get(handle_config_get).post(handle_config_post))
+        .route(
+            "/api/config",
+            get(handle_config_get).post(handle_config_post),
+        )
         .route("/api/config/schema", get(handle_config_schema))
         .route("/api/sessions", get(handle_sessions))
         .route("/api/providers", get(handle_providers))
@@ -522,7 +548,7 @@ pub async fn serve(addr: SocketAddr, state: ServerState) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::{Body, to_bytes};
+    use axum::body::{to_bytes, Body};
     use axum::http::{Method, Request, StatusCode};
     use tower::ServiceExt;
 
@@ -613,7 +639,9 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let sess = store.create_session("rest", "anthropic/claude-3.5-sonnet").await;
+        let sess = store
+            .create_session("rest", "anthropic/claude-3.5-sonnet")
+            .await;
         let _ = store
             .append_turn(&sess.id, None, "user", "hi", gauss_core::TaintLabel::User)
             .await

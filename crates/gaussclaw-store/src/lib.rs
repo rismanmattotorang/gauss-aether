@@ -63,16 +63,19 @@
     clippy::missing_const_for_fn,
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
-    clippy::significant_drop_tightening,
+    clippy::significant_drop_tightening
 )]
+#![allow(rustdoc::broken_intra_doc_links)]
 
 pub mod embed;
 pub mod store;
 pub mod types;
 
-pub use embed::{EMBED_DIM, mock_embed};
+pub use embed::{mock_embed, EMBED_DIM};
 pub use store::{SessionStore, StoreError, StoreResult};
-pub use types::{ChainHead, LineageEdge, Session, Turn, TurnCost, TurnHit, now_rfc3339};
+pub use types::{
+    now_rfc3339, ChainHead, LineageEdge, RouteRecord, Session, Turn, TurnCost, TurnHit,
+};
 
 #[cfg(test)]
 mod tests {
@@ -137,9 +140,15 @@ mod tests {
         let s = fresh_store().await;
         let sess = s.create_session("tui", "m").await;
         for i in 0..3 {
-            s.append_turn(&sess.id, None, "user", format!("turn-{i}"), TaintLabel::User)
-                .await
-                .unwrap();
+            s.append_turn(
+                &sess.id,
+                None,
+                "user",
+                format!("turn-{i}"),
+                TaintLabel::User,
+            )
+            .await
+            .unwrap();
         }
         let updated = s.get_session(&sess.id).await.unwrap();
         assert_eq!(updated.turn_count, 3);
@@ -226,16 +235,16 @@ mod tests {
             .unwrap();
         let edge = s.lineage_edge(child.id).await.unwrap();
         assert_eq!(edge.commit_hex.len(), 64);
-        let sig = edge.signature_hex.expect("Ed25519 signature must be present");
+        let sig = edge
+            .signature_hex
+            .expect("Ed25519 signature must be present");
         assert_eq!(sig.len(), 128, "Ed25519 hex = 128 chars");
         // Verify the signature: reconstruct canonical bytes and check
         // against the store's public key.
         let pk_bytes = s.public_key().expect("public key");
         let pk = ed25519_dalek::VerifyingKey::from_bytes(&pk_bytes).expect("vk");
         let sig_bytes: [u8; 64] = (0..64)
-            .map(|i| {
-                u8::from_str_radix(&sig[i * 2..i * 2 + 2], 16).expect("hex")
-            })
+            .map(|i| u8::from_str_radix(&sig[i * 2..i * 2 + 2], 16).expect("hex"))
             .collect::<Vec<u8>>()
             .try_into()
             .unwrap();
@@ -244,8 +253,7 @@ mod tests {
         let head = s.chain_head().await.unwrap();
         let mut head_bytes = [0u8; 32];
         for (i, slot) in head_bytes.iter_mut().enumerate() {
-            *slot =
-                u8::from_str_radix(&head.digest_hex[i * 2..i * 2 + 2], 16).expect("hex");
+            *slot = u8::from_str_radix(&head.digest_hex[i * 2..i * 2 + 2], 16).expect("hex");
         }
         let mut canonical = Vec::new();
         canonical.extend_from_slice(&root.id.to_le_bytes());
@@ -261,9 +269,15 @@ mod tests {
     async fn fts_search_finds_a_turn() {
         let s = fresh_store().await;
         let sess = s.create_session("tui", "m").await;
-        s.append_turn(&sess.id, None, "user", "the quick brown fox", TaintLabel::User)
-            .await
-            .unwrap();
+        s.append_turn(
+            &sess.id,
+            None,
+            "user",
+            "the quick brown fox",
+            TaintLabel::User,
+        )
+        .await
+        .unwrap();
         s.append_turn(&sess.id, None, "user", "lazy dog jumps", TaintLabel::User)
             .await
             .unwrap();
@@ -311,7 +325,10 @@ mod tests {
         // alpha=1.0 → FTS-only weight; alpha=0.0 → vector-only.
         // alpha=0.5 → equal merge. The unique-marker text guarantees
         // the BM25 channel ranks the target first.
-        let hits = s.hybrid_search("unique_marker_alpha", 5, 0.7).await.unwrap();
+        let hits = s
+            .hybrid_search("unique_marker_alpha", 5, 0.7)
+            .await
+            .unwrap();
         assert!(!hits.is_empty(), "exact-marker hybrid must produce hits");
         let found = hits.iter().any(|h| h.turn.id == target_id);
         assert!(
@@ -350,11 +367,9 @@ mod tests {
     // ── signed receipts (Ed25519, EUF-CMA) ──────────────────────────────────
 
     async fn signed_store() -> SessionStore {
-        use std::sync::Arc;
         use gauss_audit::{Ed25519Signer, ReceiptSigner};
-        let signer = Arc::new(ReceiptSigner::new(
-            Ed25519Signer::from_seed([0x42; 32]),
-        ));
+        use std::sync::Arc;
+        let signer = Arc::new(ReceiptSigner::new(Ed25519Signer::from_seed([0x42; 32])));
         SessionStore::open_in_memory()
             .await
             .unwrap()
@@ -429,8 +444,8 @@ mod tests {
 
     #[tokio::test]
     async fn anchor_now_records_an_anchor() {
-        use std::sync::Arc;
         use gauss_audit::SimulatorTsaClient;
+        use std::sync::Arc;
         let tsa = Arc::new(SimulatorTsaClient::from_seed([0x11; 32]));
         let s = SessionStore::open_in_memory().await.unwrap().with_tsa(tsa);
         let sess = s.create_session("tui", "m").await;
@@ -453,8 +468,8 @@ mod tests {
 
     #[tokio::test]
     async fn multiple_anchors_accumulate_in_history() {
-        use std::sync::Arc;
         use gauss_audit::SimulatorTsaClient;
+        use std::sync::Arc;
         let tsa = Arc::new(SimulatorTsaClient::from_seed([0x22; 32]));
         let s = SessionStore::open_in_memory().await.unwrap().with_tsa(tsa);
         let sess = s.create_session("tui", "m").await;
@@ -465,6 +480,128 @@ mod tests {
             s.anchor_now().await.unwrap();
         }
         assert_eq!(s.anchors().await.len(), 3);
+    }
+
+    // ── routed-turn receipts (router transparency, T7) ──────────────────────
+
+    #[tokio::test]
+    async fn append_routed_turn_persists_route_record() {
+        let s = fresh_store().await;
+        let sess = s.create_session("tui", "router").await;
+        let route = RouteRecord::new(
+            vec!["anthropic/claude-3.5-sonnet".into(), "openai/gpt-4o".into()],
+            "openai/gpt-4o",
+            "openai/gpt-4o",
+        );
+        let (t, _head) = s
+            .append_routed_turn(
+                &sess.id,
+                None,
+                "assistant",
+                "routed answer",
+                TaintLabel::User,
+                route.clone(),
+            )
+            .await
+            .unwrap();
+        let back = s.get_turn(t.id).await.unwrap();
+        let r = back.route.expect("route present");
+        assert_eq!(r.candidates.len(), 2);
+        assert_eq!(r.selected, "openai/gpt-4o");
+        assert_eq!(r.actual_model, "openai/gpt-4o");
+        assert!(r.is_transparent());
+        // `model_actual` in TurnCost mirrors the chosen leaf — Hermes
+        // consumers that only parse cost.model_actual see the right value.
+        assert_eq!(back.cost.model_actual, "openai/gpt-4o");
+    }
+
+    #[tokio::test]
+    async fn route_record_round_trips_through_chain() {
+        // The route record is part of the turn payload, so the chain
+        // head covers it. Mutating it in the in-memory mirror MUST
+        // make verify_chain fail.
+        let s = fresh_store().await;
+        let sess = s.create_session("tui", "router").await;
+        let route = RouteRecord::new(
+            vec!["openai/gpt-4o".into()],
+            "openai/gpt-4o",
+            "openai/gpt-4o",
+        );
+        let (t, _head) = s
+            .append_routed_turn(&sess.id, None, "assistant", "ans", TaintLabel::User, route)
+            .await
+            .unwrap();
+        {
+            let mut st = s.state.lock().await;
+            if let Some(entry) = st.turns.get_mut(&t.id) {
+                if let Some(r) = entry.route.as_mut() {
+                    r.selected = "openai/gpt-3.5-turbo".into();
+                }
+            }
+        }
+        let err = s.verify_chain().await.unwrap_err();
+        assert!(matches!(err, StoreError::ChainDivergence { .. }));
+    }
+
+    #[tokio::test]
+    async fn non_transparent_route_is_detectable() {
+        // Router said "gpt-4o" but the leaf reported "gpt-3.5-turbo".
+        // The record preserves both so audit can flag the violation.
+        let s = fresh_store().await;
+        let sess = s.create_session("tui", "router").await;
+        let route = RouteRecord::new(
+            vec!["openai/gpt-4o".into()],
+            "openai/gpt-4o",
+            "openai/gpt-3.5-turbo", // ← divergence
+        );
+        let (t, _head) = s
+            .append_routed_turn(&sess.id, None, "assistant", "ans", TaintLabel::User, route)
+            .await
+            .unwrap();
+        let back = s.get_turn(t.id).await.unwrap();
+        let r = back.route.unwrap();
+        assert!(!r.is_transparent());
+    }
+
+    #[tokio::test]
+    async fn routed_turn_receipt_signature_covers_route() {
+        // With an Ed25519 signer attached, the signed receipt's payload
+        // includes the route record. A consumer can verify the signed
+        // receipt over the canonical Turn payload and trust the route
+        // bytes were not tampered with.
+        let s = signed_store().await;
+        let sess = s.create_session("tui", "router").await;
+        let route = RouteRecord::new(
+            vec!["openai/gpt-4o".into(), "anthropic/claude-3.5-sonnet".into()],
+            "anthropic/claude-3.5-sonnet",
+            "anthropic/claude-3.5-sonnet",
+        );
+        let (t, _head) = s
+            .append_routed_turn(
+                &sess.id,
+                None,
+                "assistant",
+                "signed routed",
+                TaintLabel::User,
+                route,
+            )
+            .await
+            .unwrap();
+        let receipt = s.get_receipt(t.id).await.expect("receipt present");
+        assert_eq!(u64::try_from(receipt.turn_id.as_u128()).unwrap(), t.id);
+        assert!(s.verify_receipt(t.id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn unrouted_turn_has_no_route_record() {
+        let s = fresh_store().await;
+        let sess = s.create_session("tui", "direct").await;
+        let (t, _head) = s
+            .append_turn(&sess.id, None, "assistant", "direct", TaintLabel::User)
+            .await
+            .unwrap();
+        let back = s.get_turn(t.id).await.unwrap();
+        assert!(back.route.is_none());
     }
 
     #[tokio::test]

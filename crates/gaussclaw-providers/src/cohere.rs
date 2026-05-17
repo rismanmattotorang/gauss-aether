@@ -1,7 +1,15 @@
-//! [`OpenAIProvider`] — OpenAI Chat Completions API leaf driver.
+//! [`CohereProvider`] — Cohere v2 chat API leaf driver.
 //!
-//! Request:  `POST /v1/chat/completions` with `{model, messages, ...}`
-//! Response: `{choices: [{message: {content}, finish_reason}], usage: {prompt_tokens, completion_tokens, total_tokens}, ...}`
+//! Wire shape:
+//!
+//! - `POST /v2/chat`
+//! - Body: `{"model","messages":[{"role","content"}],"max_tokens","temperature"}`
+//! - Auth: `Authorization: Bearer …`
+//! - Response: `{"id","message":{"role":"assistant","content":[{"type":"text","text"}]},"finish_reason","usage":{"tokens":{"input_tokens","output_tokens"}}}`
+//!
+//! Cohere's `finish_reason` values: `COMPLETE`, `MAX_TOKENS`,
+//! `STOP_SEQUENCE`, `TOOL_CALL`, `ERROR`. These map onto the
+//! canonical postcondition set.
 
 use std::sync::Arc;
 
@@ -13,16 +21,16 @@ use serde_json::Value;
 
 use crate::backend::{HttpBackend, HttpRequest};
 
-const DEFAULT_BASE_URL: &str = "https://api.openai.com";
+const DEFAULT_BASE_URL: &str = "https://api.cohere.com";
 
-/// OpenAI Chat Completions API leaf driver.
-pub struct OpenAIProvider {
+/// Cohere v2 chat-API leaf driver.
+pub struct CohereProvider {
     backend: Arc<dyn HttpBackend>,
     base_url: String,
     api_key: String,
 }
 
-impl OpenAIProvider {
+impl CohereProvider {
     /// Build a new driver.
     #[must_use]
     pub fn new(backend: Arc<dyn HttpBackend>, api_key: impl Into<String>) -> Self {
@@ -44,15 +52,14 @@ impl OpenAIProvider {
         let messages: Vec<Value> = prompt
             .messages
             .iter()
-            .map(|m| {
-                serde_json::json!({
-                    "role":    m.role,
-                    "content": m.content,
-                })
-            })
+            .map(|m| serde_json::json!({"role": m.role, "content": m.content}))
             .collect();
+        let model = prompt
+            .model
+            .strip_prefix("cohere/")
+            .unwrap_or(&prompt.model);
         let mut body = serde_json::json!({
-            "model":    prompt.model,
+            "model":    model,
             "messages": messages,
         });
         if let Some(mt) = prompt.max_tokens {
@@ -67,22 +74,23 @@ impl OpenAIProvider {
     fn parse_response(model: &str, raw: &[u8]) -> ProviderResult<Completion> {
         let v: Value = serde_json::from_slice(raw).map_err(|e| ProviderError::Upstream {
             code: 0,
-            message: format!("openai response parse: {e}"),
+            message: format!("cohere response parse: {e}"),
         })?;
-        let text = v["choices"][0]["message"]["content"]
-            .as_str()
+        // Cohere wraps the assistant text in {content: [{type: "text", text: …}]}.
+        let text = v["message"]["content"]
+            .as_array()
+            .and_then(|arr| arr.iter().find_map(|c| c["text"].as_str()))
             .unwrap_or("")
             .to_string();
-        let finish_reason = match v["choices"][0]["finish_reason"].as_str().unwrap_or("stop") {
-            "stop" => "stop",
-            "length" => "length",
-            "tool_calls" => "tool",
-            "content_filter" => "content_filter",
+        let finish_reason = match v["finish_reason"].as_str().unwrap_or("COMPLETE") {
+            "COMPLETE" | "STOP_SEQUENCE" => "stop",
+            "MAX_TOKENS" => "length",
+            "TOOL_CALL" => "tool",
             _ => "stop",
         }
         .to_string();
-        let prompt_tokens = v["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
-        let completion_tokens = v["usage"]["completion_tokens"].as_u64().unwrap_or(0);
+        let prompt_tokens = v["usage"]["tokens"]["input_tokens"].as_u64().unwrap_or(0);
+        let completion_tokens = v["usage"]["tokens"]["output_tokens"].as_u64().unwrap_or(0);
         Ok(Completion::new(
             text,
             model.to_string(),
@@ -96,14 +104,14 @@ impl OpenAIProvider {
 }
 
 #[async_trait]
-impl ProviderHandle for OpenAIProvider {
+impl ProviderHandle for CohereProvider {
     fn name(&self) -> &'static str {
-        "openai"
+        "cohere"
     }
 
     async fn complete(&self, prompt: &Prompt) -> ProviderResult<Completion> {
         let req = HttpRequest {
-            url: format!("{}/v1/chat/completions", self.base_url),
+            url: format!("{}/v2/chat", self.base_url),
             method: "POST".into(),
             headers: vec![
                 ("content-type".into(), "application/json".into()),
@@ -135,18 +143,15 @@ mod tests {
     use crate::check_postconditions;
     use gaussclaw_agent::Message;
 
-    fn mock_response(text: &str) -> HttpResponse {
+    fn mock_response(text: &str, finish: &str) -> HttpResponse {
         let body = serde_json::json!({
-            "id":       "chatcmpl-xyz",
-            "object":   "chat.completion",
-            "created":  0,
-            "model":    "gpt-4o",
-            "choices":  [{
-                "index": 0,
-                "message": {"role": "assistant", "content": text},
-                "finish_reason": "stop",
-            }],
-            "usage":    {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7},
+            "id":      "ch-1",
+            "message": {
+                "role":    "assistant",
+                "content": [{"type": "text", "text": text}],
+            },
+            "finish_reason": finish,
+            "usage": {"tokens": {"input_tokens": 8, "output_tokens": 12}},
         });
         HttpResponse {
             status: 200,
@@ -155,55 +160,51 @@ mod tests {
     }
 
     fn sample_prompt() -> Prompt {
-        Prompt::new("openai/gpt-4o", vec![Message::new("user", "hello")])
+        Prompt::new("cohere/command-r", vec![Message::new("user", "hi")])
     }
 
     #[tokio::test]
     async fn complete_round_trips_through_mock() {
-        let mock = Arc::new(MockHttpBackend::new(vec![mock_response("hi from openai")]));
-        let p = OpenAIProvider::new(mock, "sk-test");
+        let mock = Arc::new(MockHttpBackend::new(vec![mock_response(
+            "hi from cohere",
+            "COMPLETE",
+        )]));
+        let p = CohereProvider::new(mock.clone(), "co-test-key");
         let c = p.complete(&sample_prompt()).await.unwrap();
-        assert_eq!(c.text, "hi from openai");
+        assert_eq!(c.text, "hi from cohere");
         assert_eq!(c.finish_reason, "stop");
-        assert_eq!(c.usage.prompt, 3);
-        assert_eq!(c.usage.completion, 4);
+        assert_eq!(c.usage.prompt, 8);
+        assert_eq!(c.usage.completion, 12);
         check_postconditions(&c, Some(1024)).unwrap();
-    }
-
-    #[tokio::test]
-    async fn request_carries_bearer_auth() {
-        let mock = Arc::new(MockHttpBackend::new(vec![mock_response("x")]));
-        let p = OpenAIProvider::new(mock.clone(), "sk-secret");
-        let _ = p.complete(&sample_prompt()).await.unwrap();
-        let seen = mock.seen();
-        let h = &seen[0].headers;
-        assert!(h
-            .iter()
-            .any(|(k, v)| k == "authorization" && v == "Bearer sk-secret"));
     }
 
     #[tokio::test]
     async fn finish_reasons_map_correctly() {
         for (raw, canonical) in [
-            ("stop", "stop"),
-            ("length", "length"),
-            ("tool_calls", "tool"),
-            ("content_filter", "content_filter"),
+            ("COMPLETE", "stop"),
+            ("STOP_SEQUENCE", "stop"),
+            ("MAX_TOKENS", "length"),
+            ("TOOL_CALL", "tool"),
         ] {
-            let body = serde_json::json!({
-                "choices": [{
-                    "message": {"content": "x"},
-                    "finish_reason": raw,
-                }],
-                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-            });
-            let mock = Arc::new(MockHttpBackend::new(vec![HttpResponse {
-                status: 200,
-                body: serde_json::to_vec(&body).unwrap(),
-            }]));
-            let p = OpenAIProvider::new(mock, "sk-x");
+            let mock = Arc::new(MockHttpBackend::new(vec![mock_response("x", raw)]));
+            let p = CohereProvider::new(mock, "k");
             let c = p.complete(&sample_prompt()).await.unwrap();
             assert_eq!(c.finish_reason, canonical, "raw={raw}");
         }
+    }
+
+    #[tokio::test]
+    async fn request_strips_vendor_prefix_and_carries_auth() {
+        let mock = Arc::new(MockHttpBackend::new(vec![mock_response("x", "COMPLETE")]));
+        let p = CohereProvider::new(mock.clone(), "co-secret");
+        let _ = p.complete(&sample_prompt()).await.unwrap();
+        let seen = &mock.seen()[0];
+        assert!(seen.url.contains("/v2/chat"));
+        let body: Value = serde_json::from_slice(&seen.body).unwrap();
+        assert_eq!(body["model"], "command-r");
+        assert!(seen
+            .headers
+            .iter()
+            .any(|(k, v)| k == "authorization" && v == "Bearer co-secret"));
     }
 }

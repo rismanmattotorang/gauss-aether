@@ -48,9 +48,10 @@ impl ProviderHandle for OpenRouterProvider {
         // `complete` dispatches by exact `prompt.model`. The router's
         // value-add comes from `route_complete`; direct calls are a
         // strict aggregator pass-through.
-        let leaf = self.leaves.get(&prompt.model).ok_or_else(|| {
-            ProviderError::UnknownModel(prompt.model.clone())
-        })?;
+        let leaf = self
+            .leaves
+            .get(&prompt.model)
+            .ok_or_else(|| ProviderError::UnknownModel(prompt.model.clone()))?;
         leaf.complete(prompt).await
     }
 }
@@ -69,7 +70,11 @@ impl RouterProvider for OpenRouterProvider {
         // Candidate set: explicit override, or the full catalogue if
         // empty. The router must select from candidates ∩ catalogue.
         let universe: Vec<String> = if candidates.is_empty() {
-            self.catalogue.ids().iter().map(|s| (*s).to_string()).collect()
+            self.catalogue
+                .ids()
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect()
         } else {
             candidates
                 .iter()
@@ -86,9 +91,7 @@ impl RouterProvider for OpenRouterProvider {
         let selected = universe
             .iter()
             .find(|id| self.leaves.contains_key(*id))
-            .ok_or_else(|| {
-                ProviderError::Transport("no candidate has a registered leaf".into())
-            })?
+            .ok_or_else(|| ProviderError::Transport("no candidate has a registered leaf".into()))?
             .clone();
         // Build a routed prompt with the selected model id; the leaf
         // sees the exact prompt it would on a direct call. This is the
@@ -158,10 +161,7 @@ mod tests {
     #[tokio::test]
     async fn complete_dispatches_by_exact_model() {
         let r = sample_router();
-        let p = Prompt::new(
-            "openai/gpt-4o",
-            vec![Message::new("user", "hi")],
-        );
+        let p = Prompt::new("openai/gpt-4o", vec![Message::new("user", "hi")]);
         let c = r.complete(&p).await.unwrap();
         assert!(c.text.contains("openai/gpt-4o"));
     }
@@ -229,7 +229,12 @@ mod tests {
         // Compute the direct-call result for the selected leaf:
         let mut leaf_prompt = p.clone();
         leaf_prompt.model = routed.selected.clone();
-        let direct = r.leaf(&routed.selected).unwrap().complete(&leaf_prompt).await.unwrap();
+        let direct = r
+            .leaf(&routed.selected)
+            .unwrap()
+            .complete(&leaf_prompt)
+            .await
+            .unwrap();
         check_transparency(&routed, &direct, r.catalogue()).expect("transparency");
     }
 }

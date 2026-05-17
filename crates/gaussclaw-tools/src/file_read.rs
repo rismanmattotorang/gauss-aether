@@ -104,7 +104,9 @@ mod tests {
     #[tokio::test]
     async fn reads_a_real_file() {
         let path = std::env::temp_dir().join("gaussclaw_file_read_test.txt");
-        tokio::fs::write(&path, "hello from gaussclaw").await.unwrap();
+        tokio::fs::write(&path, "hello from gaussclaw")
+            .await
+            .unwrap();
         let t = FileReadTool::new();
         let out = t
             .invoke_raw(serde_json::json!({ "path": path.to_string_lossy() }))

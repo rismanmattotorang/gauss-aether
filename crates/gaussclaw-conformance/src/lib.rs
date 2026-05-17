@@ -14,10 +14,16 @@
 //! Phase 1 ships #1 in this commit; the rest are TBD per phase.
 
 #![allow(clippy::doc_markdown)]
+#![allow(rustdoc::broken_intra_doc_links)]
 
 pub mod cli_parity;
 pub mod oai_sdk_parity;
+pub mod polyhedral_provider;
 pub mod replay_corpus;
+
+pub use polyhedral_provider::{
+    verify_handle_equivalence, HandleEquivalenceError, HandleEquivalenceReport, ProviderProbe,
+};
 
 #[cfg(test)]
 mod tests {

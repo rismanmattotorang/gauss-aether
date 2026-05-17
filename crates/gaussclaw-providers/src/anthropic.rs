@@ -196,7 +196,9 @@ mod tests {
 
     #[tokio::test]
     async fn complete_round_trips_through_mock() {
-        let mock = Arc::new(MockHttpBackend::new(vec![mock_response("hi from anthropic")]));
+        let mock = Arc::new(MockHttpBackend::new(vec![mock_response(
+            "hi from anthropic",
+        )]));
         let p = AnthropicProvider::new(mock.clone(), "sk-test-key");
         let c = p.complete(&sample_prompt()).await.unwrap();
         assert_eq!(c.text, "hi from anthropic");

@@ -185,7 +185,10 @@ pub fn cerebras(backend: Arc<dyn HttpBackend>, api_key: impl Into<String>) -> Op
 
 /// Builder factory for **Fireworks** (`https://api.fireworks.ai/inference`).
 #[must_use]
-pub fn fireworks(backend: Arc<dyn HttpBackend>, api_key: impl Into<String>) -> OpenAICompatProvider {
+pub fn fireworks(
+    backend: Arc<dyn HttpBackend>,
+    api_key: impl Into<String>,
+) -> OpenAICompatProvider {
     OpenAICompatProvider::new(
         backend,
         "fireworks",
@@ -240,6 +243,24 @@ pub fn tgi(backend: Arc<dyn HttpBackend>) -> OpenAICompatProvider {
     OpenAICompatProvider::new(backend, "tgi", "http://localhost:3000", String::new())
 }
 
+/// Builder factory for **OctoAI** (`https://text.octoai.run`).
+#[must_use]
+pub fn octoai(backend: Arc<dyn HttpBackend>, api_key: impl Into<String>) -> OpenAICompatProvider {
+    OpenAICompatProvider::new(backend, "octoai", "https://text.octoai.run", api_key)
+}
+
+/// Builder factory for **Anyscale Endpoints**
+/// (`https://api.endpoints.anyscale.com`).
+#[must_use]
+pub fn anyscale(backend: Arc<dyn HttpBackend>, api_key: impl Into<String>) -> OpenAICompatProvider {
+    OpenAICompatProvider::new(
+        backend,
+        "anyscale",
+        "https://api.endpoints.anyscale.com",
+        api_key,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,7 +292,10 @@ mod tests {
         let mock = Arc::new(MockHttpBackend::new(vec![mock_response("hi from groq")]));
         let p = groq(mock.clone(), "gsk-test");
         assert_eq!(p.name(), "groq");
-        let c = p.complete(&sample_prompt("groq/llama-3.3-70b")).await.unwrap();
+        let c = p
+            .complete(&sample_prompt("groq/llama-3.3-70b"))
+            .await
+            .unwrap();
         assert_eq!(c.text, "hi from groq");
         check_postconditions(&c, Some(1024)).unwrap();
         let seen = mock.seen();
@@ -286,7 +310,10 @@ mod tests {
     async fn cerebras_uses_correct_url() {
         let mock = Arc::new(MockHttpBackend::new(vec![mock_response("x")]));
         let p = cerebras(mock.clone(), "csk-x");
-        let _ = p.complete(&sample_prompt("cerebras/llama-3.1-70b")).await.unwrap();
+        let _ = p
+            .complete(&sample_prompt("cerebras/llama-3.1-70b"))
+            .await
+            .unwrap();
         assert!(mock.seen()[0].url.contains("api.cerebras.ai"));
     }
 
@@ -294,7 +321,10 @@ mod tests {
     async fn fireworks_uses_correct_url() {
         let mock = Arc::new(MockHttpBackend::new(vec![mock_response("x")]));
         let p = fireworks(mock.clone(), "fw-x");
-        let _ = p.complete(&sample_prompt("fireworks/llama-v3p1-70b")).await.unwrap();
+        let _ = p
+            .complete(&sample_prompt("fireworks/llama-v3p1-70b"))
+            .await
+            .unwrap();
         assert!(mock.seen()[0].url.contains("api.fireworks.ai"));
     }
 
@@ -334,7 +364,10 @@ mod tests {
     async fn perplexity_uses_correct_url() {
         let mock = Arc::new(MockHttpBackend::new(vec![mock_response("x")]));
         let p = perplexity(mock.clone(), "pplx-x");
-        let _ = p.complete(&sample_prompt("perplexity/llama")).await.unwrap();
+        let _ = p
+            .complete(&sample_prompt("perplexity/llama"))
+            .await
+            .unwrap();
         assert!(mock.seen()[0].url.contains("api.perplexity.ai"));
     }
 
@@ -355,6 +388,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn octoai_uses_correct_url() {
+        let mock = Arc::new(MockHttpBackend::new(vec![mock_response("x")]));
+        let p = octoai(mock.clone(), "octo-x");
+        let _ = p.complete(&sample_prompt("octoai/mixtral")).await.unwrap();
+        assert!(mock.seen()[0].url.contains("text.octoai.run"));
+    }
+
+    #[tokio::test]
+    async fn anyscale_uses_correct_url() {
+        let mock = Arc::new(MockHttpBackend::new(vec![mock_response("x")]));
+        let p = anyscale(mock.clone(), "any-x");
+        let _ = p.complete(&sample_prompt("anyscale/llama")).await.unwrap();
+        assert!(mock.seen()[0].url.contains("api.endpoints.anyscale.com"));
+    }
+
+    #[tokio::test]
     async fn custom_auth_header_is_honoured() {
         let mock = Arc::new(MockHttpBackend::new(vec![mock_response("x")]));
         let p = OpenAICompatProvider::new(mock.clone(), "custom", "http://x", "secret")
@@ -362,6 +411,8 @@ mod tests {
             .with_auth_scheme("Token ");
         let _ = p.complete(&sample_prompt("custom/m")).await.unwrap();
         let h = &mock.seen()[0].headers;
-        assert!(h.iter().any(|(k, v)| k == "x-custom-token" && v == "Token secret"));
+        assert!(h
+            .iter()
+            .any(|(k, v)| k == "x-custom-token" && v == "Token secret"));
     }
 }
