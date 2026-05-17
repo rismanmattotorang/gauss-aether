@@ -21,8 +21,35 @@ allow = [
   "Unicode-3.0",
   "CC0-1.0",
   "Zlib",
+  # MPL-2.0 is weak-copyleft and only requires source disclosure of
+  # modifications to the MPL-licensed files themselves — not of the
+  # binary that links them. Pulled in transitively via axum's HTML
+  # toolchain (cssparser, dtoa-short, option-ext, cssparser-macros).
+  "MPL-2.0",
+  # The Unlicense and MIT-0 are public-domain-equivalent permissive
+  # licences with no attribution requirement. Pulled in via
+  # async_io_stream / pharos / ws_stream_wasm / ext-sort / borrow-or-share.
+  "Unlicense",
+  "MIT-0",
+  # SurrealDB ships under BSL-1.1; this is the SPECS-mandated
+  # Trinity backend (gauss-memory), so it's a deliberate dependency.
+  "BUSL-1.1",
 ]
 confidence-threshold = 0.93
+
+# SurrealDB declares its licence via a top-level LICENSE file rather
+# than a `license =` field in Cargo.toml, so cargo-deny can't
+# auto-detect it. Clarify explicitly that the file is the BUSL-1.1
+# text.
+[[licenses.clarify]]
+name       = "surrealdb"
+expression = "BUSL-1.1"
+license-files = []
+
+[[licenses.clarify]]
+name       = "surrealdb-core"
+expression = "BUSL-1.1"
+license-files = []
 
 [bans]
 multiple-versions = "warn"
