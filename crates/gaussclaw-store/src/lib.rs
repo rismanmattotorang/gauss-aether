@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lineage_edge_is_signed() {
+    async fn lineage_edge_has_blake3_commit_unsigned() {
         let s = fresh_store().await;
         let sess = s.create_session("tui", "m").await;
         let (root, _) = s
@@ -206,7 +206,53 @@ mod tests {
         let edge = s.lineage_edge(child.id).await.unwrap();
         assert_eq!(edge.from, root.id);
         assert_eq!(edge.to, child.id);
-        assert_eq!(edge.signed_payload.len(), 64, "BLAKE3 hex = 64 chars");
+        assert_eq!(edge.commit_hex.len(), 64, "BLAKE3 hex = 64 chars");
+        // No signer attached → no Ed25519 signature.
+        assert!(edge.signature_hex.is_none());
+    }
+
+    #[tokio::test]
+    async fn lineage_edge_carries_ed25519_signature_when_signed() {
+        use ed25519_dalek::Verifier;
+        let s = signed_store().await;
+        let sess = s.create_session("tui", "m").await;
+        let (root, _) = s
+            .append_turn(&sess.id, None, "user", "Q", TaintLabel::User)
+            .await
+            .unwrap();
+        let (child, _) = s
+            .append_turn(&sess.id, Some(root.id), "assistant", "A", TaintLabel::User)
+            .await
+            .unwrap();
+        let edge = s.lineage_edge(child.id).await.unwrap();
+        assert_eq!(edge.commit_hex.len(), 64);
+        let sig = edge.signature_hex.expect("Ed25519 signature must be present");
+        assert_eq!(sig.len(), 128, "Ed25519 hex = 128 chars");
+        // Verify the signature: reconstruct canonical bytes and check
+        // against the store's public key.
+        let pk_bytes = s.public_key().expect("public key");
+        let pk = ed25519_dalek::VerifyingKey::from_bytes(&pk_bytes).expect("vk");
+        let sig_bytes: [u8; 64] = (0..64)
+            .map(|i| {
+                u8::from_str_radix(&sig[i * 2..i * 2 + 2], 16).expect("hex")
+            })
+            .collect::<Vec<u8>>()
+            .try_into()
+            .unwrap();
+        let signature = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+        // Reconstruct canonical bytes the store signed over.
+        let head = s.chain_head().await.unwrap();
+        let mut head_bytes = [0u8; 32];
+        for (i, slot) in head_bytes.iter_mut().enumerate() {
+            *slot =
+                u8::from_str_radix(&head.digest_hex[i * 2..i * 2 + 2], 16).expect("hex");
+        }
+        let mut canonical = Vec::new();
+        canonical.extend_from_slice(&root.id.to_le_bytes());
+        canonical.extend_from_slice(&child.id.to_le_bytes());
+        canonical.extend_from_slice(&head_bytes);
+        pk.verify(&canonical, &signature)
+            .expect("Ed25519 verification must succeed");
     }
 
     // ── search ──────────────────────────────────────────────────────────────
@@ -227,12 +273,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn vector_search_forwards_to_backend() {
-        // The wrapper just forwards to SurrealMemory; underlying ranking
-        // correctness is exercised by `gauss-memory::tests::
-        // vector_search_ranks_the_nearest_neighbour_first`. Here we
-        // only verify the forwarding contract: vector_search returns
-        // Vec<TurnHit> without errors.
+    async fn vector_search_returns_materialisable_hits() {
+        // Forward contract: vector_search returns Vec<TurnHit> without
+        // errors and every hit corresponds to a real Turn in the store.
         let s = fresh_store().await;
         let sess = s.create_session("tui", "m").await;
         s.append_turn(&sess.id, None, "user", "alpha", TaintLabel::User)
@@ -242,11 +285,39 @@ mod tests {
             .await
             .unwrap();
         let hits = s.vector_search("alpha", 5).await.unwrap();
-        // Hits may be empty if the HNSW index hasn't built yet, but the
-        // call itself must succeed and return materialisable Turn rows.
         for h in &hits {
             assert!(s.get_turn(h.turn.id).await.is_some());
         }
+    }
+
+    #[tokio::test]
+    async fn hybrid_search_exact_match_recalls_target_turn() {
+        // Stronger HNSW + BM25 union check: an exact text match must
+        // appear in the hybrid result. FTS alone is sufficient for
+        // recall here; we just verify the union does not lose hits.
+        let s = fresh_store().await;
+        let sess = s.create_session("tui", "m").await;
+        let bodies = ["unique_marker_alpha", "filler beta", "filler gamma"];
+        let mut target_id = 0u64;
+        for body in bodies {
+            let (t, _) = s
+                .append_turn(&sess.id, None, "user", body, TaintLabel::User)
+                .await
+                .unwrap();
+            if body.contains("unique_marker_alpha") {
+                target_id = t.id;
+            }
+        }
+        // alpha=1.0 → FTS-only weight; alpha=0.0 → vector-only.
+        // alpha=0.5 → equal merge. The unique-marker text guarantees
+        // the BM25 channel ranks the target first.
+        let hits = s.hybrid_search("unique_marker_alpha", 5, 0.7).await.unwrap();
+        assert!(!hits.is_empty(), "exact-marker hybrid must produce hits");
+        let found = hits.iter().any(|h| h.turn.id == target_id);
+        assert!(
+            found,
+            "hybrid recall must contain the exact-match turn id {target_id}"
+        );
     }
 
     #[tokio::test]

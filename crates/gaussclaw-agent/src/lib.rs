@@ -701,7 +701,7 @@ mod tests {
         let edge = store.lineage_edge(turns[1].id).await.unwrap();
         assert_eq!(edge.from, turns[0].id);
         assert_eq!(edge.to, turns[1].id);
-        assert_eq!(edge.signed_payload.len(), 64);
+        assert_eq!(edge.commit_hex.len(), 64);
     }
 
     #[tokio::test]

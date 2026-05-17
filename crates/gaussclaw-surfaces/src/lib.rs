@@ -179,6 +179,117 @@ impl SurfaceState {
 
 // ─── models endpoint ────────────────────────────────────────────────────────
 
+// ─── sessions endpoint ──────────────────────────────────────────────────────
+
+/// `POST /v1/sessions` request — create a new session.
+#[derive(Debug, Deserialize)]
+#[allow(missing_docs)]
+pub struct CreateSessionRequest {
+    #[serde(default = "default_surface")]
+    pub surface: String,
+    #[serde(default)]
+    pub model: String,
+}
+
+fn default_surface() -> String { "rest".into() }
+
+/// One session row in the JSON listing.
+#[derive(Debug, Serialize)]
+#[allow(missing_docs)]
+pub struct SessionInfo {
+    pub id: String,
+    pub created: String,
+    pub surface: String,
+    pub model: String,
+    pub turn_count: u64,
+}
+
+/// One turn row in the JSON listing.
+#[derive(Debug, Serialize)]
+#[allow(missing_docs)]
+pub struct TurnInfo {
+    pub id: u64,
+    pub session_id: String,
+    pub parent_id: Option<u64>,
+    pub role: String,
+    pub content: String,
+    pub ts: String,
+}
+
+#[axum::debug_handler]
+async fn handle_list_sessions(State(state): State<SurfaceState>) -> Response {
+    let Some(store) = state.policy.store().cloned() else {
+        return Json(serde_json::json!({ "data": [] })).into_response();
+    };
+    let rows: Vec<SessionInfo> = store
+        .list_recent_sessions(50)
+        .await
+        .into_iter()
+        .map(|s| SessionInfo {
+            id: s.id,
+            created: s.created,
+            surface: s.surface,
+            model: s.model,
+            turn_count: s.turn_count,
+        })
+        .collect();
+    Json(serde_json::json!({ "data": rows })).into_response()
+}
+
+#[axum::debug_handler]
+async fn handle_create_session(
+    State(state): State<SurfaceState>,
+    Json(req): Json<CreateSessionRequest>,
+) -> Response {
+    let Some(store) = state.policy.store().cloned() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": { "code": "no_store", "message": "no session store attached" }
+            })),
+        )
+            .into_response();
+    };
+    let model = if req.model.is_empty() {
+        state.default_model.clone()
+    } else {
+        req.model
+    };
+    let sess = store.create_session(req.surface, model).await;
+    Json(SessionInfo {
+        id: sess.id,
+        created: sess.created,
+        surface: sess.surface,
+        model: sess.model,
+        turn_count: sess.turn_count,
+    })
+    .into_response()
+}
+
+#[axum::debug_handler]
+async fn handle_list_session_turns(
+    State(state): State<SurfaceState>,
+    axum::extract::Path(session_id): axum::extract::Path<String>,
+) -> Response {
+    let Some(store) = state.policy.store().cloned() else {
+        return Json(serde_json::json!({ "data": [] })).into_response();
+    };
+    let rows: Vec<TurnInfo> = store
+        .list_session_turns(&session_id)
+        .await
+        .into_iter()
+        .map(|t| TurnInfo {
+            id: t.id,
+            session_id: t.session_id,
+            parent_id: t.parent_id,
+            role: t.role,
+            content: t.content,
+            ts: t.ts,
+        })
+        .collect();
+    Json(serde_json::json!({ "data": rows })).into_response()
+}
+
 // ─── audit endpoint ─────────────────────────────────────────────────────────
 
 /// `GET /v1/audit/head` payload — the live chain head.
@@ -641,6 +752,11 @@ pub fn router(state: SurfaceState) -> Router {
         .route("/v1/turn", post(handle_turn))
         .route("/v1/health", get(handle_health))
         .route("/v1/audit/head", get(handle_audit_head))
+        .route(
+            "/v1/sessions",
+            get(handle_list_sessions).post(handle_create_session),
+        )
+        .route("/v1/sessions/{session_id}/turns", get(handle_list_session_turns))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -1026,6 +1142,106 @@ mod tests {
         assert!(turns[0].content.contains("persist-me"));
         assert_eq!(turns[1].role, "assistant");
         assert_eq!(turns[1].parent_id, Some(turns[0].id));
+    }
+
+    #[tokio::test]
+    async fn create_session_endpoint_returns_a_session_id() {
+        use std::sync::Arc;
+        let store = Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let state = SurfaceState::new_with_store("echo", store.clone());
+        let req = serde_json::json!({ "surface": "rest", "model": "echo" });
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/sessions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(req.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let id = body["id"].as_str().expect("id");
+        assert!(!id.is_empty());
+        // The store actually contains it.
+        assert!(store.get_session(id).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn list_sessions_endpoint_returns_persisted_sessions() {
+        use std::sync::Arc;
+        let store = Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let _a = store.create_session("rest", "echo").await;
+        let _b = store.create_session("tui", "echo").await;
+        let state = SurfaceState::new_with_store("echo", store);
+
+        let (status, body) = {
+            let app = router(state);
+            let resp = app
+                .oneshot(
+                    Request::builder()
+                        .method(Method::GET)
+                        .uri("/v1/sessions")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = resp.status();
+            let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            (status, json)
+        };
+        assert_eq!(status, StatusCode::OK);
+        let rows = body["data"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_session_turns_endpoint_returns_persisted_turns() {
+        use std::sync::Arc;
+        let store = Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let sess = store.create_session("rest", "echo").await;
+        let _ = store
+            .append_turn(&sess.id, None, "user", "hello", gauss_core::TaintLabel::User)
+            .await
+            .unwrap();
+        let state = SurfaceState::new_with_store("echo", store);
+
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("/v1/sessions/{}/turns", sess.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let rows = body["data"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["role"], "user");
+        assert_eq!(rows[0]["content"], "hello");
     }
 
     #[tokio::test]

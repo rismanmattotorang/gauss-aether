@@ -56,7 +56,6 @@ fn run_web(
     let source = report
         .and_then(|r| r.source)
         .map(|p| p.display().to_string());
-    let state = gaussclaw_web::ServerState::new(cfg, source);
     let addr: std::net::SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
     let url = format!("http://{addr}/");
     eprintln!("gaussclaw web: serving on {url}");
@@ -66,7 +65,17 @@ fn run_web(
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    rt.block_on(gaussclaw_web::serve(addr, state))
+    rt.block_on(async move {
+        // Phase 2 wiring: build a single Arc<SessionStore> that backs
+        // /api/sessions, /api/receipt/head, and the chat WebSocket.
+        // In-memory backend for the demo binary; production deployments
+        // swap to a persistent SurrealMemory via SessionStore::with_memory.
+        let store = std::sync::Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory().await?,
+        );
+        let state = gaussclaw_web::ServerState::new(cfg, source).with_store(store);
+        gaussclaw_web::serve(addr, state).await
+    })
 }
 
 fn run_default_tui(cfg: &gaussclaw_config::Config) -> anyhow::Result<()> {

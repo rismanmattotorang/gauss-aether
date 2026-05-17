@@ -25,4 +25,5 @@ time         = { workspace = true }
 tokio        = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util", "macros"] }
+tokio          = { workspace = true, features = ["test-util", "macros"] }
+ed25519-dalek  = { workspace = true }

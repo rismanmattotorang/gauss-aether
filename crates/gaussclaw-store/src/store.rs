@@ -282,18 +282,31 @@ impl SessionStore {
             st.receipt_payloads.insert(turn_id, payload);
         }
 
-        // Sign the lineage edge with BLAKE3 of (parent || child ||
-        // chain-head-after-append). Any tampering in any of those
-        // diverges the signature.
+        // Commit + (optionally) sign the lineage edge.
+        //
+        // The BLAKE3 hash commit binds parent, child, and the chain head
+        // — any byte change in any of those three diverges it. When an
+        // Ed25519 signer is attached, the same canonical bytes are also
+        // Ed25519-signed; the signature provides EUF-CMA non-repudiation
+        // on top of the chain-head binding.
         if let Some(p) = parent_id {
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(&p.to_le_bytes());
-            hasher.update(&turn_id.to_le_bytes());
-            hasher.update(&ack.head.digest);
+            let mut canonical = Vec::with_capacity(8 + 8 + 32);
+            canonical.extend_from_slice(&p.to_le_bytes());
+            canonical.extend_from_slice(&turn_id.to_le_bytes());
+            canonical.extend_from_slice(&ack.head.digest);
+            let commit_hex = blake3::hash(&canonical).to_hex().to_string();
+            let signature_hex = if let Some(signer) = &self.signer {
+                use gauss_audit::SigningBackend;
+                let sig = signer.backend().sign(&canonical)?;
+                Some(hex_string(&sig))
+            } else {
+                None
+            };
             let edge = LineageEdge {
                 from: p,
                 to: turn_id,
-                signed_payload: hasher.finalize().to_hex().to_string(),
+                commit_hex,
+                signature_hex,
             };
             st.lineage.insert(turn_id, edge);
             st.parent_children

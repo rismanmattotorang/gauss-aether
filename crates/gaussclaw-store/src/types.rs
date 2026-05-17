@@ -91,6 +91,21 @@ pub struct TurnHit {
 }
 
 /// A lineage edge in the conversation graph.
+///
+/// Carries two integrity surfaces, chosen by deployment posture:
+///
+/// - **[`Self::commit_hex`]** — always present. BLAKE3 hex commit over
+///   `(parent || child || chain-head-after-append)`. A hash commit:
+///   any byte change in any of the three diverges it, AND because
+///   `chain-head` is itself part of the receipt chain, this binds the
+///   edge to the chain head.
+///
+/// - **[`Self::signature_hex`]** — present iff the store has an
+///   attached Ed25519 signer. 128-char hex of the signature over
+///   `(parent_le || child_le || chain-head)`. EUF-CMA non-repudiation
+///   for the edge itself: an adversary without the secret key cannot
+///   produce a verifying signature even if they recompute a valid
+///   `commit_hex`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct LineageEdge {
@@ -98,9 +113,11 @@ pub struct LineageEdge {
     pub from: u64,
     /// Child turn id.
     pub to: u64,
-    /// BLAKE3 hex of the parent + child + chain-head bytes at append
-    /// time — diverges on any tampering.
-    pub signed_payload: String,
+    /// BLAKE3 hex commit (64 chars).
+    pub commit_hex: String,
+    /// Ed25519 signature hex (128 chars) when a signer is attached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_hex: Option<String>,
 }
 
 /// Snapshot of the receipt-chain head.
