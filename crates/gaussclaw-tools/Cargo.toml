@@ -15,12 +15,15 @@ workspace = true
 gauss-core      = { workspace = true }
 gauss-traits    = { workspace = true }
 gauss-hwca      = { workspace = true }
+gauss-sandbox   = { workspace = true }
 gaussclaw-skill = { workspace = true }
 async-trait     = { workspace = true }
 serde           = { workspace = true }
 serde_json      = { workspace = true }
 thiserror       = { workspace = true }
 tokio           = { workspace = true, features = ["fs"] }
+blake3          = { workspace = true }
+sha2            = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

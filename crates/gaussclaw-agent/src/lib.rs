@@ -431,13 +431,15 @@ impl TurnPolicy {
 
     /// Dispatch a single tool call.
     ///
-    /// Lifecycle (mirrors the per-turn discipline, scoped to a tool):
+    /// Lifecycle (WAL-before-effect, Axiom A1):
     ///
     /// 1. Look up the tool in the registry. Unknown id → error.
-    /// 2. Kernel admit with the tool's declared `cap_required` and
+    /// 2. **Audit `Inbound`** — recorded BEFORE admit, so even a
+    ///    denied tool call leaves a chain-anchored record (this is
+    ///    the contract; the user-message persist path in
+    ///    `run_in_session` follows the same rule).
+    /// 3. Kernel admit with the tool's declared `cap_required` and
     ///    the supplied `incoming_taint`. Refusal terminates dispatch.
-    /// 3. (Optional) Audit `Inbound` — closes WAL-before-effect for
-    ///    the tool dispatch path too.
     /// 4. [`gauss_hwca::WorkerSpawner::spawn_and_invoke`] — runs the
     ///    tool inside an HWCA worker; only the schema-validated
     ///    [`gauss_traits::ValidatedValue`] crosses back.
@@ -462,14 +464,11 @@ impl TurnPolicy {
         let tool = registry
             .get(tool_name)
             .ok_or_else(|| TurnError::Invalid(format!("unknown tool: {tool_name}")))?;
-        // Kernel admit: the tool's declared cap_required vs the
-        // current grant, under the incoming taint floor. This is
-        // independent of the per-turn admit and runs once per tool
-        // call.
-        self.kernel
-            .admit(tool.manifest().cap_required, incoming_taint)?;
-        // Audit the tool inbound BEFORE dispatch. Even a refused tool
-        // call leaves a chain-anchored record.
+        // Audit the tool inbound BEFORE admit. Even a refused tool
+        // call leaves a chain-anchored record (WAL-before-effect, A1).
+        // The registry lookup precedes this only because resolving the
+        // tool name to its manifest is the input-parse step — a wholly
+        // unknown id has no inbound to record.
         if let Some(audit) = &self.audit {
             let body_bytes = serde_json::to_vec(&args).unwrap_or_default();
             audit
@@ -482,6 +481,10 @@ impl TurnPolicy {
                 )
                 .await;
         }
+        // Kernel admit: the tool's declared cap_required vs the
+        // current grant, under the incoming taint floor.
+        self.kernel
+            .admit(tool.manifest().cap_required, incoming_taint)?;
         let validated = self
             .spawner
             .spawn_and_invoke(tool.as_ref(), args, incoming_taint, depth)
@@ -875,6 +878,45 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, TurnError::Denied(_)), "got {err:?}");
+    }
+
+    /// WAL-before-effect (Axiom A1) for the tool-dispatch path.
+    ///
+    /// A denied tool call MUST still leave a chain-anchored audit
+    /// record. Phase 3 review caught an ordering bug (record happened
+    /// after admit); this test locks the fix in place.
+    #[tokio::test]
+    async fn dispatch_tool_audits_before_admit_so_denials_are_logged() {
+        use gauss_core::CapToken;
+        use gauss_kernel::PrivilegedKernel;
+        let empty = Arc::new(PrivilegedKernel::new(CapToken::BOTTOM));
+        let audit = AuditTrace::new();
+        let head_before = audit.head().await;
+        let tp = TurnPolicy::new(
+            KernelHandle::new(empty),
+            Arc::new(EchoProvider::default()),
+        )
+        .with_audit(audit.clone())
+        .with_tools(Arc::new(gaussclaw_tools::default_registry()));
+
+        let _err = tp
+            .dispatch_tool(
+                "file_read",
+                serde_json::json!({ "path": "/tmp/x" }),
+                TaintLabel::User,
+                0,
+            )
+            .await
+            .expect_err("BOTTOM-grant kernel must deny file_read");
+
+        // Even though admit denied, the audit chain must advance
+        // — the inbound record was written BEFORE the admit check.
+        let head_after = audit.head().await;
+        assert_ne!(
+            head_before.as_bytes(),
+            head_after.as_bytes(),
+            "denied tool call must still advance the audit chain"
+        );
     }
 
     #[tokio::test]
