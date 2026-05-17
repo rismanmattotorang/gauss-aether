@@ -6,9 +6,11 @@ rust-version.workspace = true
 license.workspace      = true
 repository.workspace   = true
 authors.workspace      = true
-description = "clap v4 subcommand surface: model, tools, config, gateway, setup, update, doctor."
+description = "clap v4 subcommand surface for GaussClaw — Hermes CLI parity plus port-specific extensions."
 
 [lints]
 workspace = true
 
 [dependencies]
+clap   = { workspace = true }
+anyhow = { workspace = true }

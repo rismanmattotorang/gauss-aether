@@ -1,0 +1,17 @@
+---
+source: crates/gaussclaw-conformance/src/cli_parity.rs
+expression: body
+---
+Start, stop, or inspect the messaging gateway. (Hermes parity: `hermes gateway`.)
+
+Usage: gateway <COMMAND>
+
+Commands:
+  start   Start the messaging gateway in the foreground
+  stop    Stop the running gateway daemon
+  status  Show whether the gateway is running and which channels are attached
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help
+          Print help

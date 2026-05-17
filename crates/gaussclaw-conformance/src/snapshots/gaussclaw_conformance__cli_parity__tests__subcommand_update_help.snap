@@ -1,0 +1,19 @@
+---
+source: crates/gaussclaw-conformance/src/cli_parity.rs
+expression: body
+---
+Update GaussClaw to the latest signed release. (Hermes parity: `hermes update`.)
+
+Usage: update [OPTIONS]
+
+Options:
+      --channel <CHANNEL>
+          Release channel
+          
+          [default: stable]
+
+      --dry-run
+          Show what would be installed without performing the upgrade
+
+  -h, --help
+          Print help

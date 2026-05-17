@@ -1,0 +1,17 @@
+---
+source: crates/gaussclaw-conformance/src/cli_parity.rs
+expression: body
+---
+One-shot chat REPL without launching the full TUI (GaussClaw extension)
+
+Usage: chat [OPTIONS]
+
+Options:
+  -m, --message <TEXT>
+          Send a single message and exit (non-interactive mode)
+
+  -s, --session <ID>
+          Use a specific session ID instead of starting a new one
+
+  -h, --help
+          Print help

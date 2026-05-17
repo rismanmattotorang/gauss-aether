@@ -11,4 +11,11 @@ description = "The shipping `gaussclaw` binary; wires every gaussclaw-* crate to
 [lints]
 workspace = true
 
+[[bin]]
+name = "gaussclaw"
+path = "src/main.rs"
+
 [dependencies]
+gaussclaw-cli = { workspace = true }
+clap          = { workspace = true }
+anyhow        = { workspace = true }

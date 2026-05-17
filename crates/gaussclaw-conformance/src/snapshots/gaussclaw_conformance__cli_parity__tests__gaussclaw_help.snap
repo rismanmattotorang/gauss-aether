@@ -1,0 +1,28 @@
+---
+source: crates/gaussclaw-conformance/src/cli_parity.rs
+expression: render_help()
+---
+GaussClaw — Hermes-compatible agent on the Gauss-Aether runtime.
+
+Usage: gaussclaw [OPTIONS] [COMMAND]
+
+Commands:
+  chat     One-shot chat REPL without launching the full TUI (GaussClaw extension)
+  model    Select or inspect the active LLM model. (Hermes parity: `hermes model`.)
+  tools    Enable, disable, or list tools. (Hermes parity: `hermes tools`.)
+  config   Read or write configuration values. (Hermes parity: `hermes config`.)
+  gateway  Start, stop, or inspect the messaging gateway. (Hermes parity: `hermes gateway`.)
+  setup    Interactive first-run setup wizard. (Hermes parity: `hermes setup`.)
+  update   Update GaussClaw to the latest signed release. (Hermes parity: `hermes update`.)
+  doctor   Run the Self-Diagnostic Health Engine invariants. (Hermes parity: `hermes doctor`.)
+  import   Import a Hermes config and migrate it to GaussClaw (GaussClaw extension)
+  receipt  Inspect the receipt chain head or verify an envelope (GaussClaw extension)
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+  -c, --config <PATH>  Path to an alternate `gaussclaw.toml`. If omitted, the loader walks the
+                       standard search path (cwd → `$XDG_CONFIG_HOME/gaussclaw/` → platform default)
+  -v, --verbose...     Increase log verbosity. May be repeated (-v, -vv, -vvv)
+  -q, --quiet          Quiet mode: suppress non-error output
+  -h, --help           Print help (see more with '--help')
+  -V, --version        Print version

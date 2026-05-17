@@ -1,0 +1,14 @@
+---
+source: crates/gaussclaw-conformance/src/cli_parity.rs
+expression: body
+---
+Run the Self-Diagnostic Health Engine invariants. (Hermes parity: `hermes doctor`.)
+
+Usage: doctor [OPTIONS]
+
+Options:
+      --json
+          Emit machine-readable JSON instead of the human-readable summary
+
+  -h, --help
+          Print help

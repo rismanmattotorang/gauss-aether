@@ -1,0 +1,14 @@
+---
+source: crates/gaussclaw-conformance/src/cli_parity.rs
+expression: body
+---
+Interactive first-run setup wizard. (Hermes parity: `hermes setup`.)
+
+Usage: setup [OPTIONS]
+
+Options:
+      --non-interactive
+          Skip interactive prompts and accept all defaults
+
+  -h, --help
+          Print help

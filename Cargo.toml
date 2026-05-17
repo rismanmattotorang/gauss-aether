@@ -49,7 +49,7 @@ members = [
 [workspace.package]
 version = "0.0.1"
 edition = "2021"
-rust-version = "1.83"
+rust-version = "1.85"
 license = "MIT"
 repository = "https://github.com/rismanmattotorang/gauss-aether"
 authors = ["Gauss-Aether Contributors"]
@@ -101,6 +101,13 @@ gaussclaw-conformance    = { path = "crates/gaussclaw-conformance",    version =
 # Async
 async-trait = "0.1"
 tokio       = { version = "1", default-features = false, features = ["sync", "rt", "macros", "time"] }
+
+# CLI surface — Phase 1 (gaussclaw-cli, gaussclaw-bin)
+clap   = { version = "4.5", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions", "color", "wrap_help"] }
+anyhow = "1"
+
+# Snapshot testing — used by gaussclaw-conformance for CLI / TUI parity
+insta = { version = "1.40", default-features = false }
 
 # Error handling
 thiserror = "2"
