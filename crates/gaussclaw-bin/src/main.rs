@@ -17,24 +17,53 @@ use clap::Parser;
 use gaussclaw_cli::{
     Cli, Command, ConfigCmd, GatewayCmd, ModelCmd, ReceiptCmd, ToolsCmd,
 };
+use gaussclaw_tui::StatusInfo;
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let cfg_path = cli.config.as_deref();
+    let (cfg, report) = match gaussclaw_config::load(cfg_path) {
+        Ok((c, r)) => (c, Some(r)),
+        Err(_) if cfg_path.is_none() => {
+            // No config on disk yet — keep an inert default and continue.
+            (gaussclaw_config::Config::default(), None)
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    if cli.verbose > 0 {
+        if let Some(r) = &report {
+            if let Some(src) = &r.source {
+                eprintln!("config: loaded from {}", src.display());
+            } else {
+                eprintln!("config: no file found; using defaults");
+            }
+        }
+    }
+
     match cli.command {
-        None => run_default_tui(),
+        None => run_default_tui(&cfg),
         Some(cmd) => dispatch(cmd),
     }
 }
 
-fn run_default_tui() -> anyhow::Result<()> {
-    println!(
-        "gaussclaw {} — TUI launcher\n\
-         \n\
-         The Ratatui + crossterm TUI lands later in Phase 1 (Task 3).\n\
-         Use `gaussclaw --help` to see the implemented subcommand surface.\n",
-        env!("CARGO_PKG_VERSION"),
-    );
-    Ok(())
+fn run_default_tui(cfg: &gaussclaw_config::Config) -> anyhow::Result<()> {
+    let status = StatusInfo {
+        session: "new".into(),
+        model: if cfg.provider.name.is_empty() {
+            "(unset)".into()
+        } else {
+            format!("{}/{}", cfg.provider.name, cfg.provider.model)
+        },
+        turn: 0,
+        chain_head: "00000000".into(), // populated in Phase 2 once gaussclaw-store is wired
+        taint_floor: "⊥".into(),
+        caps: cfg
+            .caps
+            .as_ref()
+            .map_or(0, |c| u32::try_from(c.default_grant.len()).unwrap_or(u32::MAX)),
+    };
+    gaussclaw_tui::run(status)
 }
 
 fn dispatch(cmd: Command) -> anyhow::Result<()> {

@@ -16,6 +16,8 @@ name = "gaussclaw"
 path = "src/main.rs"
 
 [dependencies]
-gaussclaw-cli = { workspace = true }
-clap          = { workspace = true }
-anyhow        = { workspace = true }
+gaussclaw-cli    = { workspace = true }
+gaussclaw-config = { workspace = true }
+gaussclaw-tui    = { workspace = true }
+clap             = { workspace = true }
+anyhow           = { workspace = true }

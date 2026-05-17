@@ -49,7 +49,7 @@ members = [
 [workspace.package]
 version = "0.0.1"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/rismanmattotorang/gauss-aether"
 authors = ["Gauss-Aether Contributors"]
@@ -105,6 +105,16 @@ tokio       = { version = "1", default-features = false, features = ["sync", "rt
 # CLI surface — Phase 1 (gaussclaw-cli, gaussclaw-bin)
 clap   = { version = "4.5", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions", "color", "wrap_help"] }
 anyhow = "1"
+
+# Config (TOML) — Phase 1 (gaussclaw-config)
+figment = { version = "0.10", default-features = false, features = ["toml", "env"] }
+toml    = { version = "0.8",  default-features = false, features = ["parse", "display"] }
+directories = "5"
+
+# TUI — Phase 1 (gaussclaw-tui)
+ratatui      = { version = "0.29", default-features = false, features = ["crossterm"] }
+crossterm    = { version = "0.28", default-features = false, features = ["bracketed-paste", "events"] }
+tui-textarea = { version = "0.7",  default-features = false, features = ["crossterm", "ratatui"] }
 
 # Snapshot testing — used by gaussclaw-conformance for CLI / TUI parity
 insta = { version = "1.40", default-features = false }
