@@ -153,6 +153,50 @@ in `crates/gaussclaw-*`.
 | `gaussclaw-bin` | The shipping `gaussclaw` binary | All |
 | `website/` | Docusaurus (en + zh-Hans) + mdBook API reference | P1 / GA |
 
+### Development roadmap
+
+Five phases, 24 weeks, four milestones plus GA. Full plan with exit
+criteria, rollback paths, and per-task dependency edges in
+[`GAUSSCLAW_ROADMAP.md`](GAUSSCLAW_ROADMAP.md).
+
+| Phase | Weeks | Milestone | Headline deliverable | Locks |
+|---|---|---|---|---|
+| **P1** Surfaces and channels | 1–4   | **M1** | Every Hermes surface re-routed through `gauss-gateway` in shim regime; CLI (clap v4) + TUI (Ratatui + crossterm) + Web (Axum + retained React) + Desktop (Tauri 2) + Website (Docusaurus) all serving 1,000-turn byte-identical replay traffic | Principle 1, T4 |
+| **P2** Memory, receipts, lineage | 4–10  | **M2** | SQLite/FTS5 → Trinity over SurrealDB; Ed25519 receipt chain inside the same transaction as the turn write; TSA anchor every 1,000 receipts; 2-week dual-write parity window | A3, A5, T3, T5, T11, T12 |
+| **P3** Tools and sandbox | 10–16 | **M3** | Skill Manifest + `#[tool]` proc-macro; every `@tool` lifted into HWCA + Composite Sandbox; IPI ≤ 2.19 %, spawn p99 ≤ 15 ms, composite-sandbox compromise ≤ 1.1×10⁻⁷ | A6, A7, T9, T10 |
+| **P4** Providers + meta-routers | 16–20 | **M4** | 20 leaf vendor drivers under `ProviderTrait`; OpenRouter (aggregator) + NotDiamond (learned router) under `RouterProviderTrait`; build-time polyhedral + router-transparency contracts | T7 (extended) |
+| **P5** Trajectory export + GA | 20–24 | **GA** | Cryptographic Trajectory Envelope; Taint-Aware Filter; Federated Trajectory Pool; signed + notarized desktop installers on macOS, Windows, Linux; website live in English + Simplified Chinese | A9, T11 (extended) |
+
+### Crate-by-phase delivery
+
+```text
+Phase 1 ────► gaussclaw-agent · -cli · -tui · -web · -desktop · -surfaces
+              · -channels · -config · -migrate · -conformance · -bin
+Phase 2 ────► gaussclaw-store
+Phase 3 ────► gaussclaw-skill · gaussclaw-tools
+Phase 4 ────► gaussclaw-providers · -providers-meta · -api-modes
+Phase 5 ────► gaussclaw-export · gaussclaw-fed
+```
+
+### Binding constraints (non-negotiable for the duration of the port)
+
+1. **Surface-Convergence Preservation** — every Hermes surface produces a behaviourally identical turn under GaussClaw.
+2. **Trajectory schema bit-equality** — SFT/DPO JSONL preserved field-for-field; new material appended in an optional envelope, never inlined.
+3. **`@tool` decorator ergonomics** preserved literally; Skill Manifest is a non-breaking addition.
+4. **TOML config compatibility** — Hermes top-level keys continue to work; new keys are optional.
+5. **No axiom regression** — A1–A9 / T1–T12 conformance stays green on every PR.
+
+### Conformance gates (per-PR CI)
+
+`gaussclaw-conformance` runs six test classes alongside the runtime's axiom suite:
+
+1. **Hermes-replay** — frozen 1,000-turn corpus; byte-equal trajectory output.
+2. **OpenAI SDK parity** — official end-to-end suite parametrised by both backends.
+3. **CLI parity** — `gaussclaw --help` diffed against a frozen Hermes `--help` corpus.
+4. **TUI snapshot** — `insta` golden snapshots of every documented Ratatui screen state.
+5. **Web e2e** — Playwright suite driving the React frontend against both backends.
+6. **Desktop e2e** — `webdriverio + tauri-driver` driving all 12 Hermes-parity screens on macOS, Windows, Linux.
+
 ### Why GaussClaw on Gauss-Aether
 
 Every Hermes architectural deficit closes against a Gauss-Aether
