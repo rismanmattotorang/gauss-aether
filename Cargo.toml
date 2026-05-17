@@ -152,6 +152,10 @@ sha2   = "0.10"
 hmac   = "0.12"
 subtle = "2"
 
+# Tool catalogue helpers (Phase 3)
+base64 = { version = "0.22", default-features = false, features = ["std"] }
+regex  = { version = "1",    default-features = false, features = ["std", "perf"] }
+
 # Time — real RFC3339 timestamps for audit records and channel messages.
 time = { version = "0.3", default-features = false, features = ["std", "formatting", "macros"] }
 
