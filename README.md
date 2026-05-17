@@ -1,12 +1,21 @@
-# Gauss-Aether
+# Gauss-Aether · GaussClaw
 
 **An axiomatic operating system for trustworthy autonomous LLM agents,
-implemented in Rust.**
+and the agent that runs on top of it — one Rust workspace, two
+projects.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/Rust-1.83+-orange.svg)](rust-toolchain.toml)
 [![Tests](https://img.shields.io/badge/tests-299%20passing-brightgreen.svg)]()
-[![Status](https://img.shields.io/badge/status-1.0%20ready-blueviolet.svg)]()
+[![Runtime](https://img.shields.io/badge/Gauss--Aether-1.0%20ready-blueviolet.svg)]()
+[![Agent](https://img.shields.io/badge/GaussClaw-planning%20%2B%20scaffolding-orange.svg)](GAUSSCLAW_ROADMAP.md)
+
+This repository houses two projects that ship together:
+
+| Project | What it is | Status |
+|---|---|---|
+| **Gauss-Aether** | The runtime — an axiomatic OS-style kernel for LLM agents whose safety invariants are mechanically checked, not policy documents. 22 `gauss-*` crates. | 1.0 ready · 299 tests green |
+| **GaussClaw** | The agent on top — a Rust port of the [Hermes agent](https://github.com/nousresearch/hermes-agent) that preserves every Hermes ergonomic primitive while running every turn under Gauss-Aether's kernel discipline. 19 `gaussclaw-*` crates. | Plan + scaffolding ([roadmap](GAUSSCLAW_ROADMAP.md)) |
 
 Gauss-Aether is a clean-room reimplementation of an LLM agent runtime
 whose **safety invariants are mechanically checked**, not policy
@@ -15,9 +24,19 @@ or theorem from the source paper; every theorem has a property test in
 `gauss-conformance`; every plugin slots into a typed trait surface
 that the polyhedral verifier proves swap-compatible.
 
+GaussClaw is the working agent that demonstrates the runtime end-to-end:
+it ports every Hermes Python module (CLI, TUI, REST, WebSocket,
+OpenAI-compatible relay, ~20 messaging channels, 20+ provider drivers,
+~30 first-party tools, SFT/DPO trajectory export) into Rust, lifts each
+into the matching Gauss-Aether subsystem, and adds a Tauri 2 desktop
+shell that strictly dominates Hermes Desktop on installer size, RAM,
+cold start, and code-signing posture.
+
 If you've built or operated an LLM agent and felt the gap between
 "please don't do bad things" and "the type system makes bad things
-unreachable," Gauss-Aether is what that gap looks like when closed.
+unreachable," Gauss-Aether is what that gap looks like when closed —
+and GaussClaw is what an agent looks like when it lives on the other
+side.
 
 ---
 
@@ -36,8 +55,15 @@ unreachable," Gauss-Aether is what that gap looks like when closed.
 
 ## What's in the box
 
-Gauss-Aether is a Rust workspace of **22 crates** plus a Lean-4 proof
-skeleton. The crates partition into seven layers:
+The workspace contains **41 crates** across two layers plus a Lean-4
+proof skeleton and a Docusaurus website tree:
+
+- **22 `gauss-*` crates** — the Gauss-Aether runtime (this section).
+- **19 `gaussclaw-*` crates** — the GaussClaw agent (see
+  [§ GaussClaw](#gaussclaw--the-agent-on-top) below and the full
+  [`GAUSSCLAW_ROADMAP.md`](GAUSSCLAW_ROADMAP.md)).
+
+The `gauss-*` crates partition into seven layers:
 
 ```text
 ┌──────────────────────────────────────────────────────────────────┐
@@ -91,6 +117,69 @@ The full crate purposes:
 | `gauss-learnt`       | Learnt risk classifier Φ̂ — logistic scorer wrapping the SAG rule table.              |
 | `gauss-robust`       | Robust declassifiers — adversarially-adaptive taint downgrades.                       |
 | `gauss-conformance`  | Axiom-by-axiom test harness (A1–A9, T1–T12).                                          |
+
+---
+
+## GaussClaw — the agent on top
+
+GaussClaw ports the [Hermes](https://github.com/nousresearch/hermes-agent)
+agent into Rust and binds it to the Gauss-Aether kernel without losing a
+single Hermes ergonomic primitive. The plan and exit criteria live in
+[`GAUSSCLAW_ROADMAP.md`](GAUSSCLAW_ROADMAP.md); the crate skeletons live
+in `crates/gaussclaw-*`.
+
+### Crate map
+
+| Crate | Replaces (Hermes) | Phase |
+|---|---|---|
+| `gaussclaw-agent` | `agent.AIAgent.run_conversation` | P1 |
+| `gaussclaw-cli` | `hermes` CLI (clap v4 subcommand parity) | P1 |
+| `gaussclaw-tui` | `ui-tui/` React + Ink stack (Ratatui + crossterm) | P1 |
+| `gaussclaw-web` | `web/` FastAPI + PTY (Axum + retained React frontend) | P1 |
+| `gaussclaw-desktop` | Hermes Desktop Electron 39 app (Tauri 2 + Rust) | P1 / P5 |
+| `gaussclaw-surfaces` | REST · WebSocket · OpenAI-compat relay | P1 |
+| `gaussclaw-channels` | `channels/*` (~20 messaging adapters) | P1 |
+| `gaussclaw-store` | `store.session` SQLite/FTS5 + `store.lineage` | P2 |
+| `gaussclaw-skill` | `@tool` decorator + Skill Manifest | P3 |
+| `gaussclaw-tools` | `tools/*` (~30 first-party tools, HWCA-lifted) | P3 |
+| `gaussclaw-providers` | `backends/*` (20 leaf vendor drivers) | P4 |
+| `gaussclaw-providers-meta` | OpenRouter aggregator + NotDiamond router | P4 |
+| `gaussclaw-api-modes` | `api_modes/*` (chat-completion · responses · oai-compat) | P4 |
+| `gaussclaw-export` | `export.sft` + `export.dpo` + Cryptographic Envelope | P5 |
+| `gaussclaw-fed` | Federated Trajectory Pool (new) | P5 |
+| `gaussclaw-config` | `config/*` TOML loader (Hermes-compatible) | P1 |
+| `gaussclaw-migrate` | `gaussclaw import hermes <path>` | P1 |
+| `gaussclaw-conformance` | Hermes-parity replay + OAI SDK + CLI/TUI/web/desktop e2e | All |
+| `gaussclaw-bin` | The shipping `gaussclaw` binary | All |
+| `website/` | Docusaurus (en + zh-Hans) + mdBook API reference | P1 / GA |
+
+### Why GaussClaw on Gauss-Aether
+
+Every Hermes architectural deficit closes against a Gauss-Aether
+subsystem with a theorem behind it. See the GaussClaw paper §III for
+the full mapping; the headline rows:
+
+| Hermes deficit | Gauss-Aether subsystem that closes it | Theorem |
+|---|---|---|
+| Tool fn runs in host interpreter with all credentials | `gauss-kernel` capability lattice 𝒦 + `gauss-sandbox` Composite Sandbox | T9, T10 |
+| SQLite store mutable; no signed record | `gauss-memory` Trinity over SurrealDB + `gauss-audit` Receipt Chain (Ed25519) | T3, T11 |
+| Tool text → next prompt verbatim | `gauss-hwca` worker context + schema-validated value | T9 |
+| No taint on web/email observations | `gauss-kernel::flow` info-flow lattice ℒ + declass map | A6 |
+| Background + user turns share one event loop | `gauss-kernel::sched` three-plane scheduler (conv / daemon / approval) | T4 |
+
+### GaussClaw target numbers (at GA)
+
+| Metric | Hermes baseline | GaussClaw target | Mechanism |
+|---|---|---|---|
+| IPI attack success rate | not measured (no defence) | ≤ 2.19 % | T9 + HWCA + ℒ |
+| Cold start (warm cache) | 80–150 ms (Python import) | ≤ 10 ms | T12 delta-encoded + K-LRU |
+| Composite sandbox compromise | ~ 1 (no sandbox) | ≤ 1.1 × 10⁻⁷ | T10 + TEE |
+| Hybrid recall miss rate | 0.08 (FTS5 only) | ≤ 0.015 | T5: ε_fts · ε_vec |
+| Receipt forgery probability | no receipts | negl(λ) | T11 EUF-CMA + collision |
+| Provider switching | manual retest | build-time verified | T7 + polyhedral equiv. |
+| Desktop installer size | ~150 MB (Electron 39) | ≤ 20 MB (Tauri 2) | OS WebView, no Chromium |
+| Desktop RAM idle | ~250 MB | ≤ 80 MB | OS WebView |
+| Desktop code-signing | unsigned on all OSes | signed + notarized on all 3 OSes | CI signing + `gauss-attest` |
 
 ---
 
@@ -219,6 +308,8 @@ crates.
 
 ## Documentation
 
+**Gauss-Aether (runtime).**
+
 - **[`SPECS.md`](SPECS.md)** — normative engineering specification (the source paper's recipe).
 - **[`ROADMAP.md`](ROADMAP.md)** — phased development plan, axiom / theorem locks per phase.
 - **[`docs/QUICKSTART.md`](docs/QUICKSTART.md)** — end-to-end embed walkthrough.
@@ -227,6 +318,12 @@ crates.
 - **[`docs/SECURITY.md`](docs/SECURITY.md)** — threat model + responsible-disclosure policy.
 - **[`docs/adr/`](docs/adr/)** — sixteen architecture decision records (ADRs 0001–0016).
 - **[`proofs/lean/README.md`](proofs/lean/README.md)** — mechanised-proof skeleton + roadmap.
+
+**GaussClaw (agent).**
+
+- **[`GaussClaw.pdf`](GaussClaw.pdf)** — the source paper: full architectural plan + theorems.
+- **[`GAUSSCLAW_ROADMAP.md`](GAUSSCLAW_ROADMAP.md)** — 5-phase, 24-week, milestoned port plan with exit criteria, rollback paths, and dependency edges.
+- **[`website/README.md`](website/README.md)** — Docusaurus content tree + mdBook API reference.
 
 ---
 
@@ -305,6 +402,9 @@ If you use Gauss-Aether in research or production, please cite:
 
 Gauss-Aether builds on lessons from OpenClaw, ZeroClaw, OpenFang, and
 Hermes — its 15-axis scorecard exists precisely to make
-"successor-of" a falsifiable claim instead of a marketing one. The
+"successor-of" a falsifiable claim instead of a marketing one.
+GaussClaw, in turn, is the working demonstration that a Hermes-style
+agent and a Gauss-Aether-style kernel can occupy the same process
+without either side losing what makes it valuable. The
 source paper's axiom + theorem numbering is preserved verbatim across
 the SPECS, the conformance suite, the ADRs, and the Lean stubs.
