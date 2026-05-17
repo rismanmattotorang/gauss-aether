@@ -35,7 +35,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
@@ -45,6 +45,7 @@ use gauss_gateway::openai::{OpenAiChatMessage, OpenAiChatRequest};
 use gaussclaw_agent::{
     AuditTrace, EchoProvider, KernelHandle, Message, Prompt, SurfaceRequest, TurnPolicy,
 };
+use gaussclaw_store::SessionStore;
 
 /// SDK-canonical OpenAI Chat Completions response.
 ///
@@ -113,6 +114,29 @@ impl SurfaceState {
         let policy = Arc::new(
             TurnPolicy::new(kernel.clone(), Arc::new(EchoProvider::default()))
                 .with_audit(audit.clone()),
+        );
+        Self {
+            default_model: default_model.into(),
+            kernel,
+            policy,
+            audit,
+        }
+    }
+
+    /// Build a state with a permissive kernel, the [`EchoProvider`], and
+    /// a shared [`SessionStore`]. Sessions persist; `/v1/chat/completions`
+    /// requests carrying an `X-GaussClaw-Session: <id>` header are
+    /// appended into the named session.
+    pub fn new_with_store(
+        default_model: impl Into<String>,
+        store: Arc<SessionStore>,
+    ) -> Self {
+        let kernel = KernelHandle::permissive();
+        let audit = AuditTrace::new();
+        let policy = Arc::new(
+            TurnPolicy::new(kernel.clone(), Arc::new(EchoProvider::default()))
+                .with_audit(audit.clone())
+                .with_store(store),
         );
         Self {
             default_model: default_model.into(),
@@ -212,14 +236,17 @@ async fn handle_models(State(state): State<SurfaceState>) -> Json<ModelsList> {
 #[axum::debug_handler]
 async fn handle_chat_completions(
     State(state): State<SurfaceState>,
+    headers: HeaderMap,
     Json(req): Json<OpenAiChatRequest>,
 ) -> Response {
     // Every SDK chat request lands in the agent loop:
     //   0. audit-WAL: record the inbound BEFORE admit/dispatch
     //   1. plane select → Conversation
-    //   2. admit-gate via the TurnPolicy's kernel handle
-    //   3. dispatch to the configured provider
-    //   4. return the completion in the OpenAI wire shape
+    //   2. (optional) parse X-GaussClaw-Session header → persist
+    //   3. admit-gate via the TurnPolicy's kernel handle
+    //   4. dispatch to the configured provider
+    //   5. (optional) persist completion to the session store
+    //   6. return the completion in the OpenAI wire shape
     let plane = state.kernel.plane_for(SurfaceRequest::SdkChat);
     let req_bytes = serde_json::to_vec(&req).unwrap_or_default();
     state
@@ -240,7 +267,19 @@ async fn handle_chat_completions(
     prompt.max_tokens = req.max_tokens;
     prompt.temperature = req.temperature;
 
-    let completion = match state.policy.run(prompt, TaintLabel::User).await {
+    // Extension header: opt-in session persistence. Hermes-clean clients
+    // omit the header and run headless; persistence-aware clients send
+    // a session id, which `TurnPolicy::run_in_session` honours.
+    let session_id = headers
+        .get("x-gaussclaw-session")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    let completion = match state
+        .policy
+        .run_in_session(prompt, TaintLabel::User, session_id.as_deref())
+        .await
+    {
         Ok(c) => c,
         Err(gaussclaw_agent::TurnError::Denied(e)) => {
             return (
@@ -949,5 +988,74 @@ mod tests {
         let (status, body) = post_json("/v1/chat/completions", req).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["model"], "anthropic/claude-3.5-sonnet");
+    }
+
+    #[tokio::test]
+    async fn chat_with_session_header_persists_to_store() {
+        use std::sync::Arc;
+        let store = Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let sess = store.create_session("rest", "echo").await;
+        let state = SurfaceState::new_with_store("echo", store.clone());
+
+        let req = serde_json::json!({
+            "model": "echo",
+            "messages": [{ "role": "user", "content": "persist-me" }],
+            "stream": false,
+        });
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .header("x-gaussclaw-session", sess.id.clone())
+                    .body(Body::from(req.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let turns = store.list_session_turns(&sess.id).await;
+        assert_eq!(turns.len(), 2);
+        assert!(turns[0].content.contains("persist-me"));
+        assert_eq!(turns[1].role, "assistant");
+        assert_eq!(turns[1].parent_id, Some(turns[0].id));
+    }
+
+    #[tokio::test]
+    async fn chat_without_session_header_does_not_persist() {
+        use std::sync::Arc;
+        let store = Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let state = SurfaceState::new_with_store("echo", store.clone());
+        let req = serde_json::json!({
+            "model": "echo",
+            "messages": [{ "role": "user", "content": "headless" }],
+            "stream": false,
+        });
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(req.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let head = store.chain_head().await.unwrap();
+        assert_eq!(head.length, 0);
     }
 }

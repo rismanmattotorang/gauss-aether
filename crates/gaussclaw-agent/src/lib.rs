@@ -371,6 +371,10 @@ pub struct TurnPolicy {
     /// Optional audit trace — every turn writes a start / complete entry
     /// to it. When `None`, audit recording is a no-op.
     audit: Option<AuditTrace>,
+    /// Optional session store — every turn writes the user message AND
+    /// the assistant completion as separate [`gaussclaw_store::Turn`]
+    /// rows. When `None`, no persistence.
+    store: Option<Arc<gaussclaw_store::SessionStore>>,
     /// Capability that every turn must satisfy. Default `NETWORK_GET`.
     required_cap: CapToken,
 }
@@ -382,6 +386,7 @@ impl TurnPolicy {
             kernel,
             provider,
             audit: None,
+            store: None,
             required_cap: CapToken::NETWORK_GET,
         }
     }
@@ -394,9 +399,23 @@ impl TurnPolicy {
         self
     }
 
+    /// Attach a [`gaussclaw_store::SessionStore`]. Every turn now
+    /// persists the user prompt and the assistant completion as
+    /// chain-protected, lineage-linked rows.
+    #[must_use]
+    pub fn with_store(mut self, store: Arc<gaussclaw_store::SessionStore>) -> Self {
+        self.store = Some(store);
+        self
+    }
+
     /// Borrow the audit trace, if any.
     pub const fn audit(&self) -> Option<&AuditTrace> {
         self.audit.as_ref()
+    }
+
+    /// Borrow the session store, if any.
+    pub const fn store(&self) -> Option<&Arc<gaussclaw_store::SessionStore>> {
+        self.store.as_ref()
     }
 
     /// Override the required capability.
@@ -416,20 +435,46 @@ impl TurnPolicy {
         self.provider.name()
     }
 
-    /// Run one turn. Admit-gates first, then dispatches to the provider.
-    /// When an audit trace is attached, writes `TurnStart` before admit
-    /// (WAL-before-effect, Axiom A1) and `TurnComplete` after the
-    /// provider returns.
+    /// Run one turn.
+    ///
+    /// Lifecycle (WAL-before-effect, Axiom A1):
+    ///
+    /// 1. Validate prompt.
+    /// 2. (Optional) Audit `TurnStart`.
+    /// 3. (Optional) Persist user message → SessionStore. The store
+    ///    write advances the chain-protected receipt log; on failure
+    ///    the whole turn refuses.
+    /// 4. Kernel admit.
+    /// 5. Provider call.
+    /// 6. (Optional) Persist assistant completion → SessionStore.
+    /// 7. (Optional) Audit `TurnComplete`.
+    ///
+    /// The `session_id` is optional. When present, the user + assistant
+    /// turns are appended to that session; when absent, the agent runs
+    /// "headless" (e.g. one-shot CLI invocation) with only audit trace.
     pub async fn run(&self, prompt: Prompt, taint: TaintLabel) -> TurnResult<Completion> {
+        self.run_in_session(prompt, taint, None).await
+    }
+
+    /// Same as [`Self::run`] but persists the turn into `session_id`'s
+    /// stream. Returns the assistant completion plus the assigned turn
+    /// id pair when a store is attached.
+    pub async fn run_in_session(
+        &self,
+        prompt: Prompt,
+        taint: TaintLabel,
+        session_id: Option<&str>,
+    ) -> TurnResult<Completion> {
         if prompt.messages.is_empty() {
             return Err(TurnError::Invalid("prompt has no messages".into()));
         }
+
         // WAL-before-effect: audit entry is recorded BEFORE admit, so
         // even a denied turn is auditable.
         if let Some(audit) = &self.audit {
             audit
                 .record_turn_start(
-                    "",
+                    session_id.unwrap_or(""),
                     &prompt.model,
                     self.provider.name(),
                     self.kernel.plane_for(SurfaceRequest::SdkChat),
@@ -437,12 +482,38 @@ impl TurnPolicy {
                 )
                 .await;
         }
+
+        // Persist the user message BEFORE admit. Identical to the audit
+        // discipline: even a refused turn leaves a chain-anchored record.
+        let mut parent_id: Option<u64> = None;
+        if let (Some(store), Some(sid)) = (&self.store, session_id) {
+            let last_user = prompt
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == "user")
+                .map_or("", |m| m.content.as_str());
+            let (user_turn, _head) = store
+                .append_turn(sid, None, "user", last_user, taint)
+                .await
+                .map_err(|e| TurnError::Invalid(format!("store: {e}")))?;
+            parent_id = Some(user_turn.id);
+        }
+
         self.kernel.admit(self.required_cap, taint)?;
         let completion = self.provider.complete(&prompt).await?;
+
+        if let (Some(store), Some(sid)) = (&self.store, session_id) {
+            let (_assistant_turn, _head) = store
+                .append_turn(sid, parent_id, "assistant", &completion.text, taint)
+                .await
+                .map_err(|e| TurnError::Invalid(format!("store: {e}")))?;
+        }
+
         if let Some(audit) = &self.audit {
             audit
                 .record_turn_complete(
-                    "",
+                    session_id.unwrap_or(""),
                     &completion.model,
                     self.provider.name(),
                     completion.usage.prompt,
@@ -570,5 +641,87 @@ mod tests {
             completion: 5,
         };
         assert_eq!(t.total(), u32::MAX);
+    }
+
+    // ── Store integration ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn run_in_session_persists_user_and_assistant_turns() {
+        let store = Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let sess = store.create_session("test", "echo").await;
+        let tp = TurnPolicy::new(
+            KernelHandle::permissive(),
+            Arc::new(EchoProvider::default()),
+        )
+        .with_store(store.clone());
+
+        let prompt = Prompt::new(
+            "echo",
+            vec![Message::new("user", "marker-789")],
+        );
+        let _ = tp
+            .run_in_session(prompt, TaintLabel::User, Some(&sess.id))
+            .await
+            .expect("turn");
+
+        let turns = store.list_session_turns(&sess.id).await;
+        assert_eq!(turns.len(), 2, "user + assistant must both persist");
+        assert_eq!(turns[0].role, "user");
+        assert!(turns[0].content.contains("marker-789"));
+        assert_eq!(turns[1].role, "assistant");
+        assert!(turns[1].content.contains("marker-789"));
+        assert_eq!(turns[1].parent_id, Some(turns[0].id));
+    }
+
+    #[tokio::test]
+    async fn run_in_session_chains_lineage_to_parent() {
+        let store = Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let sess = store.create_session("test", "echo").await;
+        let tp = TurnPolicy::new(
+            KernelHandle::permissive(),
+            Arc::new(EchoProvider::default()),
+        )
+        .with_store(store.clone());
+
+        let prompt = Prompt::new("echo", vec![Message::new("user", "first")]);
+        let _ = tp
+            .run_in_session(prompt, TaintLabel::User, Some(&sess.id))
+            .await
+            .unwrap();
+        // Assistant turn's lineage edge must be signed.
+        let turns = store.list_session_turns(&sess.id).await;
+        let edge = store.lineage_edge(turns[1].id).await.unwrap();
+        assert_eq!(edge.from, turns[0].id);
+        assert_eq!(edge.to, turns[1].id);
+        assert_eq!(edge.signed_payload.len(), 64);
+    }
+
+    #[tokio::test]
+    async fn run_in_session_does_not_persist_without_session_id() {
+        let store = Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let tp = TurnPolicy::new(
+            KernelHandle::permissive(),
+            Arc::new(EchoProvider::default()),
+        )
+        .with_store(store.clone());
+
+        let prompt = Prompt::new("echo", vec![Message::new("user", "headless")]);
+        let _ = tp.run(prompt, TaintLabel::User).await.unwrap();
+
+        // No session was provided → no rows persisted.
+        let head = store.chain_head().await.unwrap();
+        assert_eq!(head.length, 0);
     }
 }
