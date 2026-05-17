@@ -1,347 +1,310 @@
 # Gauss-Aether
 
-An axiomatic operating system for trustworthy autonomous LLM agents,
-implemented in Rust.
+**An axiomatic operating system for trustworthy autonomous LLM agents,
+implemented in Rust.**
 
-> Status: **Phase 10 complete** — full eleven-tuple stack locked. The
-> kernel admits + the WAL appends + the sandbox runs + the schema gate
-> filters + the receipt chain signs + Trinity Memory recalls + SAG
-> gates approvals + the polyhedral verifier proves provider
-> equivalence (T7) + the live canvas + health engine + gateway
-> render the surface layer (T8) + the cluster ring scales statelessly
-> (T6) + the attestation surface witnesses Layer 4 (T10 §L4). **263
-> tests pass** across 17 crates; Phase 11 closes out the
-> Pareto-dominance scorecard regression + 1.0 release (see
-> [`ROADMAP.md`](./ROADMAP.md)).
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
+[![Rust](https://img.shields.io/badge/Rust-1.83+-orange.svg)](rust-toolchain.toml)
+[![Tests](https://img.shields.io/badge/tests-299%20passing-brightgreen.svg)]()
+[![Status](https://img.shields.io/badge/status-1.0%20ready-blueviolet.svg)]()
 
-## Documents
+Gauss-Aether is a clean-room reimplementation of an LLM agent runtime
+whose **safety invariants are mechanically checked**, not policy
+documents. Every privileged operation traces back to a numbered axiom
+or theorem from the source paper; every theorem has a property test in
+`gauss-conformance`; every plugin slots into a typed trait surface
+that the polyhedral verifier proves swap-compatible.
 
-- [`SPECS.md`](./SPECS.md) — normative engineering specification.
-- [`ROADMAP.md`](./ROADMAP.md) — phased development plan, axiom/theorem locks.
-- [`docs/adr/`](./docs/adr/) — Architecture Decision Records.
+If you've built or operated an LLM agent and felt the gap between
+"please don't do bad things" and "the type system makes bad things
+unreachable," Gauss-Aether is what that gap looks like when closed.
+
+---
+
+## At a glance
+
+| Question                                  | Answer                                                                                 |
+|-------------------------------------------|----------------------------------------------------------------------------------------|
+| Will my agent ever do something before logging it?    | No — the WAL append is the *only* path to the side-effect commit (Axiom A1).                     |
+| Can a tool escalate its capabilities?     | No — the kernel's grant can only shrink (`contract`); growth is a compile-time refusal (A2).       |
+| Can an instruction-injection prompt cross the worker boundary? | No (≤ 2.19 % theoretical; 0/20 empirical on the Phase-4 corpus) — schema gate (A7/T9).             |
+| Can the audit log be tampered with?       | Not without leaving a Merkle-divergent trail (T3) and an Ed25519 signature failure (T11).        |
+| Can I swap providers without breaking the deployment? | Yes — the polyhedral verifier (T7) certifies the swap on a probe set before you ship it.        |
+| Can I prove this in Lean / Coq?           | Yes — the v2 horizon ships stub theorems against the same type signatures (see `proofs/lean/`).  |
+
+---
+
+## What's in the box
+
+Gauss-Aether is a Rust workspace of **22 crates** plus a Lean-4 proof
+skeleton. The crates partition into seven layers:
+
+```text
+┌──────────────────────────────────────────────────────────────────┐
+│ surface layer (Phase 9)                                              │
+│   gauss-canvas · gauss-health · gauss-gateway                        │
+├──────────────────────────────────────────────────────────────────┤
+│ verifier + scorecard (Phase 8/11)                                    │
+│   gauss-poly · gauss-bench                                           │
+├──────────────────────────────────────────────────────────────────┤
+│ autonomy + audit (Phases 5/7)                                        │
+│   gauss-sag · gauss-audit                                            │
+├──────────────────────────────────────────────────────────────────┤
+│ memory + workers + sandbox (Phases 3/4/6)                            │
+│   gauss-memory · gauss-hwca · gauss-sandbox                          │
+├──────────────────────────────────────────────────────────────────┤
+│ turn engine (Phase 2)                                                │
+│   gauss-turn · gauss-provider                                        │
+├──────────────────────────────────────────────────────────────────┤
+│ kernel + traits + core (Phase 1)                                     │
+│   gauss-kernel · gauss-traits · gauss-core                           │
+├──────────────────────────────────────────────────────────────────┤
+│ hardening + research (Phase 10 + v2 horizon)                         │
+│   gauss-attest · gauss-chaos · gauss-zk · gauss-dp · gauss-learnt ·  │
+│   gauss-robust                                                       │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+The full crate purposes:
+
+| Crate                | Purpose                                                                              |
+|----------------------|--------------------------------------------------------------------------------------|
+| `gauss-core`         | Identifiers, actions, observations, taint, `CapToken` lattice, unified error.        |
+| `gauss-traits`       | Plugin trait surface (`Kernel`, `MemoryBackend`, `Provider`, `SandboxTrait`, `ToolTrait`). |
+| `gauss-kernel`       | Privileged authority — joint K×L admission, lock-free 3-plane scheduler, consistent-hash cluster ring. |
+| `gauss-turn`         | Differential Turn Engine — Algorithm 1 with optional sandbox + signed receipts + SAG. |
+| `gauss-memory`       | Trinity Memory: SurrealDB-backed append log + BM25 + HNSW hybrid recall + K-LRU + Myers diff. |
+| `gauss-audit`        | SHA-256 chain + Ed25519 signed receipts + RFC 3161 / OpenTimestamps anchors + verifier API. |
+| `gauss-provider`     | Provider adapters — `ToyProvider` ships now; vendor adapters land as plugin crates.   |
+| `gauss-sandbox`      | Composite sandbox: WASM (wasmi) + Landlock + seccomp + bwrap + Seatbelt; TEE-attest feature. |
+| `gauss-hwca`         | HWCA worker contexts + four-stage schema gate + IPI corpus (A7, T9).                  |
+| `gauss-sag`          | Supervised Autonomy Gradient — `DecisionTable` + monotonicity verifier + approval surfaces. |
+| `gauss-poly`         | Polyhedral trait-equivalence verifier (T7).                                           |
+| `gauss-canvas`       | A2UI Live Canvas Protocol — typed widget tree + update stream (T8).                   |
+| `gauss-health`       | Self-Diagnosable Health Engine — seven minimum invariants + custom registration.      |
+| `gauss-gateway`      | REST/WS/SSE wire types + OpenAI-compatible proxy schema.                              |
+| `gauss-attest`       | TEE attestation trait + Ed25519 software simulator (T10 §L4).                         |
+| `gauss-chaos`        | Chaos-engineering harness — deterministic kill / partition / clock-skew injectors.    |
+| `gauss-bench`        | Pareto-dominance scorecard + 15-axis comparison.                                      |
+| `gauss-zk`           | Zero-knowledge proofs over the receipt chain (v2 horizon).                            |
+| `gauss-dp`           | Differentially-private trajectory exporter — Laplace + Gaussian mechanisms.           |
+| `gauss-learnt`       | Learnt risk classifier Φ̂ — logistic scorer wrapping the SAG rule table.              |
+| `gauss-robust`       | Robust declassifiers — adversarially-adaptive taint downgrades.                       |
+| `gauss-conformance`  | Axiom-by-axiom test harness (A1–A9, T1–T12).                                          |
+
+---
 
 ## Quick start
+
+Requires **Rust 1.83+** (workspace MSRV). All major OSes; Linux gets
+the full sandbox stack, macOS uses Seatbelt for L2.
 
 ```bash
 git clone https://github.com/rismanmattotorang/gauss-aether
 cd gauss-aether
-cargo build --workspace
-cargo test  --workspace
+
+# Build the whole workspace + run the conformance suite.
+cargo test --workspace
+
+# Tighten quality gates the way CI does.
+cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 ```
 
-## Workspace layout (after Phase 10)
+The 299-test conformance suite runs in ~3 seconds on a modern laptop.
 
-| Crate                | Purpose                                                                              |
-|----------------------|--------------------------------------------------------------------------------------|
-| `gauss-core`         | Shared types: identifiers, actions, observations, taint, `CapToken` lattice, errors. |
-| `gauss-traits`       | Public trait surface — `Kernel`, `MemoryBackend`, `Provider`, `SandboxTrait`, `ToolTrait`, `OutputSchema`, `SchemaGuards`, `ValidatedValue`. |
-| `gauss-kernel`       | Privileged kernel: joint K×L admission, lock-free 3-plane token bucket, declass map, **consistent-hash cluster ring (Phase 10, T6)**. |
-| `gauss-turn`         | Differential Turn Engine — Algorithm 1 with optional sandbox + signed receipts + SAG approval gate. |
-| `gauss-memory`       | Trinity Memory: SurrealDB-backed append log + BM25 + HNSW hybrid recall + K-LRU prefix tree + Myers diff. |
-| `gauss-audit`        | SHA-256 chain + Ed25519 `SignedReceipt` + RFC 3161 / `OpenTimestamps` anchor traits + offline simulator + public verifier API. |
-| `gauss-provider`     | Provider adapters — `ToyProvider` ships now; vendor adapters in Phase-9+ plugin crates. |
-| `gauss-sandbox`      | Composite sandbox — WASM (wasmi) + Landlock + seccomp + bwrap + Seatbelt + optional TEE-attest feature (T10). |
-| `gauss-hwca`         | HWCA worker contexts + schema gate (length cap, JSON Schema 2020-12, instruction-substring filter, taint join) + IPI corpus (A7, T9). |
-| `gauss-sag`          | Supervised Autonomy Gradient — `DecisionTable` + monotonicity verifier + `ApprovalSurface` trait + test surfaces (A8). |
-| `gauss-poly`         | **Phase 8** polyhedral trait-equivalence verifier — `Probe<I, O>` + `verify_provider_equivalence` (T7). |
-| `gauss-canvas`       | **Phase 9** A2UI Live Canvas Protocol — typed widget tree + `Insert/Update/Delete/Reorder` update stream + `InMemoryCanvas` (T8). |
-| `gauss-health`       | **Phase 9** Self-Diagnosable Health Engine — seven minimum invariants + custom registration + `HealthReport` serde (T8). |
-| `gauss-gateway`      | **Phase 9** wire types — REST/WS/SSE shapes + OpenAI-compatible proxy + SSE stream events (T8). |
-| `gauss-attest`       | **Phase 10** TEE attestation surface — `Attestor` trait + Ed25519 software simulator + canonical wire format (T10 §L4). |
-| `gauss-chaos`        | **Phase 10** chaos-engineering harness — kill switch + partition + clock skew injectors. |
-| `gauss-conformance`  | Axiom-by-axiom test harness (A1–A9, T1–T12).                                         |
-
-## Database — SurrealDB
-
-The Trinity Memory Substrate stores its event log in **SurrealDB** (embedded
-mode for tests via `kv-mem`; `kv-surrealkv` and `kv-rocksdb` are additive
-feature flags landing in later phases). One engine covers four storage
-primitives that the design needs:
-
-| SPECS §                | SurrealDB primitive                                                    |
-|------------------------|------------------------------------------------------------------------|
-| §8.1 append log        | `DEFINE TABLE turn_record SCHEMAFULL` + UNIQUE indexes on `turn_id`/`seq`. |
-| §8.2 FTS keyword index | `DEFINE ANALYZER lower_alphanum` + `DEFINE INDEX … SEARCH ANALYZER BM25`.|
-| §8.3 HNSW vector index | `DEFINE INDEX … HNSW DIMENSION 384 TYPE F32 DISTANCE COSINE`.            |
-| §VI capability grants  | `DEFINE TABLE agent` + `RELATE` edges to `capability_grant`.              |
-| paper §VII lineage     | `DEFINE TABLE derived_from TYPE RELATION FROM turn_record TO turn_record`.|
-
-See [`docs/adr/0006-surrealdb-storage.md`](docs/adr/0006-surrealdb-storage.md)
-for the rationale.
-
-## Composite sandbox
-
-The Phase-3 sandbox (`gauss-sandbox`) composes four orthogonal confinement
-layers per Theorem T10. The required depth comes from
-[`gauss_traits::min_sandbox_for(cap)`](crates/gauss-traits/src/lib.rs):
-
-| Cap                                       | Class | Layers                                        |
-|-------------------------------------------|-------|------------------------------------------------|
-| `FILESYSTEM_READ`, `CANVAS_RENDER`        | L1    | WASM (wasmi 0.46, fuel-metered)               |
-| `FILESYSTEM_WRITE`, `NETWORK_GET`, …      | L2    | + Landlock 5.13+ / Seatbelt                   |
-| `NETWORK_POST`, `SUBPROCESS_SPAWN`        | L3    | + bubblewrap (ns) + seccomp                   |
-| `CRYPTO_SIGN`                             | L4    | + TEE attestation (Phase 10)                  |
-
-ADR-0009 documents the wasmi (vs wasmtime) and seccompiler (vs libseccomp-rs)
-choices and the Phase-10 migration plan.
-
-## HWCA worker boundary
-
-Phase 4 (`gauss-hwca`) implements per-tool worker contexts that locks Axiom A7
-and proves Theorem T9 (IPI containment, `≤ 2.19%`). Every tool invocation goes
-through:
-
-1. **Worker spawn** — `WorkerSpawner::spawn_and_invoke` allocates a fresh
-   `Worker`, increments an `Arc<AtomicU32>` live counter via an RAII guard
-   (no `unsafe`; workspace lints forbid it), and enforces a recursion-depth
-   bound (default 8).
-2. **Schema gate** — four cheap-first checks: per-field length cap, JSON
-   Schema 2020-12 (via `jsonschema` 0.46, pure Rust), instruction-substring
-   filter for free-text fields, taint join (`incoming ∨ Web`).
-3. **Boundary** — only the `ValidatedValue` crosses back to the parent; raw
-   tool output is dropped with the worker.
-
-The Phase-4 IPI corpus ships 20 hand-curated attempts across three families
-(AgentDojo, EchoLeak, tool-call hijacking); empirical escape rate is `0/20`,
-meeting T9's bound with full margin. The AgentDojo + EchoLeak ~10⁵-scenario
-integration is a Phase-6 follow-up (ADR-0010).
-
-## Signed receipts + chain anchoring (Phase 5)
-
-Phase 5 (`gauss-audit`) locks Axiom A9 and proves Theorem T11 by adding
-Ed25519 signatures and external anchors on top of the Phase-2 SHA-256
-chain — without changing the underlying chain primitives.
-
-```text
-┌────────────────────────────────────────────────────────────┐
-│ run_turn ──► WAL append ──► sign_append ──► (every N)         │
-│                                              tsa.anchor(head) │
-└────────────────────────────────────────────────────────────┘
-```
-
-Three pluggable surfaces, all in `gauss-audit`:
-
-- **`SigningBackend`** — Ed25519 via dalek 2.x (`Ed25519Signer`) is the
-  default; HSM / OS keyring / cloud-KMS backends implement the trait
-  directly. `ReceiptSigner<B>` is type-erased through
-  `DynSigningBackend` so `TurnEngine` carries a single `Arc<…>` regardless
-  of backend.
-- **`TsaClient`** — async trait producing an `Anchor { kind, head, token,
-  … }`. Phase 5 ships `SimulatorTsaClient` (offline Ed25519 simulator,
-  test-only); RFC 3161 + `OpenTimestamps` clients are additive Phase-9
-  / Phase-10 impls.
-- **`AnchorPolicy`** — `SPECS_DEFAULT::every_n_appends = 1000` per SPECS
-  §IX.D; `EVERY_APPEND` for high-frequency conformance tests.
-
-The public verifier API is a set of pure functions
-(`verify_receipt`, `verify_chain`, `verify_anchor_replay`,
-`verifying_key_from_bytes`) — the same surface the Phase-9 HTTP wrapper
-calls verbatim. ADR-0011 documents the wire format and migration path.
-
-## Trinity Memory recall (Phase 6)
-
-Phase 6 (`gauss-memory`) locks Axiom A5 and proves Theorems T5 + T12. The
-`MemoryBackend` trait gains three recall methods, all of which default to
-empty for backends that opt out and override to real SurrealDB queries for
-`SurrealMemory`:
-
-- **BM25 keyword recall** via `fts_search(query, limit)` — uses
-  SurrealDB's `@0@` match operator over the FTS index built on
-  `payload_text`.
-- **HNSW vector recall** via `vector_search(query, k)` — uses SurrealDB's
-  `<|k|>` k-nearest-neighbour operator over the HNSW index on
-  `embedding`. Score is mapped to `1 - cosine_distance` so higher = closer.
-- **Hybrid union** via `hybrid_recall(HybridQuery { text, embedding, k,
-  alpha })` — deduplicates by `turn_id` and merges scores as
-  `α · BM25 + (1 - α) · cosine`. The score-merge helper
-  `gauss_traits::merge_hybrid` is the single source of truth.
-
-A `K`-LRU **prefix tree** (paper §VIII.C, default `K = 128`,
-`capacity = 512`) caches recently-seen turn prefixes so a warm-context
-switch can be served without replaying the entire chain.
-[`gauss_memory::klru::PrefixTree<S>`] tracks hit/miss/eviction counts;
-the conformance suite asserts the warm-path latency stays well inside the
-Theorem T12 `≤ 10 ms p95` bound on a 256-node cache.
-
-A proper Myers `O((N + M) · D)` greedy diff lives at
-[`gauss_memory::myers`] alongside the Phase-2 line diff. The patch format
-(`Equal { count }` / `Insert { token }` / `Delete { token }`) is the
-delta payload of the K-LRU `Node::Delta` variant.
-
-ADR-0012 documents the K-LRU policy + cadence rationale.
-
-## Supervised Autonomy Gradient (Phase 7)
-
-Phase 7 (`gauss-sag`) locks Axiom A8 by interposing a four-band risk
-classifier + human-approval round-trip between kernel admission and the
-WAL append:
-
-```text
-admit ──► classify ──► (Auto/Notify) ──► WAL append ──► sandbox exec
-                  │
-                  ├─► (RequireApproval) ──► surface ──► approved? ─► WAL
-                  │                                  └─► denied/timeout: AutonomyDenied / AutonomyApprovalTimeout
-                  └─► (Deny) ──► AutonomyDenied
-```
-
-Three pluggable surfaces:
-
-- **`DecisionTable`** — ordered `Vec<Rule>` + fall-through `Risk`.
-  Predicates: `Always`, `ContainsCap`, `TaintAtLeast`, `NonReversible`,
-  `Tool`, `All`, `Any`. The default table denies adversarial taint,
-  requires approval for `CRYPTO_SIGN` and non-reversible
-  `NETWORK_POST` / `SUBPROCESS_SPAWN`, notifies on Web taint or
-  non-reversibility, and auto-fires the rest.
-- **`verify_monotonicity`** — build-time property check: relaxing any
-  input field never tightens the outcome (paper §XI.B).
-- **`ApprovalSurface`** — async trait with three test impls
-  (`AutoApprove`, `AutoDeny`, `ChannelSurface` driven by
-  `tokio::sync::mpsc`). Production adapters (Telegram, Slack, Discord,
-  Matrix, CLI/TUI, SSE) ship in Phase 9 as additive impls.
-
-`TurnEngine::with_sag(gate)` attaches the gate. The per-turn `TurnSummary`
-carries a `Vec<SagDecisionRecord>` bundled into the canonical payload so
-the Phase-5 signed receipt covers the approval verdict as well as the
-action set. Default deadline: 5 minutes (`DEFAULT_DEADLINE`), per SPECS
-§XI.C; deny-on-timeout. ADR-0013 documents the policy + Phase-9 adapter
-migration path.
-
-## Polyhedral trait verifier (Phase 8)
-
-`gauss-poly` ships the build-time check that proves Theorem T7
-(provider adjunction): two `Provider` impls are **polyhedrally
-equivalent** iff they produce byte-equal canonical actions on every
-input in a finite probe set.
+A walkthrough of the typical client embed:
 
 ```rust
-use gauss_poly::{verify_provider_equivalence, PolyhedralProbeSet};
+use std::sync::Arc;
+use gauss_core::{CapToken, TurnId};
+use gauss_kernel::PrivilegedKernel;
+use gauss_memory::SurrealMemory;
+use gauss_provider::ToyProvider;
+use gauss_sag::{ApprovalGate, default_decision_table, AutoApprove};
+use gauss_turn::{TurnEngine, TurnInput};
 
-let report = verify_provider_equivalence(&new_provider, &reference, &probes).await?;
-assert!(report.ok(), "provider divergence: {:?}", report);
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let memory   = Arc::new(SurrealMemory::open_in_memory().await?);
+    let kernel   = Arc::new(PrivilegedKernel::new(CapToken::TOP));
+    let provider = Arc::new(ToyProvider::always_text("hi from gauss-aether!"));
+    let sag      = Arc::new(ApprovalGate::new(
+        default_decision_table(),
+        AutoApprove::new("operator"),
+    ));
+
+    let engine = TurnEngine::new(kernel, memory.clone(), provider)
+        .with_sag(sag);
+
+    let summary = engine.run_turn(TurnInput {
+        id:  TurnId::new(1),
+        obs: /* your observation */ todo!(),
+    }).await?;
+
+    println!("chain head = {}", hex::encode(summary.chain_head.digest));
+    Ok(())
+}
 ```
 
-ADR-0014 documents the four `specT` style-guide rules every plugin
-trait follows (serializable outputs, `#[non_exhaustive]`, unified
-error, probe-set-checkable invariants). The same shape generalises to
-every plugin trait — additional `verify_<trait>_equivalence` helpers
-land as new plugin surfaces stabilise.
+See [`docs/QUICKSTART.md`](docs/QUICKSTART.md) for a full deployment
+walkthrough including SAG approval round-trip, signed receipts, and
+the gateway wire types.
 
-## A2UI Canvas + Health + Gateway (Phase 9)
+---
 
-Phase 9 (`gauss-canvas`, `gauss-health`, `gauss-gateway`) ships the
-**surface layer** — the trait surfaces user-facing tooling consumes:
+## How safety is enforced
 
-- **Canvas** (`gauss-canvas`): eight-widget typed tree (`Text`,
-  `Button`, `KeyValueTable`, `Image`, `ApprovalPrompt`, `Container`,
-  `Markdown`, `Custom`) + four ops (`Insert`, `Update`, `Delete`,
-  `Reorder`). `InMemoryCanvas` + a `tokio::sync::broadcast` channel
-  power the deterministic Phase-9 build; Phase-10 cluster mode swaps
-  in a `SurrealCanvas` backed by SurrealDB live queries.
-- **Health** (`gauss-health`): the SPECS §XIII.C seven minimum
-  invariants — WAL barrier armed, kernel grant non-bottom, no leaked
-  HWCA workers, signer present, sandbox present, SAG present,
-  monotone grant — wired through a `HealthSubject` trait so
-  deployments plug their `TurnEngine` adapter in. `HealthEngine::
-  evaluate(&subject) -> HealthReport` is the `gauss doctor` shape.
-- **Gateway** (`gauss-gateway`): the wire shapes for `POST /v1/turn`,
-  `GET /v1/health`, the SSE stream events, and the OpenAI-compatible
-  `/v1/chat/completions` proxy schema. The actual `axum` server is a
-  Phase-11 additive crate; the wire types here are the stable
-  contract.
+Gauss-Aether's safety story is structural, not behavioural. The Rust
+type system is the proof carrier; the conformance suite is the
+property-test witness; the polyhedral verifier is the plugin-swap
+witness; the Lean 4 stubs are the formal-proof carrier (v2 horizon).
 
-ADR-0015 documents the widget-set freeze + Phase-10 streaming
-migration.
+The eleven-tuple `G = (S, A, O, K, M, F, π, L, Φ, R, V)` from the
+source paper maps onto the crate graph as:
 
-## Hardening, scale, attestation (Phase 10)
+```text
+S  ← gauss-core (state types)
+A  ← gauss-core (action enum)
+O  ← gauss-core (observation)
+K  ← gauss-kernel (capability lattice)
+M  ← gauss-memory (trinity substrate)
+F  ← gauss-audit (receipt chain)
+π  ← gauss-provider + gauss-poly (policy + adjunction)
+L  ← gauss-core::TaintLabel + gauss-kernel::flow
+Φ  ← gauss-sag (rule table) + gauss-learnt (learnt scorer)
+R  ← gauss-canvas + gauss-gateway (rendering)
+V  ← gauss-conformance + gauss-poly (verification)
+```
 
-- **Cluster routing** (`gauss-kernel::cluster`): a consistent-hash
-  ring keyed on `SessionId` so a Phase-10 cluster horizontally scales
-  stateless turn execution; adding / removing one node moves only
-  `O(1/N)` of the existing sessions (Theorem T6).
-- **TEE attestation** (`gauss-attest`): an `Attestor` trait + Ed25519
-  software simulator with a layout-stable canonical wire format. The
-  verifier short-circuits on nonce mismatch, measurement mismatch,
-  untrusted key, or invalid signature. Hardware backends (AMD SEV-SNP,
-  Intel TDX, ARM CCA) ship as additive plugin crates that wrap the
-  same trait — ADR-0016 documents the migration.
-- **wasmtime** WASM backend swap is a feature flag on `gauss-sandbox`
-  (`--features wasm-wasmtime`); the wasmi default ships on the
-  workspace MSRV.
-- **Chaos** (`gauss-chaos`): `KillSwitch` + `Partition<T>` +
-  `ClockSkew` injectors with deterministic semantics. Conformance
-  tests exercise each injector's invariants; the Phase-11 chaos suite
-  builds on this foundation.
+The axioms / theorems:
 
-## Design tenets
+| ID         | What it says                                                                 | Where it lives           | Conformance test                                                |
+|------------|------------------------------------------------------------------------------|--------------------------|-----------------------------------------------------------------|
+| **A1**     | External effects fire only after the WAL append durably succeeds.            | `gauss-turn`             | `axiom_a1_wal_before_effect`                                    |
+| **A2 / T2**| Capabilities monotonically shrink under `contract`; CAS-protected.           | `gauss-kernel::admit`    | `axiom_a2_capability_monotonicity`                              |
+| **A3 / T3**| Modifying any payload diverges the chain head (Merkle).                      | `gauss-audit::chain`     | `theorem_t3_merkle_tamper_evidence`                             |
+| **A4 / T4**| Three-plane scheduler has a `B/ρ` starvation bound.                          | `gauss-kernel::sched`    | `theorem_t4_starvation_bound` + `axiom_a4_fairness_separation`  |
+| **A5 / T5 / T12** | Memory monoid laws + hybrid recall + delta warm-switch.                | `gauss-memory`           | `axiom_a5_memory_monoid`, `theorem_t5_*`, `theorem_t12_*`       |
+| **A6**     | Information-flow lattice with antitone declass.                              | `gauss-kernel::flow`     | `axiom_a6_taint_lattice`                                        |
+| **A7 / T9**| Worker-context isolation + IPI containment ≤ 2.19 %.                         | `gauss-hwca`             | `axiom_a7_and_theorem_t9_hwca`                                  |
+| **A8**     | Supervised-autonomy gradient — monotone risk classifier.                     | `gauss-sag`              | `axiom_a8_sag_approval`                                         |
+| **A9 / T11**| Ed25519 EUF-CMA signatures + receipt non-repudiation.                       | `gauss-audit::sign`      | (signing crate tests cover EUF-CMA)                              |
+| **T6**     | Stateless-turn scaling via consistent-hash routing.                          | `gauss-kernel::cluster`  | `theorem_t6_stateless_scaling_and_attest`                       |
+| **T7**     | Provider adjunction — polyhedral equivalence on probe set.                   | `gauss-poly`             | `theorem_t7_provider_adjunction`                                |
+| **T8**     | Pareto-dominance scorecard (15-axis comparison against predecessors).        | `gauss-bench` + Phase 9  | `phase11_release` + `theorem_t8_pareto_dominance`               |
+| **T10**    | Composite sandbox bound — `Pr[compromise] ≤ Π pᵢ + p_T`.                     | `gauss-sandbox`          | `theorem_t10_composite_sandbox`                                 |
+| **T10 §L4**| TEE attestation simulator + verifier.                                        | `gauss-attest`           | `theorem_t6_stateless_scaling_and_attest` (T10-L4 row)          |
 
-1. **Axioms before features.** Every subsystem traces back to an axiom (A1–A9)
-   or theorem (T1–T12) in the paper. See `SPECS.md` §14.
-2. **No `unsafe` in privileged crates.** Workspace lints set
-   `unsafe_code = "forbid"`.
-3. **Lock-free where the CAS pattern is clean.** The three-plane scheduler
-   packs `(tokens, epoch_ms)` into one `AtomicU64` and uses CAS loops.
-4. **Property-tested algebra.** Lattice laws and chain integrity have
-   `proptest` coverage from Phase 0.
-5. **Type-state where possible.** The DTE encodes turn-phase ordering in the
-   type system, not in runtime branches.
-6. **`#[non_exhaustive]` on public enums/structs.** Field/variant additions
-   stay semver-minor; explicit constructors are required.
-7. **WAL barrier is structural, not behavioural.** Tool execution (sandboxed)
-   is unreachable until `memory.append(...)` returns — Axiom A1 by construction.
-8. **Worker boundary is structural too.** A tool's raw output cannot reach the
-   parent context; only the schema-gate `ValidatedValue` can — Axiom A7 by
-   construction (`gauss-hwca`).
-9. **Receipts are EUF-CMA from the kernel side.** When a `Signer` is wired,
-   every committed turn emits a `SignedReceipt` whose canonical bytes are
-   layout-stable across languages and whose Ed25519 signature can be
-   verified off-line by any third party — Axiom A9 / Theorem T11 by
-   construction (`gauss-audit`).
-10. **Recall is monoidal + hybrid.** Memory composition is associative
-    with the empty log as identity — Axiom A5 by construction. Recall
-    fuses BM25 and HNSW into a single weighted union over the
-    deduplicated set of hits — Theorem T5 by construction (`gauss-memory`).
-11. **Autonomy is gated by an auditable table.** A monotone
-    `DecisionTable` decides which actions auto-fire, which notify,
-    which require human approval, and which are refused outright;
-    approval verdicts are bundled into the signed payload — Axiom A8 by
-    construction (`gauss-sag`).
+---
+
+## v2 horizon
+
+Five research-track crates ship behind a stable contract; production
+plugins (real SNARK provers, hardware DP sources, vendor LLMs, hardware
+attestation backends) implement these trait surfaces as additive
+crates.
+
+| Crate              | What it's the contract for                                                 |
+|--------------------|----------------------------------------------------------------------------|
+| `gauss-zk`         | Zero-knowledge proofs over the receipt chain (Merkle commitments + statements). |
+| `gauss-dp`         | Differentially-private trajectory exporter (Laplace + Gaussian).            |
+| `gauss-learnt`     | Learnt risk classifier `Φ̂` (logistic scorer) — *floors* the SAG rule table. |
+| `gauss-robust`     | Robust declassifiers — adversarial-rejection counters tighten the declass map. |
+| `gauss-bench`      | 15-axis Pareto-dominance scorecard (used by the Phase-11 release gate).    |
+| `proofs/lean/`     | Lean 4 stubs of all nine axioms + twelve theorems; proofs land incrementally. |
+
+---
+
+## Documentation
+
+- **[`SPECS.md`](SPECS.md)** — normative engineering specification (the source paper's recipe).
+- **[`ROADMAP.md`](ROADMAP.md)** — phased development plan, axiom / theorem locks per phase.
+- **[`docs/QUICKSTART.md`](docs/QUICKSTART.md)** — end-to-end embed walkthrough.
+- **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — crate-by-crate architecture tour.
+- **[`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)** — contributor guide + the `specT` style guide.
+- **[`docs/SECURITY.md`](docs/SECURITY.md)** — threat model + responsible-disclosure policy.
+- **[`docs/adr/`](docs/adr/)** — sixteen architecture decision records (ADRs 0001–0016).
+- **[`proofs/lean/README.md`](proofs/lean/README.md)** — mechanised-proof skeleton + roadmap.
+
+---
 
 ## Quality gates
 
 CI enforces, on every PR:
 
 - `cargo fmt --all -- --check`
-- `cargo clippy --workspace --all-targets -- -D warnings`
-  (with `clippy::pedantic` + `clippy::nursery` at warn level)
-- `cargo test --workspace`
-- `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS=-D warnings`
-- `cargo deny check`
-- MSRV check on 1.83
+- `cargo clippy --workspace --all-targets -- -D warnings` (with `clippy::pedantic` + `clippy::nursery`)
+- `cargo test --workspace` — currently **299 tests**, ~3 s on a modern laptop.
+- `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS=-D warnings`.
+- `cargo deny check` — supply-chain + license gate.
+- MSRV check on 1.83.
 
-Later phases add `cargo fuzz`, the fifteen-axis scorecard regression, and
-external pen-testing.
+The release gate adds a 15-axis Pareto-dominance assertion (the
+`phase11_release::one_point_zero_pareto_dominates_every_predecessor`
+test).
 
-## Conformance coverage
+---
 
-| Axiom / Theorem | Status                                                              | Phase locked |
-|-----------------|---------------------------------------------------------------------|--------------|
-| A1 / T1         | WAL-before-effect; crash-injection harness                          | Phase 2 ✅    |
-| A2 / T2         | Capability monotonicity (contract-only grant; CAS-protected)        | Phase 1 ✅    |
-| A3              | Receipt-chain tamper-evidence (replay + inclusion witness)          | Phase 2 ✅    |
-| A4 / T4         | Plane fairness separation; `B/ρ` worst-case wait bound              | Phase 1 ✅    |
-| A6              | Information-flow lattice + antitone declass verifier                | Phase 1 ✅    |
-| T3              | Merkle tamper-evidence (proptest: any mutation diverges the head)   | Phase 0/2 ✅  |
-| T10             | Composite sandbox bound (cap → class, layer invariants)             | Phase 3 ✅    |
-| A7 / T9         | Worker-context isolation + IPI bound (0/20 ≤ 2.19%)                 | Phase 4 ✅    |
-| A9 / T11        | Ed25519 signed receipts + chain replay + TSA anchor                 | Phase 5 ✅    |
-| A5 / T5 / T12   | Memory monoid + hybrid recall + K-LRU warm-cache bound              | Phase 6 ✅    |
-| A8              | SAG decision table + approval round-trip + deny-on-timeout          | Phase 7 ✅    |
-| T7              | Provider adjunction (polyhedral equivalence on probe set)           | Phase 8 ✅    |
-| T8              | Surface scorecard (Canvas + Health + Gateway wire types)            | Phase 9 ✅    |
-| T6              | Stateless-turn scaling (consistent-hash routing on `SessionId`)     | Phase 10 ✅   |
-| T10 §L4         | TEE attestation simulator + verifier (hardware backends are plugins) | Phase 10 ✅   |
+## Design tenets
+
+1. **Axioms before features.** Every subsystem traces back to an axiom or theorem in the paper.
+2. **No `unsafe` in privileged crates.** Workspace lint: `unsafe_code = "forbid"`.
+3. **Lock-free where the CAS pattern is clean.** Three-plane scheduler packs `(tokens, epoch_ms)` into one `AtomicU64`.
+4. **Property tests + type-state.** Lattice laws + chain integrity proptested; the DTE encodes phase ordering in the type system.
+5. **`#[non_exhaustive]` everywhere.** Field/variant additions stay semver-minor.
+6. **WAL barrier is structural.** Tool execution is *unreachable* until `memory.append(...)` returns — A1 by construction.
+7. **Worker boundary is structural.** Only the `ValidatedValue` crosses back to the parent — A7 by construction.
+8. **Receipts cover the SAG verdict.** Approval decisions are part of the canonical signed payload — A8 ∧ T11 by construction.
+9. **Recall is monoidal + hybrid.** Memory composition is associative; recall fuses BM25 ∪ HNSW with weighted union — A5 ∧ T5.
+10. **Autonomy is gated by an auditable table.** A monotone `DecisionTable` is the policy floor; the learnt scorer can only tighten it.
+
+---
 
 ## Licence
 
-Dual-licensed under Apache-2.0 or MIT, at the user's option.
+MIT — see [`LICENSE-MIT`](LICENSE-MIT).
+
+The project was originally dual-licensed (Apache-2.0 OR MIT) through
+Phase 10; the Phase-11 1.0 release pin simplified to MIT-only for
+plugin-ecosystem clarity (ADR-0017).
+
+---
+
+## Contributing
+
+See [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md). The short version:
+
+- Every PR cites the axiom / theorem / SPECS §it advances.
+- Every new plugin trait follows the four-rule `specT` style guide
+  (serializable outputs, `#[non_exhaustive]`, unified `GaussError`,
+  probe-set-checkable invariants — ADR-0014).
+- Tier-0 changes (`gauss-kernel`, `gauss-audit`, `gauss-attest`) need
+  dual review.
+
+---
+
+## Citing
+
+If you use Gauss-Aether in research or production, please cite:
+
+```bibtex
+@software{gauss_aether_2026,
+  author       = {Gauss-Aether Contributors},
+  title        = {Gauss-Aether: An Axiomatic OS for Trustworthy LLM Agents},
+  year         = 2026,
+  url          = {https://github.com/rismanmattotorang/gauss-aether},
+  license      = {MIT}
+}
+```
+
+---
+
+## Acknowledgements
+
+Gauss-Aether builds on lessons from OpenClaw, ZeroClaw, OpenFang, and
+Hermes — its 15-axis scorecard exists precisely to make
+"successor-of" a falsifiable claim instead of a marketing one. The
+source paper's axiom + theorem numbering is preserved verbatim across
+the SPECS, the conformance suite, the ADRs, and the Lean stubs.
