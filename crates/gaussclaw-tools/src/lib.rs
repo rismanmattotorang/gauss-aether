@@ -53,23 +53,29 @@
 
 #![allow(clippy::doc_markdown, clippy::missing_docs_in_private_items)]
 
+pub mod base64_tool;
 pub mod echo;
 pub mod file_read;
 pub mod file_write;
 pub mod hash;
 pub mod json_get;
 pub mod math_eval;
+pub mod regex_match;
 pub mod registry;
+pub mod shell;
 pub mod spawners;
 pub mod upper;
 
+pub use base64_tool::Base64Tool;
 pub use echo::EchoTool;
 pub use file_read::FileReadTool;
 pub use file_write::FileWriteTool;
 pub use hash::HashTool;
 pub use json_get::JsonGetTool;
 pub use math_eval::MathEvalTool;
+pub use regex_match::RegexMatchTool;
 pub use registry::{RegistryError, RegistryResult, ToolRegistry};
+pub use shell::ShellTool;
 pub use spawners::{composite_sandboxed, noop_sandboxed, unsandboxed};
 pub use upper::UpperTool;
 
@@ -84,8 +90,11 @@ pub fn default_registry() -> ToolRegistry {
     reg.register(Arc::new(UpperTool::new()));
     reg.register(Arc::new(MathEvalTool::new()));
     reg.register(Arc::new(HashTool::new()));
+    reg.register(Arc::new(Base64Tool::new()));
+    reg.register(Arc::new(RegexMatchTool::new()));
     reg.register(Arc::new(FileReadTool::new()));
     reg.register(Arc::new(FileWriteTool::new()));
+    reg.register(Arc::new(ShellTool::new()));
     reg
 }
 
@@ -96,12 +105,13 @@ mod tests {
     use gauss_hwca::WorkerSpawner;
 
     #[test]
-    fn default_registry_has_seven_tools() {
+    fn default_registry_has_ten_tools() {
         let reg = default_registry();
-        assert_eq!(reg.len(), 7);
+        assert_eq!(reg.len(), 10);
         let ids: Vec<&str> = reg.ids();
         for expected in [
-            "echo", "file_read", "file_write", "hash", "json_get", "math_eval", "upper",
+            "base64", "echo", "file_read", "file_write", "hash", "json_get",
+            "math_eval", "regex_match", "shell", "upper",
         ] {
             assert!(ids.contains(&expected), "missing tool: {expected}");
         }
