@@ -55,14 +55,22 @@
 
 pub mod echo;
 pub mod file_read;
+pub mod file_write;
+pub mod hash;
 pub mod json_get;
+pub mod math_eval;
 pub mod registry;
+pub mod spawners;
 pub mod upper;
 
 pub use echo::EchoTool;
 pub use file_read::FileReadTool;
+pub use file_write::FileWriteTool;
+pub use hash::HashTool;
 pub use json_get::JsonGetTool;
+pub use math_eval::MathEvalTool;
 pub use registry::{RegistryError, RegistryResult, ToolRegistry};
+pub use spawners::{composite_sandboxed, noop_sandboxed, unsandboxed};
 pub use upper::UpperTool;
 
 use std::sync::Arc;
@@ -74,7 +82,10 @@ pub fn default_registry() -> ToolRegistry {
     reg.register(Arc::new(EchoTool::new()));
     reg.register(Arc::new(JsonGetTool::new()));
     reg.register(Arc::new(UpperTool::new()));
+    reg.register(Arc::new(MathEvalTool::new()));
+    reg.register(Arc::new(HashTool::new()));
     reg.register(Arc::new(FileReadTool::new()));
+    reg.register(Arc::new(FileWriteTool::new()));
     reg
 }
 
@@ -85,14 +96,15 @@ mod tests {
     use gauss_hwca::WorkerSpawner;
 
     #[test]
-    fn default_registry_has_four_tools() {
+    fn default_registry_has_seven_tools() {
         let reg = default_registry();
-        assert_eq!(reg.len(), 4);
+        assert_eq!(reg.len(), 7);
         let ids: Vec<&str> = reg.ids();
-        assert!(ids.contains(&"echo"));
-        assert!(ids.contains(&"file_read"));
-        assert!(ids.contains(&"json_get"));
-        assert!(ids.contains(&"upper"));
+        for expected in [
+            "echo", "file_read", "file_write", "hash", "json_get", "math_eval", "upper",
+        ] {
+            assert!(ids.contains(&expected), "missing tool: {expected}");
+        }
     }
 
     #[test]

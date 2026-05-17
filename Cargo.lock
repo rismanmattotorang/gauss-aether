@@ -2937,12 +2937,15 @@ name = "gaussclaw-tools"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "blake3",
  "gauss-core",
  "gauss-hwca",
+ "gauss-sandbox",
  "gauss-traits",
  "gaussclaw-skill",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
 ]
