@@ -2899,6 +2899,13 @@ dependencies = [
 [[package]]
 name = "gaussclaw-migrate"
 version = "0.0.1"
+dependencies = [
+ "gaussclaw-config",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "toml 0.8.2",
+]
 
 [[package]]
 name = "gaussclaw-providers"
