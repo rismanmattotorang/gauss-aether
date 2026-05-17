@@ -1,0 +1,14 @@
+[package]
+name        = "gaussclaw-export"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+description = "SFT and DPO writer with Cryptographic Trajectory Envelope and Taint Filter."
+
+[lints]
+workspace = true
+
+[dependencies]

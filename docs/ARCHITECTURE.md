@@ -1,12 +1,29 @@
-# Gauss-Aether — Architecture Tour
+# Gauss-Aether + GaussClaw — Architecture Tour
 
-A crate-by-crate walk through the workspace, with each crate's
-contract, key types, and conformance test pin.
+A crate-by-crate walk through the combined workspace. Two projects
+share one Rust workspace: **Gauss-Aether** (the runtime, 22 `gauss-*`
+crates, shipped 1.0) and **GaussClaw** (the Hermes-to-Rust agent on
+top of it, 19 `gaussclaw-*` crates, currently in plan + scaffolding —
+see [`GAUSSCLAW_ROADMAP.md`](../GAUSSCLAW_ROADMAP.md)).
+
+This document covers the runtime crate-by-crate; the GaussClaw side is
+summarised below the layer cake and elaborated in the roadmap.
 
 ## Layer cake
 
 ```text
-Surfaces (user-facing)
+GaussClaw — the agent on top                                  (gaussclaw-*)
+├── gaussclaw-cli · gaussclaw-tui · gaussclaw-web · gaussclaw-desktop
+├── gaussclaw-surfaces · gaussclaw-channels                  (Phase 1)
+├── gaussclaw-store                                          (Phase 2)
+├── gaussclaw-skill · gaussclaw-tools                        (Phase 3)
+├── gaussclaw-providers · gaussclaw-providers-meta · -api-modes (Phase 4)
+├── gaussclaw-export · gaussclaw-fed                         (Phase 5)
+└── gaussclaw-agent · -config · -migrate · -conformance · -bin
+
+──────────────────────────────────────────────────────────────────────
+
+Surfaces (user-facing)                                        (gauss-*)
 └── gauss-canvas · gauss-health · gauss-gateway        (Phase 9)
 
 Verification + scorecard
@@ -28,6 +45,26 @@ Hardening + research
 └── gauss-attest · gauss-chaos                         (Phase 10)
     gauss-zk · gauss-dp · gauss-learnt · gauss-robust  (v2 horizon)
 ```
+
+### How GaussClaw sits on Gauss-Aether
+
+Each GaussClaw crate consumes one or more runtime traits without
+re-deriving runtime primitives. The principal edges:
+
+| GaussClaw crate | Runtime trait consumed | Subsystem |
+|---|---|---|
+| `gaussclaw-agent` | `Kernel`, `Provider`, `MemoryBackend` | DTE turn policy |
+| `gaussclaw-store` | `MemoryBackend` (SurrealDB) + `gauss-audit` | Trinity + receipt chain |
+| `gaussclaw-tools` | `SandboxTrait` + HWCA worker spawn | Capability-gated execution |
+| `gaussclaw-skill` | `gauss-core::CapToken` + `TaintLabel` | Manifest → kernel binding |
+| `gaussclaw-providers*` | `ProviderTrait` + `gauss-poly` | Polyhedral equivalence |
+| `gaussclaw-surfaces` + `-channels` + `-tui` + `-web` + `-desktop` | `gauss-gateway` three-plane router | Surface convergence |
+| `gaussclaw-export` | `gauss-audit::ReceiptChain` + `gauss-attest` | Cryptographic Trajectory Envelope |
+| `gaussclaw-conformance` | `gauss-conformance` axiom suite (no regressions) | Combined CI gate |
+
+The full deficit-by-deficit map is in
+[`GAUSSCLAW_ROADMAP.md`](../GAUSSCLAW_ROADMAP.md) and the GaussClaw
+paper §III.
 
 ---
 

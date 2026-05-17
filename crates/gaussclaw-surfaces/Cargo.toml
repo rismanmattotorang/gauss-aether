@@ -1,0 +1,14 @@
+[package]
+name        = "gaussclaw-surfaces"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+description = "Thin surface adapters: REST, WebSocket, OpenAI-compatible relay."
+
+[lints]
+workspace = true
+
+[dependencies]
