@@ -12,3 +12,16 @@ description = "SFT and DPO writer with Cryptographic Trajectory Envelope and Tai
 workspace = true
 
 [dependencies]
+gauss-core      = { workspace = true }
+gauss-audit     = { workspace = true }
+gaussclaw-store = { workspace = true }
+serde           = { workspace = true }
+serde_json      = { workspace = true }
+thiserror       = { workspace = true }
+sha2            = { workspace = true }
+hex             = { workspace = true }
+tokio           = { workspace = true, features = ["sync", "io-util", "fs"] }
+async-trait     = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros", "rt", "rt-multi-thread"] }
