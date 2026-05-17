@@ -277,6 +277,7 @@ pub fn parse_cap(cap: &str) -> SkillResult<CapToken> {
         "crypto:sign" => Ok(CapToken::CRYPTO_SIGN),
         "canvas:render" => Ok(CapToken::CANVAS_RENDER),
         "canvas:embed" => Ok(CapToken::CANVAS_EMBED),
+        "env:read" => Ok(CapToken::ENV_READ),
         other => Err(SkillError::UnknownCap(other.into())),
     }
 }

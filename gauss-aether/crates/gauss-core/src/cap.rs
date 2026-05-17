@@ -43,6 +43,11 @@ impl CapToken {
     pub const CANVAS_EMBED: Self = Self(1 << 7);
     /// Push a file to the user's downloads.
     pub const CANVAS_FILE_WRITE: Self = Self(1 << 8);
+    /// Read an environment variable from a caller-supplied allowlist.
+    /// The cap admits *membership* in the allowlist, not access to any
+    /// particular variable — the tool implementation enforces the
+    /// per-variable check.
+    pub const ENV_READ: Self = Self(1 << 9);
 
     /// Construct from a raw bitmask.
     #[inline]

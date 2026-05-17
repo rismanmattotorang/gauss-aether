@@ -24,7 +24,9 @@ sha2            = { workspace = true }
 subtle          = { workspace = true }
 tracing         = { workspace = true }
 time            = { workspace = true }
+ed25519-dalek   = { workspace = true }
 
 [dev-dependencies]
 gauss-kernel = { workspace = true }
+rand_core    = { workspace = true }
 tokio        = { workspace = true, features = ["test-util", "macros"] }
