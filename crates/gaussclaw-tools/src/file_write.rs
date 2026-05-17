@@ -83,11 +83,17 @@ impl ToolTrait for FileWriteTool {
             .ok_or_else(|| {
                 GaussError::Internal("missing string field `content`".into())
             })?;
-        // Path-traversal defence: reject `..` segments. The kernel
-        // admit already gated FILESYSTEM_WRITE; this is a second layer
-        // against a tool that's authorised in general but should still
-        // not escape its working directory.
-        if path.contains("..") {
+        // Path-traversal defence: refuse any path that contains a
+        // `ParentDir` component (`..`). A substring check would
+        // false-positive a legit filename like `..foo`; using
+        // `Path::components()` only flags the structural escape.
+        // The kernel admit already gated FILESYSTEM_WRITE; this is
+        // a second layer of defence against an authorised-but-misused
+        // capability.
+        if std::path::Path::new(path)
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
             return Err(GaussError::Internal(
                 "path traversal (`..`) refused".into(),
             ));
@@ -138,6 +144,25 @@ mod tests {
             GaussError::Internal(msg) => assert!(msg.contains("traversal")),
             _ => panic!("expected Internal/traversal"),
         }
+    }
+
+    #[tokio::test]
+    async fn legitimate_filename_with_dots_is_accepted() {
+        // Component-based check accepts a filename that has dots in it
+        // (e.g. ".hidden" or "foo..bar.txt") as long as no component
+        // is `ParentDir`. A naive substring check would have rejected
+        // these too.
+        let path = std::env::temp_dir().join("gaussclaw_file..write_test.txt");
+        let t = FileWriteTool::new();
+        let out = t
+            .invoke_raw(serde_json::json!({
+                "path": path.to_string_lossy(),
+                "content": "dots-in-name",
+            }))
+            .await
+            .unwrap();
+        assert_eq!(out["bytes_written"], 12);
+        tokio::fs::remove_file(&path).await.ok();
     }
 
     #[test]
