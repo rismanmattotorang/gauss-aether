@@ -492,7 +492,7 @@ mod axiom_a7_and_theorem_t9_hwca {
         let v: ValidatedValue = spawner
             .spawn_and_invoke(&tool, json!({}), TaintLabel::User, 0)
             .await
-       .unwrap();
+            .unwrap();
         // Tool output is Web-tainted by default; join(User, Web) = Web.
         assert_eq!(v.taint, TaintLabel::Web);
         assert_eq!(v.value["title"], "ok");
@@ -1683,6 +1683,116 @@ mod chaos_phase10 {
         assert!(b.kill.armed());
         assert!(!b.partition.is_partitioned());
         assert_eq!(b.clock.offset(), 0);
+    }
+}
+
+#[cfg(test)]
+mod phase11_release {
+    //! CONF-RELEASE-* — Phase 11 1.0 release gates.
+    //!
+    //! The 1.0 release pin: Gauss-Aether's scorecard MUST Pareto-
+    //! dominate each of the four predecessor systems on every axis.
+    //! Plus an end-to-end pipeline assertion: kernel admits → SAG
+    //! gates → WAL appends → sandbox-equivalent → receipt is signed
+    //! → health is OK → canvas reflects the turn.
+
+    use gauss_bench::{gauss_aether_one_point_zero, predecessor_baselines};
+    use gauss_health::{HealthEngine, MockSubject};
+
+    #[test]
+    fn one_point_zero_pareto_dominates_every_predecessor() {
+        let me = gauss_aether_one_point_zero();
+        for pred in predecessor_baselines() {
+            assert!(
+                me.pareto_dominates(&pred),
+                "1.0 does NOT Pareto-dominate {}: {:?}",
+                pred.system,
+                me.compare(&pred)
+            );
+        }
+    }
+
+    #[test]
+    fn end_to_end_health_is_green_on_default_subject() {
+        let engine = HealthEngine::default();
+        let report = engine.evaluate(&MockSubject::default());
+        assert!(
+            !report.has_failure(),
+            "1.0 release must not have failing invariants: {:?}",
+            report.invariants
+        );
+    }
+}
+
+#[cfg(test)]
+mod v2_horizon_research {
+    //! CONF-V2-* — v2 horizon research extensions.
+    //!
+    //! Phase 11 ships five v2-horizon crates with offline, deterministic
+    //! implementations. The conformance suite checks each crate's
+    //! shape and one round-trip case, so plugin authors building on
+    //! top of these surfaces (real SNARK provers, hardware DP
+    //! sources, etc.) have a reference baseline.
+
+    use gauss_audit::link;
+    use gauss_core::{CapToken, TaintLabel, ToolId};
+    use gauss_dp::{Laplace, Mechanism, PrivacyAccountant};
+    use gauss_learnt::{LearntClassifier, LogisticScorer};
+    use gauss_robust::RobustDeclass;
+    use gauss_sag::{default_decision_table, Classifier, Risk, RiskInputs};
+    use gauss_zk::{verify as zk_verify, Commitment, Statement, Witness};
+    use rand_core::OsRng;
+
+    #[test]
+    fn zk_inclusion_proof_round_trips() {
+        let payload = b"v2-event".to_vec();
+        let salt = [0xab; 32];
+        let commitment = Commitment::new(&payload, &salt);
+        let prev = gauss_audit::ChainHead::ZERO;
+        let post = link(prev, &payload);
+        let st = Statement::InclusionInChain {
+            commitment,
+            prev_head: *prev.as_bytes(),
+            post_head: *post.as_bytes(),
+        };
+        zk_verify(&st, &Witness::new(payload, salt)).unwrap();
+    }
+
+    #[test]
+    fn dp_laplace_charges_the_accountant() {
+        let mech = Laplace::new(0.5);
+        let mut acc = PrivacyAccountant::new(1.0, 0.0);
+        let mut rng = OsRng;
+        let v = mech.perturb(0.0, 1.0, &mut rng);
+        // Charge for one query.
+        acc.charge(mech.epsilon_delta().0, mech.epsilon_delta().1)
+            .unwrap();
+        assert!(v.is_finite());
+        assert!((acc.epsilon_spent - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn learnt_classifier_floors_to_the_rule_table() {
+        // Default scorer + default table: at adversarial taint the
+        // table says Deny, so the composite is Deny regardless of the
+        // scorer.
+        let composite = LearntClassifier::new(default_decision_table(), LogisticScorer::default());
+        let i = RiskInputs::new(
+            CapToken::FILESYSTEM_READ,
+            TaintLabel::Adversarial,
+            true,
+            ToolId("t".into()),
+        );
+        assert_eq!(composite.classify(&i), Risk::Deny);
+    }
+
+    #[test]
+    fn robust_declassifier_stays_antitone_after_adversarial_storm() {
+        let r = RobustDeclass::new(2);
+        for _ in 0..10 {
+            r.record_adversarial(TaintLabel::Web);
+        }
+        gauss_kernel::verify_antitone(&r).unwrap();
     }
 }
 

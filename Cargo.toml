@@ -17,6 +17,11 @@ members = [
     "crates/gauss-gateway",
     "crates/gauss-attest",
     "crates/gauss-chaos",
+    "crates/gauss-bench",
+    "crates/gauss-zk",
+    "crates/gauss-dp",
+    "crates/gauss-learnt",
+    "crates/gauss-robust",
     "crates/gauss-conformance",
 ]
 
@@ -24,7 +29,7 @@ members = [
 version = "0.0.1"
 edition = "2021"
 rust-version = "1.83"
-license = "Apache-2.0 OR MIT"
+license = "MIT"
 repository = "https://github.com/rismanmattotorang/gauss-aether"
 authors = ["Gauss-Aether Contributors"]
 
@@ -46,6 +51,11 @@ gauss-health    = { path = "crates/gauss-health",    version = "0.0.1" }
 gauss-gateway   = { path = "crates/gauss-gateway",   version = "0.0.1" }
 gauss-attest    = { path = "crates/gauss-attest",    version = "0.0.1" }
 gauss-chaos     = { path = "crates/gauss-chaos",     version = "0.0.1" }
+gauss-bench     = { path = "crates/gauss-bench",     version = "0.0.1" }
+gauss-zk        = { path = "crates/gauss-zk",        version = "0.0.1" }
+gauss-dp        = { path = "crates/gauss-dp",        version = "0.0.1" }
+gauss-learnt    = { path = "crates/gauss-learnt",    version = "0.0.1" }
+gauss-robust    = { path = "crates/gauss-robust",    version = "0.0.1" }
 
 # Async
 async-trait = "0.1"
