@@ -2882,6 +2882,19 @@ version = "0.0.1"
 [[package]]
 name = "gaussclaw-store"
 version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "gauss-audit",
+ "gauss-core",
+ "gauss-memory",
+ "gauss-traits",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "time",
+ "tokio",
+]
 
 [[package]]
 name = "gaussclaw-surfaces"
@@ -2927,6 +2940,7 @@ dependencies = [
  "gauss-core",
  "gaussclaw-agent",
  "gaussclaw-config",
+ "gaussclaw-store",
  "mime_guess",
  "rust-embed",
  "serde",
