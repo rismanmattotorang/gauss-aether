@@ -48,6 +48,16 @@
 )]
 #![allow(rustdoc::broken_intra_doc_links)]
 
+pub mod discord;
+pub mod email;
+pub mod slack;
+pub mod telegram;
+
+pub use discord::DiscordChannel;
+pub use email::{EmailChannel, ParsedEmail};
+pub use slack::SlackChannel;
+pub use telegram::TelegramChannel;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -272,7 +282,7 @@ pub fn hmac_verify(secret: &[u8], body: &[u8], provided_hex: &str) -> ChannelRes
     }
 }
 
-fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {
+pub(crate) fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {
     if s.len() % 2 != 0 {
         return Err(());
     }

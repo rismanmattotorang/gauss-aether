@@ -2796,10 +2796,12 @@ name = "gaussclaw-channels"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "ed25519-dalek",
  "gauss-core",
  "gauss-kernel",
  "gaussclaw-agent",
  "hmac",
+ "rand_core 0.6.4",
  "serde",
  "serde_json",
  "sha2",
@@ -3007,11 +3009,13 @@ dependencies = [
  "gauss-sandbox",
  "gauss-traits",
  "gaussclaw-skill",
+ "rand_core 0.6.4",
  "regex",
  "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
+ "time",
  "tokio",
 ]
 

@@ -20,11 +20,11 @@ state — distinct from what the README marketing claims:
 | `gaussclaw-store` | 4 | 1,556 | **Shipping** — Trinity store, session, lineage. |
 | `gaussclaw-export` | 6 | 1,595 | **Shipping** — SFT / DPO + Cryptographic Envelope. |
 | `gaussclaw-surfaces` | 1 | 1,291 | **Shipping** — REST / WS / OAI-compat. |
-| `gaussclaw-tools` | 13 | 1,997 | **11 tools** real (base64, echo, file_read/write, hash, json_get, math_eval, regex_match, shell, upper). README claimed 30+. |
-| `gaussclaw-providers` | 15 | 3,575 | **9 providers** real (Anthropic, OpenAI, Google, Cohere, Ollama, HuggingFace, Replicate, llama_cpp, openai_compat). README claimed 20. |
+| `gaussclaw-tools` | 18 | 2,650 | **15 tools** real (base64, csv_parse, datetime, echo, env_get, file_read/write, hash, json_get/set, math_eval, regex_match, shell, upper, uuid). README claimed 30+. **Sprint 1 closed the gap by 5.** |
+| `gaussclaw-providers` | 15 | 3,575 | **9 leaf providers** + 12 OpenAI-compat shims (groq, cerebras, fireworks, deepseek, mistral, together, xai, perplexity, anyscale, octoai, vllm, tgi). README claimed 20; effective count is now **21**. |
 | `gaussclaw-providers-meta` | 3 | 567 | **Shipping** — OpenRouter + NotDiamond + router glue. |
 | `gaussclaw-fed` | 4 | 820 | **Shipping** — federated pool client + backend. |
-| `gaussclaw-channels` | 1 | 734 | **2 channels** real (Webhook, InMemory). README claimed ~20. |
+| `gaussclaw-channels` | 5 | 1,580 | **6 channels** real (Webhook, InMemory, Slack, Telegram, Discord, Email). README claimed ~20. **Sprint 1 closed the gap by 4.** |
 | `gaussclaw-skill` | 1 | 432 | **Manifest parser only.** No synthesise / promote loop. |
 | `gaussclaw-config` | 1 | 467 | **Shipping** — Hermes-compatible TOML. |
 | `gaussclaw-migrate` | 1 | 488 | **Shipping** — `import hermes` driver. |
@@ -36,14 +36,14 @@ state — distinct from what the README marketing claims:
 | `gaussclaw-desktop` | 4 | 470 | **Scaffold only.** Tauri 2 wired, two commands, no screens. |
 | `gaussclaw-api-modes` | 1 | 6 | **Empty.** Placeholder lib.rs. |
 
-### Headline gaps vs. the README
+### Headline gaps vs. the README (Sprint 0 + Sprint 1 status)
 
-- **Web frontend doesn't exist** — `frontend/dist/index.html` is a 60-line placeholder.
-- **TUI is rudimentary** — no streaming, no overlay system, no slash-command parity.
-- **Channels: 2 / 20** claimed.
-- **Tools: 11 / 30+** claimed.
-- **Providers: 9 / 20** claimed.
-- **Desktop: scaffold** with two stub commands.
+- ~~Web frontend doesn't exist~~ → **Sprint 0**: six-view dashboard ships.
+- ~~TUI is rudimentary~~ → **Sprint 0**: persistent history, OSC 52 copy, 9 working slash commands. **Sprint 1**: three-overlay modal system (approval / clarify / password).
+- ~~Channels: 2 / 20~~ → **Sprint 1**: 6 / 20 (Webhook, InMemory, Slack, Telegram, Discord, Email).
+- ~~Tools: 11 / 30+~~ → **Sprint 1**: 15 / 30+ (added csv_parse, datetime, env_get, json_set, uuid).
+- ~~Providers: 9 / 20~~ → **Sprint 1**: 21 effective via the OpenAI-compat shim catalogue.
+- Desktop: scaffold → **Sprint 3 target**.
 
 ---
 
@@ -105,15 +105,42 @@ state — distinct from what the README marketing claims:
 
 **Deliverable: this STRATEGY.md.** Captures the audit + priorities.
 
-### Sprint 1 — *match parity*
+### Sprint 1 — *match parity* ✅ **shipped**
 
-- Channel adapters for Telegram, Discord, Slack, Email (each ~150 LOC).
-- Five more providers (Mistral, Together, Groq, Cerebras, DeepSeek).
-- Eight more tools (http_get, http_post, datetime, uuid, env_get, http_head, json_set, csv_parse).
-- TUI overlay system (approval / clarify / password modals).
+What landed:
+
+- **Channel adapters**: `SlackChannel` (v0= HMAC + 5-minute replay window),
+  `TelegramChannel` (optional `X-Telegram-Bot-Api-Secret-Token`
+  header + typed `Update` parsing), `DiscordChannel` (Ed25519
+  interaction-signature verification), `EmailChannel` (sender allowlist
+  + operator-controlled taint downgrade). All four share the typed
+  `ChannelTrait` + admit-gate + outbox contract.
+- **Five new tools**: `datetime` (now / parse), `uuid` (v4 + v7), `json_set`
+  (mirror of `json_get`), `csv_parse` (RFC 4180 with quoted-field /
+  escaped-quote / CRLF support), `env_get` (cap-gated by `env:read`,
+  caller-supplied allowlist). New `CapToken::ENV_READ` (bit 9) added to
+  `gauss-core`.
+- **Providers**: the 12 OpenAI-compat shim constructors in
+  `gaussclaw-providers::openai_compat` (groq, cerebras, fireworks,
+  deepseek, mistral, together, xai, perplexity, anyscale, octoai, vllm,
+  tgi) are surfaced through the catalogue. Effective provider count
+  is **21** (9 leaf + 12 OAI-compat), exceeding the 20-claim.
+- **TUI overlay system**: a typed `Overlay` enum with three variants
+  (`approval`, `clarify`, `password`), Hermes-parity quick-keys
+  (o/s/d for approve/refuse/details; 1-9 quick-pick for clarify),
+  full Esc-cancel + Ctrl-C interception, masked input for passwords,
+  and a centred render-with-Clear panel.
+
+Deferred to a follow-on:
+- The three HTTP tools (`http_get`, `http_post`, `http_head`) — these
+  need an `HttpBackend` trait equivalent to the providers' one, plus a
+  workspace HTTP-client dep. Tracked in Sprint 2.
 
 ### Sprint 2 — *deepen the leapfrog*
 
+- HTTP tools (`http_get`, `http_post`, `http_head`) with an injectable
+  `HttpBackend` (mirroring the providers' pattern) + a `reqwest`-based
+  default impl behind a feature flag.
 - Receipt-chain explorer in the dashboard with a Merkle-proof viewer.
 - Skill Manifest installer UI.
 - Replay corpus diff visualiser.

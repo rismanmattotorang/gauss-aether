@@ -302,16 +302,21 @@ renderers.sessions = async () => {
 // ─── 6. Tools view ──────────────────────────────────────────────────────────
 
 const builtInTools = [
-  { name: 'base64',       desc: 'Encode and decode base64 strings.', cap: 'cap:none',       taint: '⊥',   layers: ['WASM'] },
-  { name: 'echo',         desc: 'Reflect the input. Useful for testing.', cap: 'cap:none', taint: '⊥', layers: ['WASM'] },
-  { name: 'file_read',    desc: 'Read a file from a permitted path.', cap: 'cap:fs:read',  taint: 'user',    layers: ['Landlock', 'seccomp'] },
-  { name: 'file_write',   desc: 'Write to a file in a permitted path.', cap: 'cap:fs:write', taint: 'user', layers: ['Landlock', 'seccomp'] },
-  { name: 'hash',         desc: 'SHA-256 / BLAKE3 / xxhash digests.', cap: 'cap:none',    taint: '⊥',   layers: ['WASM'] },
-  { name: 'json_get',     desc: 'JSONPath extraction from a value.', cap: 'cap:none',     taint: '⊥',   layers: ['WASM'] },
-  { name: 'math_eval',    desc: 'Pure-function arithmetic evaluator.', cap: 'cap:none',  taint: '⊥',   layers: ['WASM'] },
-  { name: 'regex_match',  desc: 'Compiled-regex pattern matching.',  cap: 'cap:none',    taint: '⊥',   layers: ['WASM'] },
-  { name: 'shell',        desc: 'Run a shell command. Sandboxed.', cap: 'cap:shell:exec', taint: 'web', layers: ['WASM', 'Landlock', 'seccomp', 'bwrap'] },
-  { name: 'upper',        desc: 'Uppercase the input string.',     cap: 'cap:none',     taint: '⊥',   layers: ['WASM'] },
+  { name: 'base64',       desc: 'Encode and decode base64 strings.',                      cap: 'cap:none',        taint: '⊥',    layers: ['WASM'] },
+  { name: 'csv_parse',    desc: 'RFC 4180 CSV → JSON array of objects.',                  cap: 'cap:none',        taint: '⊥',    layers: ['WASM'] },
+  { name: 'datetime',     desc: 'Current time, ISO 8601 formatting, RFC 3339 parsing.',   cap: 'cap:none',        taint: '⊥',    layers: ['WASM'] },
+  { name: 'echo',         desc: 'Reflect the input. Useful for testing.',                 cap: 'cap:none',        taint: '⊥',    layers: ['WASM'] },
+  { name: 'env_get',      desc: 'Read an env var from a caller-supplied allowlist.',      cap: 'cap:env:read',    taint: 'user', layers: ['WASM'] },
+  { name: 'file_read',    desc: 'Read a file from a permitted path.',                     cap: 'cap:fs:read',     taint: 'user', layers: ['Landlock', 'seccomp'] },
+  { name: 'file_write',   desc: 'Write to a file in a permitted path.',                   cap: 'cap:fs:write',    taint: 'user', layers: ['Landlock', 'seccomp'] },
+  { name: 'hash',         desc: 'SHA-256 / BLAKE3 digests.',                              cap: 'cap:none',        taint: '⊥',    layers: ['WASM'] },
+  { name: 'json_get',     desc: 'RFC 6901 JSON Pointer extraction.',                      cap: 'cap:none',        taint: '⊥',    layers: ['WASM'] },
+  { name: 'json_set',     desc: 'Write a value at an RFC 6901 JSON Pointer.',             cap: 'cap:none',        taint: '⊥',    layers: ['WASM'] },
+  { name: 'math_eval',    desc: 'Pure-function arithmetic evaluator.',                    cap: 'cap:none',        taint: '⊥',    layers: ['WASM'] },
+  { name: 'regex_match',  desc: 'Compiled-regex pattern matching.',                       cap: 'cap:none',        taint: '⊥',    layers: ['WASM'] },
+  { name: 'shell',        desc: 'Run a shell command. Sandboxed (4 layers).',             cap: 'cap:shell:exec',  taint: 'web',  layers: ['WASM', 'Landlock', 'seccomp', 'bwrap'] },
+  { name: 'upper',        desc: 'Uppercase the input string.',                            cap: 'cap:none',        taint: '⊥',    layers: ['WASM'] },
+  { name: 'uuid',         desc: 'Generate UUIDv4 / UUIDv7 identifiers.',                  cap: 'cap:none',        taint: '⊥',    layers: ['WASM'] },
 ];
 
 renderers.tools = async () => {

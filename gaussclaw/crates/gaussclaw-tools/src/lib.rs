@@ -54,30 +54,40 @@
 #![allow(clippy::doc_markdown, clippy::missing_docs_in_private_items)]
 
 pub mod base64_tool;
+pub mod csv_parse;
+pub mod datetime;
 pub mod echo;
+pub mod env_get;
 pub mod file_read;
 pub mod file_write;
 pub mod hash;
 pub mod json_get;
+pub mod json_set;
 pub mod math_eval;
 pub mod regex_match;
 pub mod registry;
 pub mod shell;
 pub mod spawners;
 pub mod upper;
+pub mod uuid;
 
 pub use base64_tool::Base64Tool;
+pub use csv_parse::CsvParseTool;
+pub use datetime::DatetimeTool;
 pub use echo::EchoTool;
+pub use env_get::EnvGetTool;
 pub use file_read::FileReadTool;
 pub use file_write::FileWriteTool;
 pub use hash::HashTool;
 pub use json_get::JsonGetTool;
+pub use json_set::JsonSetTool;
 pub use math_eval::MathEvalTool;
 pub use regex_match::RegexMatchTool;
 pub use registry::{RegistryError, RegistryResult, ToolRegistry};
 pub use shell::ShellTool;
 pub use spawners::{composite_sandboxed, noop_sandboxed, unsandboxed};
 pub use upper::UpperTool;
+pub use uuid::UuidTool;
 
 use std::sync::Arc;
 
@@ -87,6 +97,7 @@ pub fn default_registry() -> ToolRegistry {
     let mut reg = ToolRegistry::new();
     reg.register(Arc::new(EchoTool::new()));
     reg.register(Arc::new(JsonGetTool::new()));
+    reg.register(Arc::new(JsonSetTool::new()));
     reg.register(Arc::new(UpperTool::new()));
     reg.register(Arc::new(MathEvalTool::new()));
     reg.register(Arc::new(HashTool::new()));
@@ -95,6 +106,13 @@ pub fn default_registry() -> ToolRegistry {
     reg.register(Arc::new(FileReadTool::new()));
     reg.register(Arc::new(FileWriteTool::new()));
     reg.register(Arc::new(ShellTool::new()));
+    reg.register(Arc::new(DatetimeTool::new()));
+    reg.register(Arc::new(UuidTool::new()));
+    reg.register(Arc::new(CsvParseTool::new()));
+    // EnvGetTool ships with an empty allowlist by default; operators
+    // populate it explicitly via [`EnvGetTool::with_allowlist`] when
+    // composing their own registry.
+    reg.register(Arc::new(EnvGetTool::new()));
     reg
 }
 
@@ -105,21 +123,26 @@ mod tests {
     use gauss_hwca::WorkerSpawner;
 
     #[test]
-    fn default_registry_has_ten_tools() {
+    fn default_registry_has_fifteen_tools() {
         let reg = default_registry();
-        assert_eq!(reg.len(), 10);
+        assert_eq!(reg.len(), 15);
         let ids: Vec<&str> = reg.ids();
         for expected in [
             "base64",
+            "csv_parse",
+            "datetime",
             "echo",
+            "env_get",
             "file_read",
             "file_write",
             "hash",
             "json_get",
+            "json_set",
             "math_eval",
             "regex_match",
             "shell",
             "upper",
+            "uuid",
         ] {
             assert!(ids.contains(&expected), "missing tool: {expected}");
         }

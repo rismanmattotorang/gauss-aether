@@ -26,6 +26,8 @@ blake3          = { workspace = true }
 sha2            = { workspace = true }
 base64          = { workspace = true }
 regex           = { workspace = true }
+rand_core       = { workspace = true }
+time            = { workspace = true, features = ["parsing"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

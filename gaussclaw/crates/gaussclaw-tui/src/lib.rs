@@ -26,8 +26,10 @@
 #![allow(clippy::doc_markdown)]
 
 mod history;
+mod overlay;
 
 pub use history::HistoryStore;
+pub use overlay::{Overlay, OverlayResult};
 
 use std::io;
 use std::time::Duration;
