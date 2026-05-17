@@ -64,15 +64,24 @@
 pub mod anthropic;
 pub mod backend;
 pub mod catalogue;
+pub mod fallback;
 pub mod ollama;
 pub mod openai;
+pub mod openai_compat;
 pub mod postconditions;
 pub mod router;
 
 pub use anthropic::AnthropicProvider;
 pub use backend::{HttpBackend, HttpError, HttpRequest, HttpResponse, MockHttpBackend};
 pub use catalogue::{Catalogue, CostHints, LeafModel};
+pub use fallback::{
+    AttemptRecord, FallbackBuildError, FallbackChain, FallbackChainBuilder, FallbackResult,
+};
 pub use ollama::OllamaProvider;
 pub use openai::OpenAIProvider;
+pub use openai_compat::{
+    OpenAICompatProvider, cerebras, deepseek, fireworks, groq, mistral, perplexity, tgi,
+    together, vllm, xai,
+};
 pub use postconditions::{PostconditionError, check_postconditions};
 pub use router::{RoutedCompletion, RouterProvider, RouterTransparencyError};
