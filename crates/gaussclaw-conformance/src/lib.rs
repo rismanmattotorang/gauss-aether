@@ -17,6 +17,7 @@
 
 pub mod cli_parity;
 pub mod oai_sdk_parity;
+pub mod replay_corpus;
 
 #[cfg(test)]
 mod tests {

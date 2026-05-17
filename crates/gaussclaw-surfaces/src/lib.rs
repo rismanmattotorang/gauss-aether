@@ -35,7 +35,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
@@ -45,6 +45,7 @@ use gauss_gateway::openai::{OpenAiChatMessage, OpenAiChatRequest};
 use gaussclaw_agent::{
     AuditTrace, EchoProvider, KernelHandle, Message, Prompt, SurfaceRequest, TurnPolicy,
 };
+use gaussclaw_store::SessionStore;
 
 /// SDK-canonical OpenAI Chat Completions response.
 ///
@@ -122,6 +123,29 @@ impl SurfaceState {
         }
     }
 
+    /// Build a state with a permissive kernel, the [`EchoProvider`], and
+    /// a shared [`SessionStore`]. Sessions persist; `/v1/chat/completions`
+    /// requests carrying an `X-GaussClaw-Session: <id>` header are
+    /// appended into the named session.
+    pub fn new_with_store(
+        default_model: impl Into<String>,
+        store: Arc<SessionStore>,
+    ) -> Self {
+        let kernel = KernelHandle::permissive();
+        let audit = AuditTrace::new();
+        let policy = Arc::new(
+            TurnPolicy::new(kernel.clone(), Arc::new(EchoProvider::default()))
+                .with_audit(audit.clone())
+                .with_store(store),
+        );
+        Self {
+            default_model: default_model.into(),
+            kernel,
+            policy,
+            audit,
+        }
+    }
+
     /// Build a state with a caller-supplied kernel handle. Uses the
     /// [`EchoProvider`] until [`Self::with_policy`] swaps it.
     pub fn with_kernel(default_model: impl Into<String>, kernel: KernelHandle) -> Self {
@@ -154,6 +178,117 @@ impl SurfaceState {
 }
 
 // ─── models endpoint ────────────────────────────────────────────────────────
+
+// ─── sessions endpoint ──────────────────────────────────────────────────────
+
+/// `POST /v1/sessions` request — create a new session.
+#[derive(Debug, Deserialize)]
+#[allow(missing_docs)]
+pub struct CreateSessionRequest {
+    #[serde(default = "default_surface")]
+    pub surface: String,
+    #[serde(default)]
+    pub model: String,
+}
+
+fn default_surface() -> String { "rest".into() }
+
+/// One session row in the JSON listing.
+#[derive(Debug, Serialize)]
+#[allow(missing_docs)]
+pub struct SessionInfo {
+    pub id: String,
+    pub created: String,
+    pub surface: String,
+    pub model: String,
+    pub turn_count: u64,
+}
+
+/// One turn row in the JSON listing.
+#[derive(Debug, Serialize)]
+#[allow(missing_docs)]
+pub struct TurnInfo {
+    pub id: u64,
+    pub session_id: String,
+    pub parent_id: Option<u64>,
+    pub role: String,
+    pub content: String,
+    pub ts: String,
+}
+
+#[axum::debug_handler]
+async fn handle_list_sessions(State(state): State<SurfaceState>) -> Response {
+    let Some(store) = state.policy.store().cloned() else {
+        return Json(serde_json::json!({ "data": [] })).into_response();
+    };
+    let rows: Vec<SessionInfo> = store
+        .list_recent_sessions(50)
+        .await
+        .into_iter()
+        .map(|s| SessionInfo {
+            id: s.id,
+            created: s.created,
+            surface: s.surface,
+            model: s.model,
+            turn_count: s.turn_count,
+        })
+        .collect();
+    Json(serde_json::json!({ "data": rows })).into_response()
+}
+
+#[axum::debug_handler]
+async fn handle_create_session(
+    State(state): State<SurfaceState>,
+    Json(req): Json<CreateSessionRequest>,
+) -> Response {
+    let Some(store) = state.policy.store().cloned() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": { "code": "no_store", "message": "no session store attached" }
+            })),
+        )
+            .into_response();
+    };
+    let model = if req.model.is_empty() {
+        state.default_model.clone()
+    } else {
+        req.model
+    };
+    let sess = store.create_session(req.surface, model).await;
+    Json(SessionInfo {
+        id: sess.id,
+        created: sess.created,
+        surface: sess.surface,
+        model: sess.model,
+        turn_count: sess.turn_count,
+    })
+    .into_response()
+}
+
+#[axum::debug_handler]
+async fn handle_list_session_turns(
+    State(state): State<SurfaceState>,
+    axum::extract::Path(session_id): axum::extract::Path<String>,
+) -> Response {
+    let Some(store) = state.policy.store().cloned() else {
+        return Json(serde_json::json!({ "data": [] })).into_response();
+    };
+    let rows: Vec<TurnInfo> = store
+        .list_session_turns(&session_id)
+        .await
+        .into_iter()
+        .map(|t| TurnInfo {
+            id: t.id,
+            session_id: t.session_id,
+            parent_id: t.parent_id,
+            role: t.role,
+            content: t.content,
+            ts: t.ts,
+        })
+        .collect();
+    Json(serde_json::json!({ "data": rows })).into_response()
+}
 
 // ─── audit endpoint ─────────────────────────────────────────────────────────
 
@@ -212,14 +347,17 @@ async fn handle_models(State(state): State<SurfaceState>) -> Json<ModelsList> {
 #[axum::debug_handler]
 async fn handle_chat_completions(
     State(state): State<SurfaceState>,
+    headers: HeaderMap,
     Json(req): Json<OpenAiChatRequest>,
 ) -> Response {
     // Every SDK chat request lands in the agent loop:
     //   0. audit-WAL: record the inbound BEFORE admit/dispatch
     //   1. plane select → Conversation
-    //   2. admit-gate via the TurnPolicy's kernel handle
-    //   3. dispatch to the configured provider
-    //   4. return the completion in the OpenAI wire shape
+    //   2. (optional) parse X-GaussClaw-Session header → persist
+    //   3. admit-gate via the TurnPolicy's kernel handle
+    //   4. dispatch to the configured provider
+    //   5. (optional) persist completion to the session store
+    //   6. return the completion in the OpenAI wire shape
     let plane = state.kernel.plane_for(SurfaceRequest::SdkChat);
     let req_bytes = serde_json::to_vec(&req).unwrap_or_default();
     state
@@ -240,7 +378,19 @@ async fn handle_chat_completions(
     prompt.max_tokens = req.max_tokens;
     prompt.temperature = req.temperature;
 
-    let completion = match state.policy.run(prompt, TaintLabel::User).await {
+    // Extension header: opt-in session persistence. Hermes-clean clients
+    // omit the header and run headless; persistence-aware clients send
+    // a session id, which `TurnPolicy::run_in_session` honours.
+    let session_id = headers
+        .get("x-gaussclaw-session")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    let completion = match state
+        .policy
+        .run_in_session(prompt, TaintLabel::User, session_id.as_deref())
+        .await
+    {
         Ok(c) => c,
         Err(gaussclaw_agent::TurnError::Denied(e)) => {
             return (
@@ -602,6 +752,11 @@ pub fn router(state: SurfaceState) -> Router {
         .route("/v1/turn", post(handle_turn))
         .route("/v1/health", get(handle_health))
         .route("/v1/audit/head", get(handle_audit_head))
+        .route(
+            "/v1/sessions",
+            get(handle_list_sessions).post(handle_create_session),
+        )
+        .route("/v1/sessions/{session_id}/turns", get(handle_list_session_turns))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -949,5 +1104,174 @@ mod tests {
         let (status, body) = post_json("/v1/chat/completions", req).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["model"], "anthropic/claude-3.5-sonnet");
+    }
+
+    #[tokio::test]
+    async fn chat_with_session_header_persists_to_store() {
+        use std::sync::Arc;
+        let store = Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let sess = store.create_session("rest", "echo").await;
+        let state = SurfaceState::new_with_store("echo", store.clone());
+
+        let req = serde_json::json!({
+            "model": "echo",
+            "messages": [{ "role": "user", "content": "persist-me" }],
+            "stream": false,
+        });
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .header("x-gaussclaw-session", sess.id.clone())
+                    .body(Body::from(req.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let turns = store.list_session_turns(&sess.id).await;
+        assert_eq!(turns.len(), 2);
+        assert!(turns[0].content.contains("persist-me"));
+        assert_eq!(turns[1].role, "assistant");
+        assert_eq!(turns[1].parent_id, Some(turns[0].id));
+    }
+
+    #[tokio::test]
+    async fn create_session_endpoint_returns_a_session_id() {
+        use std::sync::Arc;
+        let store = Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let state = SurfaceState::new_with_store("echo", store.clone());
+        let req = serde_json::json!({ "surface": "rest", "model": "echo" });
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/sessions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(req.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let id = body["id"].as_str().expect("id");
+        assert!(!id.is_empty());
+        // The store actually contains it.
+        assert!(store.get_session(id).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn list_sessions_endpoint_returns_persisted_sessions() {
+        use std::sync::Arc;
+        let store = Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let _a = store.create_session("rest", "echo").await;
+        let _b = store.create_session("tui", "echo").await;
+        let state = SurfaceState::new_with_store("echo", store);
+
+        let (status, body) = {
+            let app = router(state);
+            let resp = app
+                .oneshot(
+                    Request::builder()
+                        .method(Method::GET)
+                        .uri("/v1/sessions")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = resp.status();
+            let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            (status, json)
+        };
+        assert_eq!(status, StatusCode::OK);
+        let rows = body["data"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_session_turns_endpoint_returns_persisted_turns() {
+        use std::sync::Arc;
+        let store = Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let sess = store.create_session("rest", "echo").await;
+        let _ = store
+            .append_turn(&sess.id, None, "user", "hello", gauss_core::TaintLabel::User)
+            .await
+            .unwrap();
+        let state = SurfaceState::new_with_store("echo", store);
+
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("/v1/sessions/{}/turns", sess.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let rows = body["data"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["role"], "user");
+        assert_eq!(rows[0]["content"], "hello");
+    }
+
+    #[tokio::test]
+    async fn chat_without_session_header_does_not_persist() {
+        use std::sync::Arc;
+        let store = Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let state = SurfaceState::new_with_store("echo", store.clone());
+        let req = serde_json::json!({
+            "model": "echo",
+            "messages": [{ "role": "user", "content": "headless" }],
+            "stream": false,
+        });
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(req.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let head = store.chain_head().await.unwrap();
+        assert_eq!(head.length, 0);
     }
 }

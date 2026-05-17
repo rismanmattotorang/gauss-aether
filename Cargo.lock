@@ -2751,6 +2751,7 @@ dependencies = [
  "gauss-core",
  "gauss-kernel",
  "gauss-traits",
+ "gaussclaw-store",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -2770,6 +2771,7 @@ dependencies = [
  "clap",
  "gaussclaw-cli",
  "gaussclaw-config",
+ "gaussclaw-store",
  "gaussclaw-tui",
  "gaussclaw-web",
  "tokio",
@@ -2821,7 +2823,10 @@ version = "0.0.1"
 dependencies = [
  "axum",
  "clap",
+ "gauss-audit",
+ "gauss-core",
  "gaussclaw-cli",
+ "gaussclaw-store",
  "gaussclaw-surfaces",
  "insta",
  "serde_json",
@@ -2882,6 +2887,20 @@ version = "0.0.1"
 [[package]]
 name = "gaussclaw-store"
 version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "ed25519-dalek",
+ "gauss-audit",
+ "gauss-core",
+ "gauss-memory",
+ "gauss-traits",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "time",
+ "tokio",
+]
 
 [[package]]
 name = "gaussclaw-surfaces"
@@ -2894,6 +2913,7 @@ dependencies = [
  "gauss-gateway",
  "gauss-kernel",
  "gaussclaw-agent",
+ "gaussclaw-store",
  "serde",
  "serde_json",
  "tokio",
@@ -2927,6 +2947,7 @@ dependencies = [
  "gauss-core",
  "gaussclaw-agent",
  "gaussclaw-config",
+ "gaussclaw-store",
  "mime_guess",
  "rust-embed",
  "serde",

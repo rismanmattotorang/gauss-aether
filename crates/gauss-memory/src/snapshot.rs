@@ -302,7 +302,7 @@ pub mod myers {
 
         /// True iff this patch is empty (`prev == next`).
         #[must_use]
-        pub fn is_empty(&self) -> bool {
+        pub const fn is_empty(&self) -> bool {
             self.ops.is_empty()
         }
 

@@ -99,7 +99,7 @@ pub trait MemoryBackend: Send + Sync {
     /// Phase-6 hybrid recall `ρ_hyb = ρ_fts ∪ ρ_vec` deduplicated by
     /// `turn_id`, with weighted score-merge per `query.alpha`. Default impl
     /// dispatches to `fts_search` + `vector_search` and applies the merge
-    /// in-process; backends MAY override for a single SurrealDB round-trip.
+    /// in-process; backends MAY override for a single `SurrealDB` round-trip.
     ///
     /// # Errors
     /// Propagates the underlying recall errors.

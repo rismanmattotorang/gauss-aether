@@ -48,6 +48,7 @@ use axum::routing::get;
 use gauss_core::{CapToken, TaintLabel};
 use gaussclaw_agent::{AuditTrace, KernelHandle, SurfaceRequest};
 use gaussclaw_config::Config;
+use gaussclaw_store::SessionStore;
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
@@ -199,6 +200,7 @@ pub struct ServerState {
     profile: &'static str,
     kernel: KernelHandle,
     audit: AuditTrace,
+    store: Option<Arc<SessionStore>>,
 }
 
 impl ServerState {
@@ -209,7 +211,7 @@ impl ServerState {
     }
 
     /// Build a state with a caller-supplied kernel handle (audit defaults
-    /// to a fresh trace).
+    /// to a fresh trace, store defaults to `None`).
     pub fn with_kernel(
         config: Config,
         config_source: Option<String>,
@@ -218,9 +220,7 @@ impl ServerState {
         Self::with_kernel_and_audit(config, config_source, kernel, AuditTrace::new())
     }
 
-    /// Full constructor with explicit audit trace. Production deployments
-    /// share one [`AuditTrace`] across the web dashboard, the SDK
-    /// surfaces, and the channel adapters.
+    /// Full constructor with explicit audit trace.
     pub fn with_kernel_and_audit(
         config: Config,
         config_source: Option<String>,
@@ -233,7 +233,17 @@ impl ServerState {
             profile: if cfg!(debug_assertions) { "debug" } else { "release" },
             kernel,
             audit,
+            store: None,
         }
+    }
+
+    /// Attach a Phase 2 session store. The dashboard's `/api/sessions`
+    /// and `/api/receipt/head` endpoints return live data when the
+    /// store is present.
+    #[must_use]
+    pub fn with_store(mut self, store: Arc<SessionStore>) -> Self {
+        self.store = Some(store);
+        self
     }
 
     /// Borrow the active config.
@@ -249,6 +259,11 @@ impl ServerState {
     /// Borrow the audit trace.
     pub const fn audit(&self) -> &AuditTrace {
         &self.audit
+    }
+
+    /// Borrow the session store (if attached).
+    pub const fn store(&self) -> Option<&Arc<SessionStore>> {
+        self.store.as_ref()
     }
 }
 
@@ -309,10 +324,24 @@ async fn handle_config_post() -> (StatusCode, Json<Err>) {
 }
 
 #[axum::debug_handler]
-async fn handle_sessions() -> Json<Ok<Vec<SessionRow>>> {
-    // Sessions land with gaussclaw-store in Phase 2; this returns an
-    // empty list so the dashboard can render its empty state.
-    Json(Ok::new(vec![]))
+async fn handle_sessions(State(state): State<ServerState>) -> Json<Ok<Vec<SessionRow>>> {
+    // Phase 2 wires the session store. When attached, return live recent
+    // sessions; otherwise an empty list.
+    let rows = if let Some(store) = state.store() {
+        store
+            .list_recent_sessions(50)
+            .await
+            .into_iter()
+            .map(|s| SessionRow {
+                id: s.id,
+                created: s.created,
+                turns: s.turn_count,
+            })
+            .collect()
+    } else {
+        vec![]
+    };
+    Json(Ok::new(rows))
 }
 
 #[axum::debug_handler]
@@ -327,7 +356,17 @@ async fn handle_tools() -> Json<Ok<Vec<serde_json::Value>>> {
 
 #[axum::debug_handler]
 async fn handle_receipt_head(State(state): State<ServerState>) -> Json<Ok<ReceiptHeadPayload>> {
-    // Live audit-chain head — every inbound on this server advances it.
+    // When a store is attached, return the live store chain head; turn
+    // counter reflects the chain length. Falls back to the audit trace
+    // head when no store is wired.
+    if let Some(store) = state.store() {
+        if let Ok(head) = store.chain_head().await {
+            return Json(Ok::new(ReceiptHeadPayload {
+                digest: head.digest_hex,
+                turn: head.length,
+            }));
+        }
+    }
     let head = state.audit.head().await;
     Json(Ok::new(ReceiptHeadPayload {
         digest: head.to_hex(),
@@ -560,10 +599,79 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sessions_endpoint_returns_empty_list() {
+    async fn sessions_endpoint_returns_empty_list_without_store() {
         let (status, body) = get_json("/api/sessions").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["data"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn sessions_endpoint_returns_live_data_with_store() {
+        use std::sync::Arc;
+        let store = Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let sess = store.create_session("rest", "anthropic/claude-3.5-sonnet").await;
+        let _ = store
+            .append_turn(&sess.id, None, "user", "hi", gauss_core::TaintLabel::User)
+            .await
+            .unwrap();
+
+        let state = test_state().with_store(store);
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/sessions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let rows = body["data"].as_array().expect("data array");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], sess.id);
+        assert_eq!(rows[0]["turns"], 1);
+    }
+
+    #[tokio::test]
+    async fn receipt_head_with_store_returns_live_chain_head() {
+        use std::sync::Arc;
+        let store = Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let sess = store.create_session("rest", "m").await;
+        let _ = store
+            .append_turn(&sess.id, None, "user", "warm", gauss_core::TaintLabel::User)
+            .await
+            .unwrap();
+
+        let state = test_state().with_store(store);
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/receipt/head")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["data"]["turn"], 1);
+        // Head must NOT be the all-zero genesis digest after one append.
+        let digest = body["data"]["digest"].as_str().unwrap();
+        assert_eq!(digest.len(), 64);
+        assert_ne!(digest, "0".repeat(64));
     }
 
     #[tokio::test]

@@ -20,6 +20,7 @@ gaussclaw-cli    = { workspace = true }
 gaussclaw-config = { workspace = true }
 gaussclaw-tui    = { workspace = true }
 gaussclaw-web    = { workspace = true }
+gaussclaw-store  = { workspace = true }
 clap             = { workspace = true }
 anyhow           = { workspace = true }
 tokio            = { workspace = true }
