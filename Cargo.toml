@@ -149,6 +149,8 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 # Hashing (chain link + record digest); deferred to gauss-audit
 blake3 = "1"
 sha2   = "0.10"
+hmac   = "0.12"
+subtle = "2"
 
 # Composite sandbox — Phase 3. The default WASM layer is wasmi (pure-Rust,
 # fast compile, supports fuel metering). Phase 10 swaps to wasmtime for the

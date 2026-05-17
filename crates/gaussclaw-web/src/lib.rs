@@ -46,7 +46,7 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use gauss_core::{CapToken, TaintLabel};
-use gaussclaw_agent::{KernelHandle, SurfaceRequest};
+use gaussclaw_agent::{AuditTrace, KernelHandle, SurfaceRequest};
 use gaussclaw_config::Config;
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
@@ -190,33 +190,49 @@ pub struct ReceiptHeadPayload {
 // ─── shared state ───────────────────────────────────────────────────────────
 
 /// State passed to every handler. Holds the loaded config, the kernel
-/// handle (admit gate + plane selector), and the build profile.
+/// handle (admit gate + plane selector), the audit trace (every
+/// inbound writes here before admit), and the build profile.
 #[derive(Clone)]
 pub struct ServerState {
     config: Arc<Config>,
     config_source: Option<String>,
     profile: &'static str,
     kernel: KernelHandle,
+    audit: AuditTrace,
 }
 
 impl ServerState {
-    /// Build a fresh state with a permissive kernel. Use this for the
-    /// Phase 1 demo binary and for tests.
+    /// Build a fresh state with a permissive kernel and a fresh audit
+    /// trace. Use this for the Phase 1 demo binary and for tests.
     pub fn new(config: Config, config_source: Option<String>) -> Self {
         Self::with_kernel(config, config_source, KernelHandle::permissive())
     }
 
-    /// Build a state with a caller-supplied kernel handle.
+    /// Build a state with a caller-supplied kernel handle (audit defaults
+    /// to a fresh trace).
     pub fn with_kernel(
         config: Config,
         config_source: Option<String>,
         kernel: KernelHandle,
+    ) -> Self {
+        Self::with_kernel_and_audit(config, config_source, kernel, AuditTrace::new())
+    }
+
+    /// Full constructor with explicit audit trace. Production deployments
+    /// share one [`AuditTrace`] across the web dashboard, the SDK
+    /// surfaces, and the channel adapters.
+    pub fn with_kernel_and_audit(
+        config: Config,
+        config_source: Option<String>,
+        kernel: KernelHandle,
+        audit: AuditTrace,
     ) -> Self {
         Self {
             config: Arc::new(config),
             config_source,
             profile: if cfg!(debug_assertions) { "debug" } else { "release" },
             kernel,
+            audit,
         }
     }
 
@@ -228,6 +244,11 @@ impl ServerState {
     /// Borrow the kernel handle.
     pub const fn kernel(&self) -> &KernelHandle {
         &self.kernel
+    }
+
+    /// Borrow the audit trace.
+    pub const fn audit(&self) -> &AuditTrace {
+        &self.audit
     }
 }
 
@@ -305,18 +326,23 @@ async fn handle_tools() -> Json<Ok<Vec<serde_json::Value>>> {
 }
 
 #[axum::debug_handler]
-async fn handle_receipt_head() -> Json<Ok<ReceiptHeadPayload>> {
+async fn handle_receipt_head(State(state): State<ServerState>) -> Json<Ok<ReceiptHeadPayload>> {
+    // Live audit-chain head — every inbound on this server advances it.
+    let head = state.audit.head().await;
     Json(Ok::new(ReceiptHeadPayload {
-        digest: "0".repeat(64),
+        digest: head.to_hex(),
         turn: 0,
     }))
 }
 
 #[axum::debug_handler]
 async fn handle_chat_ws(State(state): State<ServerState>, ws: WebSocketUpgrade) -> Response {
-    // Admit-gate the upgrade. Failure short-circuits before the WS
-    // handshake completes.
-    let _plane = state.kernel.plane_for(SurfaceRequest::UserSync);
+    // WAL-before-effect: record the WS upgrade attempt BEFORE admit.
+    let plane = state.kernel.plane_for(SurfaceRequest::UserSync);
+    state
+        .audit
+        .record_inbound("/api/chat/ws", "dashboard", b"", TaintLabel::User, plane)
+        .await;
     if let Err(e) = state.kernel.admit(CapToken::NETWORK_GET, TaintLabel::User) {
         return (
             StatusCode::FORBIDDEN,

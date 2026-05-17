@@ -2099,9 +2099,16 @@ dependencies = [
 name = "gaussclaw-agent"
 version = "0.0.1"
 dependencies = [
+ "async-trait",
+ "blake3",
+ "gauss-audit",
  "gauss-core",
  "gauss-kernel",
  "gauss-traits",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -2125,6 +2132,20 @@ dependencies = [
 [[package]]
 name = "gaussclaw-channels"
 version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "gauss-core",
+ "gauss-kernel",
+ "gaussclaw-agent",
+ "hmac",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "gaussclaw-cli"
