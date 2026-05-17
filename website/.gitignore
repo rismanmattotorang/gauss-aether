@@ -1,0 +1,16 @@
+# Docusaurus / Node build artifacts
+.docusaurus/
+build/
+node_modules/
+.cache/
+
+# Runtime logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Misc
+.DS_Store
+.idea/
+.vscode/

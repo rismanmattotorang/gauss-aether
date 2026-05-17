@@ -16,7 +16,7 @@ binary via `rust-embed`.
 gaussclaw web --port 8642
 ```
 
-Opens at <http://127.0.0.1:8642/>. **Runs natively on Linux, macOS,
+Opens at [http://127.0.0.1:8642/](http://127.0.0.1:8642/). **Runs natively on Linux, macOS,
 and Windows** — Hermes upstream needs WSL2 because its dashboard chat
 pane uses a POSIX PTY; GaussClaw streams over WebSocket instead.
 

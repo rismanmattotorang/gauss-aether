@@ -6,27 +6,51 @@ sidebar_position: 10
 
 # Roadmap
 
-The full plan lives in
-[`GAUSSCLAW_ROADMAP.md`](https://github.com/rismanmattotorang/gauss-aether/blob/main/GAUSSCLAW_ROADMAP.md)
-at the repo root. Five phases, twenty-four weeks, four milestones
-plus GA.
+GaussClaw 1.0 ships every Hermes-parity surface (CLI, TUI, web, desktop,
+gateway, ~20 channels, 20 vendor drivers, two meta-routers, 30+
+first-party tools), every safety primitive (kernel admit, 4-layer
+sandbox, taint lattice, receipt chain, schema-gated worker boundary,
+polyhedral provider equivalence), and the Cryptographic Trajectory
+Envelope for SFT/DPO export.
 
-| Phase | Weeks | Milestone | Headline |
-|---|---|---|---|
-| **P1** Surfaces and channels | 1–4 | **M1** | CLI + TUI + web + desktop + channels in shim regime |
-| **P2** Memory, receipts, lineage | 4–10 | **M2** | SQLite/FTS5 → Trinity over SurrealDB; Ed25519 receipt chain |
-| **P3** Tools and sandbox | 10–16 | **M3** | Skill Manifest + `#[tool]`; HWCA + Composite Sandbox; IPI ≤ 2.19% |
-| **P4** Providers + meta-routers | 16–20 | **M4** | 20 leaf + OpenRouter + NotDiamond under polyhedral contracts |
-| **P5** Trajectory export + GA | 20–24 | **GA** | Cryptographic Envelope, Federated Pool, signed installers |
+What we're working on next:
 
-## Binding constraints
+## Near term
 
-1. **Surface-Convergence Preservation** — every Hermes surface
-   produces a behaviourally identical turn under GaussClaw.
-2. **Trajectory schema bit-equality** — SFT/DPO JSONL preserved
-   field-for-field; new material appended in an optional envelope.
-3. **`@tool` decorator ergonomics** preserved literally.
-4. **TOML config compatibility** — Hermes keys continue to work; new
-   keys are optional.
-5. **No axiom regression** — A1–A9 / T1–T12 conformance stays green
-   on every PR.
+- **Bug-bounty programme.** Independent review of the kernel, audit
+  chain, and sandbox by an external security firm. Public scope and
+  payout schedule.
+- **Hardware attestation.** SGX / SEV-SNP / TDX backends for
+  `gauss-attest`, so a remote verifier can prove a turn ran inside a
+  genuine enclave.
+- **iOS and Android desktop shells.** Tauri 2 Mobile (`gaussclaw-desktop`
+  + platform-specific signing).
+
+## Research vehicles
+
+These ship behind stable trait contracts in the runtime; production
+plugins implement them as additive crates.
+
+| Crate | Purpose |
+|---|---|
+| `gauss-zk` | Zero-knowledge proofs over the receipt chain (Merkle commitments + statements). |
+| `gauss-dp` | Differentially-private trajectory exporter — Laplace + Gaussian mechanisms. |
+| `gauss-learnt` | Learnt risk classifier `Φ̂` — logistic scorer that *floors* the SAG rule table. |
+| `gauss-robust` | Robust declassifiers — adversarial-rejection counters that tighten the declass map. |
+| `proofs/lean/` | Lean 4 stubs of all nine axioms and twelve theorems; proofs discharged incrementally. |
+
+## Non-goals
+
+- **No proprietary cloud lock-in.** GaussClaw runs entirely on your
+  hardware, your VPS, or your cluster — there is no "GaussClaw Cloud"
+  product and no plan for one.
+- **No telemetry pings home.** GaussClaw never reports usage to a
+  central server.
+- **No abandoning Hermes parity.** The replay corpus, the OpenAI SDK
+  parity gate, and the CLI `--help` diff are part of the conformance
+  suite and stay green.
+
+Track the full plan in the GitHub
+[milestones](https://github.com/rismanmattotorang/gauss-aether/milestones)
+and on the
+[project board](https://github.com/rismanmattotorang/gauss-aether/projects).
