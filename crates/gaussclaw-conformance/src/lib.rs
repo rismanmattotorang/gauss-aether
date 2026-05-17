@@ -17,7 +17,12 @@
 
 pub mod cli_parity;
 pub mod oai_sdk_parity;
+pub mod polyhedral_provider;
 pub mod replay_corpus;
+
+pub use polyhedral_provider::{
+    HandleEquivalenceError, HandleEquivalenceReport, ProviderProbe, verify_handle_equivalence,
+};
 
 #[cfg(test)]
 mod tests {
