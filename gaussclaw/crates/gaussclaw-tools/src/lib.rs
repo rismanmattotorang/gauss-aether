@@ -61,6 +61,7 @@ pub mod env_get;
 pub mod file_read;
 pub mod file_write;
 pub mod hash;
+pub mod http;
 pub mod json_get;
 pub mod json_set;
 pub mod math_eval;
@@ -79,6 +80,10 @@ pub use env_get::EnvGetTool;
 pub use file_read::FileReadTool;
 pub use file_write::FileWriteTool;
 pub use hash::HashTool;
+pub use http::{
+    HttpClient, HttpClientError, HttpMethod, HttpRequest, HttpResponse, HttpTool, HttpToolPolicy,
+    MockHttpClient, UnconfiguredHttpClient,
+};
 pub use json_get::JsonGetTool;
 pub use json_set::JsonSetTool;
 pub use math_eval::MathEvalTool;
@@ -113,6 +118,13 @@ pub fn default_registry() -> ToolRegistry {
     // populate it explicitly via [`EnvGetTool::with_allowlist`] when
     // composing their own registry.
     reg.register(Arc::new(EnvGetTool::new()));
+    // The HTTP family ships with an `UnconfiguredHttpClient` so the
+    // registry is uniform. Production deployments inject a real client
+    // (e.g. `reqwest`-backed) via `HttpTool::get(client.clone())`.
+    let unconfigured = Arc::new(UnconfiguredHttpClient);
+    reg.register(Arc::new(HttpTool::get(unconfigured.clone())));
+    reg.register(Arc::new(HttpTool::post(unconfigured.clone())));
+    reg.register(Arc::new(HttpTool::head(unconfigured)));
     reg
 }
 
@@ -123,9 +135,9 @@ mod tests {
     use gauss_hwca::WorkerSpawner;
 
     #[test]
-    fn default_registry_has_fifteen_tools() {
+    fn default_registry_has_eighteen_tools() {
         let reg = default_registry();
-        assert_eq!(reg.len(), 15);
+        assert_eq!(reg.len(), 18);
         let ids: Vec<&str> = reg.ids();
         for expected in [
             "base64",
@@ -136,6 +148,9 @@ mod tests {
             "file_read",
             "file_write",
             "hash",
+            "http_get",
+            "http_head",
+            "http_post",
             "json_get",
             "json_set",
             "math_eval",

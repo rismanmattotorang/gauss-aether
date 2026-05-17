@@ -3041,6 +3041,8 @@ dependencies = [
  "gauss-core",
  "gaussclaw-agent",
  "gaussclaw-config",
+ "gaussclaw-export",
+ "gaussclaw-skill",
  "gaussclaw-store",
  "mime_guess",
  "rust-embed",

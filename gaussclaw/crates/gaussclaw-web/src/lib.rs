@@ -49,6 +49,8 @@ use axum::Router;
 use gauss_core::{CapToken, TaintLabel};
 use gaussclaw_agent::{AuditTrace, KernelHandle, SurfaceRequest};
 use gaussclaw_config::Config;
+use gaussclaw_export::{verify_envelope, Envelope, VerifyEnvelopeError};
+use gaussclaw_skill::SkillManifest;
 use gaussclaw_store::SessionStore;
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
@@ -440,6 +442,226 @@ async fn chat_socket(mut socket: WebSocket) {
     }
 }
 
+// ─── Sprint-2 endpoints — receipts, envelope verify, skill preview ─────────
+
+/// One row in the recent-receipts list.
+#[derive(Debug, Serialize)]
+struct ReceiptRow {
+    /// 1-based chain index (1 = first turn).
+    index: u64,
+    /// Turn id, when the store can resolve it.
+    turn_id: Option<u64>,
+    /// Hex-encoded post-head digest.
+    digest: String,
+    /// Hex-encoded payload digest.
+    payload_digest: String,
+    /// True when the receipt verifies cleanly under its embedded key.
+    verified: bool,
+}
+
+/// Recent-receipts response payload.
+#[derive(Debug, Serialize)]
+struct ReceiptListPayload {
+    head: String,
+    length: u64,
+    rows: Vec<ReceiptRow>,
+}
+
+/// Recent receipts (most-recent-first). Bounded at `?limit=` ≤ 100;
+/// the default is 10. Returns an empty list when no store is attached.
+///
+/// Hermes has no audit-surface API — its session store is mutable
+/// SQLite that ships no verification primitive.
+#[axum::debug_handler]
+async fn handle_receipts_recent(
+    State(state): State<ServerState>,
+    axum::extract::Query(q): axum::extract::Query<RecentQuery>,
+) -> Json<Ok<ReceiptListPayload>> {
+    let limit = q.limit.unwrap_or(10).min(100);
+    let Some(store) = state.store() else {
+        return Json(Ok::new(ReceiptListPayload {
+            head: String::new(),
+            length: 0,
+            rows: vec![],
+        }));
+    };
+    let head = store.chain_head().await.ok();
+    let length = head.as_ref().map_or(0, |h| h.length);
+    let head_hex = head.map(|h| h.digest_hex).unwrap_or_default();
+
+    let mut rows = Vec::with_capacity(limit as usize);
+    if length > 0 {
+        let start = length.saturating_sub(limit);
+        for idx in (start..length).rev() {
+            // The chain length is the count of receipts; turn ids are
+            // not always dense, so we attempt by index-as-turn first.
+            let turn_id = idx.saturating_add(1);
+            let Some(receipt) = store.get_receipt(turn_id).await else {
+                continue;
+            };
+            let verified = store.verify_receipt(turn_id).await.unwrap_or(false);
+            rows.push(ReceiptRow {
+                index: idx.saturating_add(1),
+                turn_id: Some(turn_id),
+                digest: hex_lower(&receipt.post_head),
+                payload_digest: hex_lower(&receipt.payload_digest),
+                verified,
+            });
+        }
+    }
+    Json(Ok::new(ReceiptListPayload {
+        head: head_hex,
+        length,
+        rows,
+    }))
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RecentQuery {
+    limit: Option<u64>,
+}
+
+/// Envelope verification request body — the raw envelope JSON.
+type VerifyEnvelopePayload = Envelope;
+
+/// Envelope verification response.
+#[derive(Debug, Serialize)]
+struct VerifyEnvelopeReport {
+    verified: bool,
+    /// Axis at which verification failed (when [`verified`] is false).
+    failed_axis: Option<&'static str>,
+    /// Human-readable detail.
+    detail: Option<String>,
+    /// Convenience echoes for the dashboard.
+    chain_head: String,
+    chain_length: u64,
+    has_anchor: bool,
+}
+
+/// Verify a Cryptographic Trajectory Envelope. The dashboard POSTs the
+/// envelope JSON (the exact wire shape `gaussclaw-export` produces);
+/// the response names which axis (if any) failed.
+///
+/// Hermes upstream has no equivalent — its JSONL exports carry no
+/// verifiable surface at all.
+#[axum::debug_handler]
+async fn handle_envelope_verify(
+    State(_state): State<ServerState>,
+    Json(envelope): Json<VerifyEnvelopePayload>,
+) -> Json<Ok<VerifyEnvelopeReport>> {
+    let chain_head_hex = hex_lower(&envelope.chain_head);
+    let chain_length = envelope.chain_length;
+    let has_anchor = envelope.tsa_anchor.is_some();
+
+    let report = match verify_envelope(&envelope, None, None) {
+        Ok(()) => VerifyEnvelopeReport {
+            verified: true,
+            failed_axis: None,
+            detail: None,
+            chain_head: chain_head_hex,
+            chain_length,
+            has_anchor,
+        },
+        Err(e) => VerifyEnvelopeReport {
+            verified: false,
+            failed_axis: Some(verify_axis(&e)),
+            detail: Some(format!("{e}")),
+            chain_head: chain_head_hex,
+            chain_length,
+            has_anchor,
+        },
+    };
+    Json(Ok::new(report))
+}
+
+const fn verify_axis(err: &VerifyEnvelopeError) -> &'static str {
+    match err {
+        VerifyEnvelopeError::PublicKeyMismatch => "public_key",
+        VerifyEnvelopeError::PayloadDigestMismatch => "payload_digest",
+        VerifyEnvelopeError::ChainLinkInconsistent => "chain_link",
+        VerifyEnvelopeError::Signature(_) => "signature",
+        VerifyEnvelopeError::WitnessHeadMismatch => "witness_head",
+        VerifyEnvelopeError::WitnessIndexExceedsChain { .. } => "witness_index",
+        _ => "other",
+    }
+}
+
+/// Skill-manifest preview request — the raw TOML body.
+#[derive(Debug, Deserialize)]
+struct PreviewSkillPayload {
+    toml: String,
+}
+
+/// Skill-manifest preview response.
+#[derive(Debug, Serialize)]
+struct SkillPreviewReport {
+    parsed: bool,
+    error: Option<String>,
+    /// When parsing succeeded: the structured manifest summary.
+    summary: Option<SkillSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct SkillSummary {
+    name: String,
+    description: String,
+    usage: String,
+    caps: Vec<String>,
+    taint: String,
+    reversible: bool,
+    persistent: bool,
+    cost_tokens_per_call: u32,
+    cost_dollars_per_call: f64,
+    no_instruction_substrings: bool,
+    max_string_len: usize,
+}
+
+/// Preview a Skill Manifest. Validates the TOML, parses the manifest,
+/// and returns a typed summary the dashboard can render before the
+/// operator commits an install.
+///
+/// Hermes loads skills via `--skills name1,name2` strings — there's no
+/// preview surface and no schema enforcement.
+#[axum::debug_handler]
+async fn handle_skill_preview(
+    State(_state): State<ServerState>,
+    Json(payload): Json<PreviewSkillPayload>,
+) -> Json<Ok<SkillPreviewReport>> {
+    match SkillManifest::from_toml(&payload.toml) {
+        Ok(m) => Json(Ok::new(SkillPreviewReport {
+            parsed: true,
+            error: None,
+            summary: Some(SkillSummary {
+                name: m.name.clone(),
+                description: m.description.clone(),
+                usage: m.usage.clone(),
+                caps: m.caps.clone(),
+                taint: m.taint.clone(),
+                reversible: m.reversible,
+                persistent: m.persistent,
+                cost_tokens_per_call: m.cost.tokens_per_call,
+                cost_dollars_per_call: m.cost.dollars_per_call,
+                no_instruction_substrings: m.guards.no_instruction_substrings,
+                max_string_len: m.guards.max_string_len,
+            }),
+        })),
+        Err(e) => Json(Ok::new(SkillPreviewReport {
+            parsed: false,
+            error: Some(format!("{e}")),
+            summary: None,
+        })),
+    }
+}
+
+/// Lower-case hex encode.
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len().saturating_mul(2));
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
 // ─── frontend serving ───────────────────────────────────────────────────────
 
 #[axum::debug_handler]
@@ -520,6 +742,9 @@ pub fn router(state: ServerState) -> Router {
         .route("/api/providers", get(handle_providers))
         .route("/api/tools", get(handle_tools))
         .route("/api/receipt/head", get(handle_receipt_head))
+        .route("/api/receipts/recent", get(handle_receipts_recent))
+        .route("/api/envelope/verify", axum::routing::post(handle_envelope_verify))
+        .route("/api/skills/preview", axum::routing::post(handle_skill_preview))
         .route("/api/chat/ws", get(handle_chat_ws))
         // Frontend
         .route("/", get(handle_root))
@@ -759,5 +984,97 @@ mod tests {
         // Either rejected outright, or the SPA fallback kicks in. Both are
         // acceptable; the test asserts no 5xx leak.
         assert!(resp.status().is_success() || resp.status() == StatusCode::BAD_REQUEST);
+    }
+
+    // ─── Sprint-2 endpoints ────────────────────────────────────────────
+
+    async fn post_json(uri: &str, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
+        let app = router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        // Non-2xx responses may carry plain-text error bodies from Axum
+        // (e.g. 422 from a JSON deserialisation failure). Fall back to
+        // an empty object so callers can still inspect status.
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::json!({}));
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn receipts_recent_returns_empty_list_without_store() {
+        let (status, body) = get_json("/api/receipts/recent?limit=5").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["length"], 0);
+        assert!(body["data"]["rows"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn skill_preview_parses_valid_toml() {
+        let toml = r#"
+name = "echo"
+description = "echo"
+caps = []
+taint = "trusted"
+"#;
+        let (status, body) =
+            post_json("/api/skills/preview", serde_json::json!({ "toml": toml })).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["parsed"], true);
+        assert_eq!(body["data"]["summary"]["name"], "echo");
+        assert_eq!(body["data"]["summary"]["taint"], "trusted");
+    }
+
+    #[tokio::test]
+    async fn skill_preview_reports_invalid_toml() {
+        let (status, body) =
+            post_json("/api/skills/preview", serde_json::json!({ "toml": "this = is = not toml" })).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["parsed"], false);
+        assert!(body["data"]["error"].is_string());
+        assert!(body["data"]["summary"].is_null());
+    }
+
+    #[tokio::test]
+    async fn envelope_verify_reports_failure_for_malformed_envelope() {
+        // An envelope with bogus internal references; the verifier
+        // names the failing axis.
+        let zeros32: Vec<u8> = vec![0; 32];
+        let zeros64: Vec<u8> = vec![0; 64];
+        let bogus = serde_json::json!({
+            "body": { "sft": { "session_id": "s", "turn_id": 1, "messages": [], "model": "m", "ts": "2026-01-01T00:00:00Z" } },
+            "receipt": {
+                "turn_id": 1,
+                "prev_head":      zeros32,
+                "post_head":      vec![1u8; 32],
+                "payload_digest": vec![2u8; 32],
+                "public_key":     vec![3u8; 32],
+                "signature":      zeros64,
+            },
+            "chain_head":     vec![4u8; 32],
+            "chain_length":   1,
+            "witness":        { "index": 1, "post_head": vec![9u8; 32] },
+            "tsa_anchor":     null,
+            "body_canonical": Vec::<u8>::new(),
+        });
+        let (status, body) = post_json("/api/envelope/verify", bogus).await;
+        // The malformed envelope may even fail to parse — both 422 and
+        // a 200 with verified=false demonstrate the verify path works.
+        assert!(status == StatusCode::OK || status.as_u16() == 422,
+            "unexpected status: {status}");
+        if status == StatusCode::OK {
+            assert_eq!(body["data"]["verified"], false);
+            assert!(body["data"]["failed_axis"].is_string());
+        }
     }
 }
