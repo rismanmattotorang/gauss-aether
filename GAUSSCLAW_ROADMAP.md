@@ -50,8 +50,12 @@ The port adds the following workspace members. Each crate is small, single-respo
 ```
 crates/
 ├── gaussclaw-agent          # Hermes AIAgent.run_conversation → DTE turn policy
-├── gaussclaw-surfaces       # CLI · TUI · REST · WS · OAI-compat relay (ChannelTrait impls)
-├── gaussclaw-channels       # ~20 messaging adapters (Slack, Discord, Matrix, …)
+├── gaussclaw-cli            # clap subcommands: model · tools · config · gateway · setup · update · doctor
+├── gaussclaw-tui            # Ratatui + crossterm; full-screen interactive shell (replaces React+Ink)
+├── gaussclaw-web            # Axum dashboard backend + embedded React 19 / Vite / Tailwind v4 frontend
+├── gaussclaw-website        # Docusaurus content tree + i18n (en, zh-Hans); CI-built static site
+├── gaussclaw-surfaces       # Thin adapters: REST · WS · OAI-compat relay (ChannelTrait impls)
+├── gaussclaw-channels       # ~20 messaging adapters (Slack, Discord, Telegram, Matrix, …)
 ├── gaussclaw-providers      # 20 leaf vendor drivers (Anthropic, OpenAI, Google, …)
 ├── gaussclaw-providers-meta # OpenRouter (aggregator) + NotDiamond (learned router)
 ├── gaussclaw-api-modes      # chat-completion · responses · openai-compat shims
@@ -62,9 +66,20 @@ crates/
 ├── gaussclaw-fed            # Federated Trajectory Pool client + reference server
 ├── gaussclaw-config         # Hermes-compatible TOML (figment) loader
 ├── gaussclaw-migrate        # `gaussclaw import hermes ./hermes-config.toml`
-├── gaussclaw-conformance    # Hermes-parity test suite (1,000-turn corpus, OAI SDK)
+├── gaussclaw-conformance    # Hermes-parity test suite (1,000-turn corpus, OAI SDK, TUI snapshot, web e2e)
 └── gaussclaw-bin            # The shipping binary; wires all of the above
 ```
+
+### UI surface parity matrix (vs. Hermes upstream)
+
+| Hermes path | Stack | GaussClaw crate | Stack | Improvement |
+|---|---|---|---|---|
+| `hermes/ui-tui/` | TypeScript · React · forked **Ink** | `gaussclaw-tui` | Rust · **Ratatui + crossterm** | No Node runtime; cold-start sub-10 ms; receipt-aware status bar |
+| `hermes/web/` (frontend) | React 19 · Vite · Tailwind v4 · shadcn-style | `gaussclaw-web` (`/frontend`) | **Retained** verbatim, served via `rust-embed` | Zero behavioural drift; same `StatusPage` / `ConfigPage` / `EnvPage` |
+| `hermes/web/` (backend) | FastAPI · **POSIX PTY** (WSL2-only) | `gaussclaw-web` (`/backend`) | Rust · **Axum** · WebSocket streaming | No PTY; runs on Linux / macOS / Windows native; capability-gated config writes |
+| `hermes/tui_gateway/` | Python TUI ↔ gateway IPC | folded into `gaussclaw-tui` + `gaussclaw-gateway` plane | Rust · in-process channel | One process; no IPC ceremony |
+| `hermes/website/` | **Docusaurus** + i18n (zh-Hans) | `gaussclaw-website` | **Docusaurus** retained + new `mdBook` API reference | Preserves URL structure + i18n; adds rustdoc-aware crate API site |
+| `hermes` CLI | Python `click` | `gaussclaw-cli` | Rust · `clap` v4 | Static binary; identical subcommands and flags |
 
 ---
 
@@ -88,26 +103,111 @@ Each milestone produces a shippable binary. Phase N+1 validates against Phase N'
 
 ### Scope
 
-- `surfaces.cli`, `surfaces.tui`, `surfaces.rest`, `surfaces.ws`, `surfaces.oai_compat`
-- `channels.*` (Slack, Discord, Telegram, Matrix, Mattermost, IRC, XMPP, Signal, SMS, Email, Webhook, …)
-- `gauss-gateway` three-plane router
+- **CLI** (`gaussclaw-cli`) — clap-based subcommand surface matching Hermes 1:1
+- **TUI** (`gaussclaw-tui`) — Ratatui-based full-screen shell replacing Hermes's React+Ink
+- **Web dashboard** (`gaussclaw-web`) — Axum backend + retained React 19 / Vite / Tailwind frontend
+- **Website** (`gaussclaw-website`) — Docusaurus content + i18n; mdBook API reference
+- **Thin surfaces** (`gaussclaw-surfaces`) — REST, WS, OAI-compat relay
+- **Messaging channels** (`gaussclaw-channels`) — Slack, Discord, Telegram, Matrix, Mattermost, IRC, XMPP, Signal, SMS, Email, Webhook, …
+- **Three-plane routing** via `gauss-gateway`
 
 ### Tasks
 
-1. **Audit Hermes adapters.** Walk `hermes/surfaces/*` and `hermes/channels/*` in the upstream repo; produce `docs/HERMES_ADAPTER_MATRIX.md` listing for each: file path, transport, message schema, auth model, expected `surface` field value.
-2. **Define `ChannelTrait` impls.** For each surface, implement a thin Rust adapter in `gaussclaw-surfaces` / `gaussclaw-channels` that constructs a `gauss_gateway::Message` and routes it via the three-plane scheduler:
-   - CLI / TUI / REST / WS / channels → **Conversation plane**
-   - Scheduled / daemon turns → **Daemon plane**
-   - Tool-call approvals → **Approval plane**
-3. **Shim subprocess.** Implement `PythonShimExecutor` in `gaussclaw-agent` that fork-execs the legacy Hermes Python with stdio JSON-RPC. Every routed message becomes an RPC call; every streamed token is re-emitted on the Gauss-Aether wire.
-4. **OAI-compatible relay parity.** Stand up `gaussclaw-surfaces::oai_compat` with full `/v1/chat/completions`, `/v1/completions`, `/v1/models`, and SSE streaming. Parametrise the **OpenAI Python SDK end-to-end test suite** against both Hermes and GaussClaw back-ends.
-5. **Audit-trace recording.** Every adapter writes a turn-entry trace (surface, ts, headers, body hash) into `gauss-audit` *before* dispatch, so divergence can be diffed turn-by-turn.
+1. **Audit Hermes adapters.** Walk `hermes/surfaces/*`, `hermes/channels/*`, `hermes/ui-tui/src/**`, `hermes/web/**`, `hermes/website/**`; produce `docs/HERMES_ADAPTER_MATRIX.md` listing per surface: file path, transport, message schema, auth model, `surface` field value.
+
+2. **CLI subcommand parity (`gaussclaw-cli`).** clap v4 derive API. The shipping binary must accept every Hermes top-level command:
+
+   | Hermes command | GaussClaw equivalent | Notes |
+   |---|---|---|
+   | `hermes` (no args) | `gaussclaw` | Launches TUI by default |
+   | `hermes model` | `gaussclaw model` | Interactive model picker (talks to provider plane) |
+   | `hermes tools` | `gaussclaw tools` | Enable/disable tools; lists Skill Manifests |
+   | `hermes config set <k> <v>` | `gaussclaw config set <k> <v>` | figment-backed; capability-gated writes |
+   | `hermes gateway` | `gaussclaw gateway` | Starts messaging gateway (Daemon plane) |
+   | `hermes setup` | `gaussclaw setup` | Interactive wizard; writes `gaussclaw.toml` |
+   | `hermes update` | `gaussclaw update` | Self-update via signed release manifests |
+   | `hermes doctor` | `gaussclaw doctor` | Runs `gauss-health` SDHE invariants |
+   | — | `gaussclaw import hermes <path>` | NEW: migrate Hermes config |
+   | — | `gaussclaw chat` | NEW: one-shot REPL without TUI |
+
+   Flag-level parity tested by `gaussclaw-conformance::cli_parity` against a frozen `--help` corpus.
+
+3. **TUI (`gaussclaw-tui`).** Replace the React + Ink stack with a native Rust TUI:
+   - **Stack:** [Ratatui](https://ratatui.rs) + [crossterm](https://github.com/crossterm-rs/crossterm) for rendering, [tui-textarea](https://github.com/rhysd/tui-textarea) for multiline editing, [tui-tree-widget](https://github.com/EdJoPaTo/tui-rs-tree-widget) for the queue panel, `tokio` for async streaming.
+   - **Widget parity** with Hermes Ink components:
+     - Chat input with multiline (`Shift+Enter` / `Alt+Enter` to insert newline)
+     - Live assistant streaming pane (tokens arrive over WS from the Conversation plane)
+     - Prompt overlays: **approval**, **clarify**, **sudo**, **secret-input** (all routed through `gauss-sag`)
+     - Queue preview panel (messages queued while agent busy; drain on completion)
+     - Status bar (session, model, turn count, **receipt chain head hash**, taint floor — *new vs. Hermes*)
+     - Completion list (slash commands, file paths)
+     - Session resume picker (`SELECT FROM turn WHERE …` via `gaussclaw-store`)
+     - Model picker (catalogue from `gaussclaw-providers` + meta-routers)
+     - Tool activity lane (per-tool sandbox status, fuel/epoch counters)
+   - **Keybindings** match Hermes verbatim: `Enter` submit, `Shift+Enter`/`Alt+Enter` newline, `Ctrl+C` interrupt/clear/exit, `Ctrl+L` new session, `Cmd/Ctrl+G` open `$EDITOR`, `Tab` apply completion, `Up/Down` cycle completions / edit history.
+   - **Slash commands** match Hermes verbatim plus GaussClaw additions:
+     `/help`, `/quit`, `/clear`, `/new`, `/compact`, `/resume`, `/copy`, `/paste`, `/details`, `/logs`, `/statusbar`, `/queue`, `/undo`, `/retry`,
+     **new:** `/receipt` (show current chain head + Merkle proof), `/taint` (show floor + per-token labels), `/caps` (show current capability set), `/sandbox` (per-tool layer status).
+   - **Theme:** TOML-driven, parses Hermes's existing theme files unchanged.
+   - **Conformance:** `gaussclaw-conformance::tui_snapshot` records terminal output via [insta](https://insta.rs/) golden snapshots for every screen state.
+
+4. **Web dashboard (`gaussclaw-web`).** Two halves:
+
+   **Backend (`/backend`, Rust · Axum).**
+   - Replaces Hermes's FastAPI server. No Python in the dashboard path.
+   - REST endpoints mirror Hermes: `GET /api/status`, `GET /api/sessions`, `GET /api/config/schema`, `POST /api/config/set`, `GET /api/env`, `POST /api/env/save`, `GET /api/tools`, `POST /api/chat` (SSE), `WS /api/chat/ws`.
+   - **Eliminates the POSIX PTY dependency.** The chat pane streams over WebSocket through `gauss-gateway::Conversation`, so the dashboard runs natively on Linux, macOS, and Windows — closing the Hermes WSL2-only restriction.
+   - Config writes are capability-gated: the dashboard backend declares `caps = ["config:write"]` in its Skill Manifest; an operator without that capability sees a read-only UI.
+   - Telemetry endpoints expose `gauss-health` SDHE invariants, receipt-chain head, per-plane budget pools, IPI-defence counters.
+
+   **Frontend (`/frontend`, retained verbatim from Hermes upstream).**
+   - **No rewrite.** Kept on React 19 + Vite + Tailwind CSS v4 + shadcn-style primitives.
+   - Pages preserved: `StatusPage`, `ConfigPage`, `EnvPage`.
+   - Page additions (additive only): `ReceiptPage` (chain head, verify upload, TSA proofs), `LineagePage` (graph viewer), `SandboxPage` (per-tool layer status), `ProvidersPage` (catalogue, polyhedral-equivalence badges, OpenRouter/NotDiamond catalogues), `ExportPage` (envelope viewer, taint filter mode toggle).
+   - Build pipeline: `cd frontend && pnpm install && pnpm build` → `dist/` is embedded into the Rust binary via [`rust-embed`](https://github.com/pyrossh/rust-embed) so the shipping `gaussclaw` is a single static binary.
+   - The Vite dev server proxies `/api/*` to the Axum backend during development (mirrors Hermes's FastAPI proxy).
+   - **Optional Leptos variant** tracked in v2 (`/frontend-leptos`) for a fully-Rust WASM dashboard. Not GA-blocking.
+
+5. **Website (`gaussclaw-website`).** Two surfaces:
+
+   **User-facing site (`/site`).**
+   - **Docusaurus retained** — same generator Hermes uses, same theme structure, same i18n folder layout (English + `zh-Hans`).
+   - Content imported from Hermes `/website/` and rewritten for GaussClaw subsystem names; cross-links to the published GaussClaw / Gauss-Aether PDFs.
+   - Sections: Getting Started · CLI Reference · TUI Reference · Web Dashboard · Tools (Skill Manifests) · Providers & Meta-Routers · Trajectory Export · Capability & Taint · Receipt Chain · Migration from Hermes · Architecture (links to ARCHITECTURE.md).
+   - i18n: English + Simplified Chinese at launch (matching Hermes); German, Japanese tracked as v2.
+   - Build: `pnpm build` → `build/` deployable to GitHub Pages, Cloudflare Pages, or any static host.
+
+   **API reference (`/rustdoc`).**
+   - [mdBook](https://rust-lang.github.io/mdBook/) site generated by `cargo doc --workspace --no-deps` and stitched into a unified crate-graph index.
+   - Auto-deploys with the user-facing site under `/api/`.
+   - Covers all `gauss-*` and `gaussclaw-*` crates with their axiom/theorem annotations.
+
+   **CI:** `ascii-guard`-equivalent lint preserved; new lint checks that every page references at least one canonical anchor (axiom, theorem, or Hermes-module path).
+
+6. **Thin surface adapters (`gaussclaw-surfaces`).** REST (Axum routes serving `/v1/...`), WS (axum WebSocket upgrades, same wire shape as Hermes), OAI-compat relay (`/v1/chat/completions`, `/v1/completions`, `/v1/models` with SSE streaming).
+
+7. **Channel adapters (`gaussclaw-channels`).** One module per messaging platform, each a `ChannelTrait` impl. Auth secrets handled by `gauss-attest` secret store; never round-tripped to the Python shim.
+
+8. **Shim subprocess.** `PythonShimExecutor` in `gaussclaw-agent` fork-execs legacy Hermes with stdio JSON-RPC. Every routed message is an RPC call; every streamed token re-emitted on the Gauss-Aether wire. Removed phase-by-phase as native executors land.
+
+9. **Three-plane routing.** All surfaces route through `gauss-gateway`:
+   - **Conversation plane:** CLI, TUI, REST, WS, OAI-compat relay, web chat, messaging channels.
+   - **Daemon plane:** Scheduled / background turns, gateway long-poll workers.
+   - **Approval plane:** Tool-call approval prompts surfaced through TUI overlays, web `ApprovalPage`, and Slack/Discord interactive messages.
+
+10. **OAI-compat relay parity.** Parametrise the **OpenAI Python SDK end-to-end test suite** against both Hermes and GaussClaw back-ends.
+
+11. **Audit-trace recording.** Every adapter writes a turn-entry trace (surface, ts, headers, body hash) into `gauss-audit` *before* dispatch.
 
 ### Crate dependency edges
 
 ```
-gaussclaw-surfaces  → gauss-gateway, gauss-traits
-gaussclaw-channels  → gauss-gateway, gauss-traits
+gaussclaw-cli       → gaussclaw-agent, gaussclaw-tui, gaussclaw-web, gaussclaw-config
+gaussclaw-tui       → gauss-gateway, gauss-traits, ratatui, crossterm, tui-textarea
+gaussclaw-web       → gauss-gateway, gauss-health, gauss-sag, axum, rust-embed
+gaussclaw-website   → (build-only: docusaurus, mdbook; no runtime deps)
+gaussclaw-surfaces  → gauss-gateway, gauss-traits, axum
+gaussclaw-channels  → gauss-gateway, gauss-traits, gauss-attest
 gaussclaw-agent     → gauss-turn, gauss-traits (shim path: tokio::process::Command)
 gaussclaw-bin       → all of the above
 ```
@@ -115,6 +215,10 @@ gaussclaw-bin       → all of the above
 ### Exit criteria (M1)
 
 - [ ] All 20+ channels deliver a representative sample of **1,000 production turns** through GaussClaw, with output byte-identical to Hermes modulo timestamp.
+- [ ] **CLI parity:** every Hermes subcommand and flag accepted by `gaussclaw-cli`; `gaussclaw --help` and per-subcommand help diff clean against a frozen Hermes corpus.
+- [ ] **TUI parity:** every Hermes Ink screen, keybinding, and slash command available in `gaussclaw-tui`; insta snapshot tests green for every documented screen state; latency p99 for first-token render ≤ 20 ms above provider latency.
+- [ ] **Web dashboard parity:** `StatusPage`, `ConfigPage`, `EnvPage` work against the Axum backend with no client-side changes from the Hermes upstream frontend; Playwright e2e suite green on Linux, macOS, Windows native (no WSL2 required).
+- [ ] **Website parity:** Docusaurus site builds, deploys to a static host, serves both English and `zh-Hans`; redirect map from the Hermes URL structure tested.
 - [ ] OAI-compat relay passes **100 %** of the OpenAI Python SDK's official end-to-end suite, parametrised by both backends.
 - [ ] Trajectory export under shim regime produces files **byte-identical** to those produced by raw Hermes on the same input traffic (run via `gaussclaw-conformance::replay_corpus`).
 - [ ] No regression in `gauss-conformance` (A1–A9, T1–T12).
@@ -456,7 +560,12 @@ The envelope is **optional** for consumers that ignore it; **mandatory** for fed
 6. **Six-metric operational profile.** Cold start, tool overhead, audit cost, hybrid recall, crash recovery, multi-tenant safety. Must tie or lead the best baseline on every metric.
 7. **`gaussclaw doctor`.** Self-Diagnostic Health Engine (`gauss-health`) command that runs invariants ℐ, prints federated attestations, surfaces any drift.
 8. **Migration UX.** `gaussclaw import hermes ./hermes-config.toml` produces a GaussClaw config with the legacy executor enabled and a phase-by-phase opt-in checklist.
-9. **Public bug-bounty period.** Two weeks during which Hermes remains co-deployed for any GA-blocking regression.
+9. **Website + dashboard GA.** Finalise `gaussclaw-website`:
+   - All Docusaurus sections complete and proofread in English + `zh-Hans`.
+   - `ReceiptPage`, `LineagePage`, `SandboxPage`, `ProvidersPage`, `ExportPage` ship in `gaussclaw-web`'s frontend with documented walkthroughs in the site.
+   - mdBook API reference auto-builds from `cargo doc --workspace`.
+   - Deploy target set up (GitHub Pages or Cloudflare Pages); HTTPS, redirect map from Hermes URL space, and 301 from `hermes-agent.nousresearch.com`-style paths configured for the official deployment.
+10. **Public bug-bounty period.** Two weeks during which Hermes remains co-deployed for any GA-blocking regression.
 
 ### Crate dependency edges
 
@@ -474,6 +583,8 @@ gaussclaw-bin    → gaussclaw-export, gaussclaw-fed
 - [ ] `gaussclaw doctor` passes on all three deployment modes (embedded, single-node TCP, TiKV-clustered).
 - [ ] Public bug-bounty closes without GA-blocking regressions.
 - [ ] `gaussclaw import hermes` round-trips a real Hermes deployment in under 60 s.
+- [ ] **Website live** with English + `zh-Hans` content, mdBook API reference, working migration guide; Lighthouse score ≥ 95 on every section.
+- [ ] **Single-binary shipping.** `gaussclaw` is one static binary that includes the TUI, the embedded web dashboard frontend, and all subcommands; no Node/Python runtime required at runtime.
 
 ### Rollback
 
@@ -513,11 +624,14 @@ fallback = ["openrouter/anthropic/claude-3.5-sonnet"]
 
 ### Conformance suite
 
-`gaussclaw-conformance` carries three test classes that run in every CI build from Phase 1 onward:
+`gaussclaw-conformance` carries six test classes that run in every CI build from Phase 1 onward:
 
 1. **Hermes-replay.** A frozen 1,000-turn corpus replayed through both Hermes and GaussClaw; byte-equal trajectory output required.
 2. **OAI SDK parity.** OpenAI Python SDK's end-to-end test suite, parametrised by both backends.
-3. **Axiom regressions.** Every PR runs the `gauss-conformance` suite to guarantee A1–A9 / T1–T12 hold.
+3. **CLI parity.** Hermes `--help` corpus diffed against `gaussclaw --help`; every subcommand exit-code and stderr shape locked.
+4. **TUI snapshot.** `insta` golden snapshots of every documented Ink screen state, re-rendered through Ratatui and diffed.
+5. **Web e2e.** Playwright suite driving the React frontend against both Hermes FastAPI and GaussClaw Axum backends; identical user-visible behaviour on Linux / macOS / Windows native.
+6. **Axiom regressions.** Every PR runs the `gauss-conformance` suite to guarantee A1–A9 / T1–T12 hold.
 
 ### Risk register (operational mitigations)
 
