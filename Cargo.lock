@@ -2749,9 +2749,11 @@ dependencies = [
  "blake3",
  "gauss-audit",
  "gauss-core",
+ "gauss-hwca",
  "gauss-kernel",
  "gauss-traits",
  "gaussclaw-store",
+ "gaussclaw-tools",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -2883,6 +2885,14 @@ version = "0.0.1"
 [[package]]
 name = "gaussclaw-skill"
 version = "0.0.1"
+dependencies = [
+ "gauss-core",
+ "gauss-traits",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "toml 0.8.2",
+]
 
 [[package]]
 name = "gaussclaw-store"
@@ -2925,6 +2935,17 @@ dependencies = [
 [[package]]
 name = "gaussclaw-tools"
 version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "gauss-core",
+ "gauss-hwca",
+ "gauss-traits",
+ "gaussclaw-skill",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
 
 [[package]]
 name = "gaussclaw-tui"

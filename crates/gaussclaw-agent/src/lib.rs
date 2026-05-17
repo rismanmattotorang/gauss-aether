@@ -346,6 +346,11 @@ pub enum TurnError {
     /// The provider failed.
     #[error("provider: {0}")]
     Provider(#[from] ProviderError),
+    /// Tool dispatch failed inside the HWCA worker (schema gate
+    /// refusal, depth bound, or tool-side error). Carries the
+    /// formatted underlying [`gauss_core::GaussError`] message.
+    #[error("tool: {0}")]
+    Tool(String),
     /// The prompt was malformed.
     #[error("invalid prompt: {0}")]
     Invalid(String),
@@ -375,6 +380,14 @@ pub struct TurnPolicy {
     /// the assistant completion as separate [`gaussclaw_store::Turn`]
     /// rows. When `None`, no persistence.
     store: Option<Arc<gaussclaw_store::SessionStore>>,
+    /// Optional tool registry — when set, [`Self::dispatch_tool`]
+    /// resolves a tool name into a [`gauss_traits::ToolTrait`] handle
+    /// and runs it through the HWCA worker spawner.
+    tools: Option<Arc<gaussclaw_tools::ToolRegistry>>,
+    /// HWCA worker spawner — shared across every tool dispatch. Default
+    /// is a fresh in-process spawner with no sandbox; production
+    /// deployments swap to a Composite-Sandbox-attached spawner.
+    spawner: Arc<gauss_hwca::WorkerSpawner>,
     /// Capability that every turn must satisfy. Default `NETWORK_GET`.
     required_cap: CapToken,
 }
@@ -387,8 +400,94 @@ impl TurnPolicy {
             provider,
             audit: None,
             store: None,
+            tools: None,
+            spawner: Arc::new(gauss_hwca::WorkerSpawner::new()),
             required_cap: CapToken::NETWORK_GET,
         }
+    }
+
+    /// Attach a [`gaussclaw_tools::ToolRegistry`]. Tool dispatch
+    /// becomes available via [`Self::dispatch_tool`].
+    #[must_use]
+    pub fn with_tools(mut self, tools: Arc<gaussclaw_tools::ToolRegistry>) -> Self {
+        self.tools = Some(tools);
+        self
+    }
+
+    /// Attach a caller-supplied [`gauss_hwca::WorkerSpawner`]. The
+    /// default is an unsandboxed in-process spawner; production
+    /// deployments build one with `gauss_sandbox::CompositeSandbox`
+    /// attached.
+    #[must_use]
+    pub fn with_spawner(mut self, spawner: Arc<gauss_hwca::WorkerSpawner>) -> Self {
+        self.spawner = spawner;
+        self
+    }
+
+    /// Borrow the tool registry, if any.
+    pub const fn tools(&self) -> Option<&Arc<gaussclaw_tools::ToolRegistry>> {
+        self.tools.as_ref()
+    }
+
+    /// Dispatch a single tool call.
+    ///
+    /// Lifecycle (mirrors the per-turn discipline, scoped to a tool):
+    ///
+    /// 1. Look up the tool in the registry. Unknown id → error.
+    /// 2. Kernel admit with the tool's declared `cap_required` and
+    ///    the supplied `incoming_taint`. Refusal terminates dispatch.
+    /// 3. (Optional) Audit `Inbound` — closes WAL-before-effect for
+    ///    the tool dispatch path too.
+    /// 4. [`gauss_hwca::WorkerSpawner::spawn_and_invoke`] — runs the
+    ///    tool inside an HWCA worker; only the schema-validated
+    ///    [`gauss_traits::ValidatedValue`] crosses back.
+    ///
+    /// # Errors
+    /// - [`TurnError::Invalid`] when no registry is attached or the
+    ///   tool id is unknown.
+    /// - [`TurnError::Denied`] when the kernel refuses admit.
+    /// - [`TurnError::Tool`] wrapping the HWCA / tool / schema-gate
+    ///   error otherwise.
+    pub async fn dispatch_tool(
+        &self,
+        tool_name: &str,
+        args: serde_json::Value,
+        incoming_taint: TaintLabel,
+        depth: u32,
+    ) -> TurnResult<gauss_traits::ValidatedValue> {
+        let registry = self
+            .tools
+            .as_ref()
+            .ok_or_else(|| TurnError::Invalid("no tool registry attached".into()))?;
+        let tool = registry
+            .get(tool_name)
+            .ok_or_else(|| TurnError::Invalid(format!("unknown tool: {tool_name}")))?;
+        // Kernel admit: the tool's declared cap_required vs the
+        // current grant, under the incoming taint floor. This is
+        // independent of the per-turn admit and runs once per tool
+        // call.
+        self.kernel
+            .admit(tool.manifest().cap_required, incoming_taint)?;
+        // Audit the tool inbound BEFORE dispatch. Even a refused tool
+        // call leaves a chain-anchored record.
+        if let Some(audit) = &self.audit {
+            let body_bytes = serde_json::to_vec(&args).unwrap_or_default();
+            audit
+                .record_inbound(
+                    format!("tool:{tool_name}"),
+                    "agent",
+                    &body_bytes,
+                    incoming_taint,
+                    self.kernel.plane_for(SurfaceRequest::SdkChat),
+                )
+                .await;
+        }
+        let validated = self
+            .spawner
+            .spawn_and_invoke(tool.as_ref(), args, incoming_taint, depth)
+            .await
+            .map_err(|e| TurnError::Tool(format!("{e:?}")))?;
+        Ok(validated)
     }
 
     /// Attach an [`AuditTrace`]. Every turn now records `TurnStart`
@@ -702,6 +801,80 @@ mod tests {
         assert_eq!(edge.from, turns[0].id);
         assert_eq!(edge.to, turns[1].id);
         assert_eq!(edge.commit_hex.len(), 64);
+    }
+
+    // ── tool dispatch (Phase 3) ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn dispatch_tool_without_registry_is_invalid() {
+        let tp = TurnPolicy::new(
+            KernelHandle::permissive(),
+            Arc::new(EchoProvider::default()),
+        );
+        let err = tp
+            .dispatch_tool("echo", serde_json::json!({}), TaintLabel::User, 0)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TurnError::Invalid(_)));
+    }
+
+    #[tokio::test]
+    async fn dispatch_tool_unknown_id_is_invalid() {
+        let tp = TurnPolicy::new(
+            KernelHandle::permissive(),
+            Arc::new(EchoProvider::default()),
+        )
+        .with_tools(Arc::new(gaussclaw_tools::default_registry()));
+        let err = tp
+            .dispatch_tool("nope", serde_json::json!({}), TaintLabel::User, 0)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TurnError::Invalid(_)));
+    }
+
+    #[tokio::test]
+    async fn dispatch_tool_echo_returns_validated_value() {
+        let tp = TurnPolicy::new(
+            KernelHandle::permissive(),
+            Arc::new(EchoProvider::default()),
+        )
+        .with_tools(Arc::new(gaussclaw_tools::default_registry()));
+        let out = tp
+            .dispatch_tool(
+                "echo",
+                serde_json::json!({ "text": "marker-xyz" }),
+                TaintLabel::User,
+                0,
+            )
+            .await
+            .expect("echo dispatch");
+        assert_eq!(out.value["echo"], "marker-xyz");
+        // Output taint joins incoming with the tool's declared default
+        // (Web for the HWCA default). Result is one of those two.
+        assert!(matches!(out.taint, TaintLabel::Web | TaintLabel::User));
+    }
+
+    #[tokio::test]
+    async fn dispatch_tool_admit_denial_propagates() {
+        use gauss_core::CapToken;
+        use gauss_kernel::PrivilegedKernel;
+        // Empty grant: file_read requires FILESYSTEM_READ → admit fails.
+        let empty = Arc::new(PrivilegedKernel::new(CapToken::BOTTOM));
+        let tp = TurnPolicy::new(
+            KernelHandle::new(empty),
+            Arc::new(EchoProvider::default()),
+        )
+        .with_tools(Arc::new(gaussclaw_tools::default_registry()));
+        let err = tp
+            .dispatch_tool(
+                "file_read",
+                serde_json::json!({ "path": "/tmp/x" }),
+                TaintLabel::User,
+                0,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TurnError::Denied(_)), "got {err:?}");
     }
 
     #[tokio::test]

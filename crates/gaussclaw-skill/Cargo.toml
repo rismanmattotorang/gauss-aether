@@ -6,9 +6,15 @@ rust-version.workspace = true
 license.workspace      = true
 repository.workspace   = true
 authors.workspace      = true
-description = "Skill Manifest parser and the #[tool] proc-macro."
+description = "Skill Manifest TOML parser + compile-to-gauss_traits::ToolManifest helpers."
 
 [lints]
 workspace = true
 
 [dependencies]
+gauss-core   = { workspace = true }
+gauss-traits = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+toml         = { workspace = true }
+thiserror    = { workspace = true }
