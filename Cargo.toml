@@ -22,6 +22,7 @@ members = [
     "crates/gauss-dp",
     "crates/gauss-learnt",
     "crates/gauss-robust",
+    "crates/gauss-tui",
     "crates/gauss-conformance",
 ]
 
@@ -56,6 +57,10 @@ gauss-zk        = { path = "crates/gauss-zk",        version = "0.0.1" }
 gauss-dp        = { path = "crates/gauss-dp",        version = "0.0.1" }
 gauss-learnt    = { path = "crates/gauss-learnt",    version = "0.0.1" }
 gauss-robust    = { path = "crates/gauss-robust",    version = "0.0.1" }
+
+# TUI dependencies for `gauss-tui` (Phase 12 deployment binary).
+ratatui   = "0.28"
+crossterm = "0.28"
 
 # Async
 async-trait = "0.1"

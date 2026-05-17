@@ -40,29 +40,29 @@ Gauss-Aether is a Rust workspace of **22 crates** plus a Lean-4 proof
 skeleton. The crates partition into seven layers:
 
 ```text
-┌──────────────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────────────┐
 │ surface layer (Phase 9)                                              │
 │   gauss-canvas · gauss-health · gauss-gateway                        │
-├──────────────────────────────────────────────────────────────────┤
+├───────────────────────────────────────────────────────────────────┤
 │ verifier + scorecard (Phase 8/11)                                    │
 │   gauss-poly · gauss-bench                                           │
-├──────────────────────────────────────────────────────────────────┤
+├───────────────────────────────────────────────────────────────────┤
 │ autonomy + audit (Phases 5/7)                                        │
 │   gauss-sag · gauss-audit                                            │
-├──────────────────────────────────────────────────────────────────┤
+├───────────────────────────────────────────────────────────────────┤
 │ memory + workers + sandbox (Phases 3/4/6)                            │
 │   gauss-memory · gauss-hwca · gauss-sandbox                          │
-├──────────────────────────────────────────────────────────────────┤
+├───────────────────────────────────────────────────────────────────┤
 │ turn engine (Phase 2)                                                │
 │   gauss-turn · gauss-provider                                        │
-├──────────────────────────────────────────────────────────────────┤
+├───────────────────────────────────────────────────────────────────┤
 │ kernel + traits + core (Phase 1)                                     │
 │   gauss-kernel · gauss-traits · gauss-core                           │
-├──────────────────────────────────────────────────────────────────┤
+├───────────────────────────────────────────────────────────────────┤
 │ hardening + research (Phase 10 + v2 horizon)                         │
 │   gauss-attest · gauss-chaos · gauss-zk · gauss-dp · gauss-learnt ·  │
 │   gauss-robust                                                       │
-└──────────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────────┘
 ```
 
 The full crate purposes:
@@ -90,6 +90,7 @@ The full crate purposes:
 | `gauss-dp`           | Differentially-private trajectory exporter — Laplace + Gaussian mechanisms.           |
 | `gauss-learnt`       | Learnt risk classifier Φ̂ — logistic scorer wrapping the SAG rule table.              |
 | `gauss-robust`       | Robust declassifiers — adversarially-adaptive taint downgrades.                       |
+| `gauss-tui`          | Ratatui admin console — ten tabs for monitoring, configuration, SAG approval round-trip, cluster ops, Pareto scorecard. |
 | `gauss-conformance`  | Axiom-by-axiom test harness (A1–A9, T1–T12).                                          |
 
 ---
@@ -222,6 +223,7 @@ crates.
 - **[`SPECS.md`](SPECS.md)** — normative engineering specification (the source paper's recipe).
 - **[`ROADMAP.md`](ROADMAP.md)** — phased development plan, axiom / theorem locks per phase.
 - **[`docs/QUICKSTART.md`](docs/QUICKSTART.md)** — end-to-end embed walkthrough.
+- **[`docs/TUI.md`](docs/TUI.md)** — Ratatui admin console (`gauss-tui`) guide.
 - **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — crate-by-crate architecture tour.
 - **[`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)** — contributor guide + the `specT` style guide.
 - **[`docs/SECURITY.md`](docs/SECURITY.md)** — threat model + responsible-disclosure policy.
