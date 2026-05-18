@@ -1,6 +1,12 @@
 # Strategic Plan — GaussClaw vs. Hermes
 
 > *Last updated: 2026-05*
+>
+> 🧭 **Forward-looking work** lives in [`ROADMAP.md`](./ROADMAP.md) —
+> the capability matrix, Hermes parity gap analysis, and the Sprint 4
+> → Sprint 8 plan derived from a deep audit of both codebases. This
+> file is the historical log of Sprints 0 → 3 plus the
+> signed-installer follow-on; append, do not rewrite.
 
 This document captures GaussClaw's competitive strategy against the
 upstream [Hermes agent](https://github.com/NousResearch/hermes-agent).
