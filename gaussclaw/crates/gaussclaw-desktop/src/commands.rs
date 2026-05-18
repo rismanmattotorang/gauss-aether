@@ -477,24 +477,120 @@ pub struct ToolRow {
 
 fn default_tool_catalogue() -> Vec<ToolRow> {
     const ROWS: &[(&str, &str, &str, &str, &[&str])] = &[
-        ("base64", "Encode and decode base64 strings.", "cap:none", "⊥", &["WASM"]),
-        ("csv_parse", "RFC 4180 CSV → JSON.", "cap:none", "⊥", &["WASM"]),
-        ("datetime", "Current time + RFC 3339 parsing.", "cap:none", "⊥", &["WASM"]),
+        (
+            "base64",
+            "Encode and decode base64 strings.",
+            "cap:none",
+            "⊥",
+            &["WASM"],
+        ),
+        (
+            "csv_parse",
+            "RFC 4180 CSV → JSON.",
+            "cap:none",
+            "⊥",
+            &["WASM"],
+        ),
+        (
+            "datetime",
+            "Current time + RFC 3339 parsing.",
+            "cap:none",
+            "⊥",
+            &["WASM"],
+        ),
         ("echo", "Reflect the input.", "cap:none", "⊥", &["WASM"]),
-        ("env_get", "Read an allow-listed env var.", "cap:env:read", "user", &["WASM"]),
-        ("file_read", "Read a permitted file.", "cap:fs:read", "user", &["Landlock", "seccomp"]),
-        ("file_write", "Write to a permitted path.", "cap:fs:write", "user", &["Landlock", "seccomp"]),
-        ("hash", "SHA-256 / BLAKE3 digests.", "cap:none", "⊥", &["WASM"]),
-        ("http_get", "HTTPS GET with header allowlist.", "cap:network:http_get", "web", &["WASM"]),
-        ("http_head", "HTTPS HEAD probe.", "cap:network:http_get", "web", &["WASM"]),
-        ("http_post", "HTTPS POST with body cap.", "cap:network:http_post", "web", &["WASM"]),
-        ("json_get", "RFC 6901 JSON Pointer get.", "cap:none", "⊥", &["WASM"]),
-        ("json_set", "RFC 6901 JSON Pointer set.", "cap:none", "⊥", &["WASM"]),
-        ("math_eval", "Pure-function arithmetic.", "cap:none", "⊥", &["WASM"]),
-        ("regex_match", "Compiled regex matching.", "cap:none", "⊥", &["WASM"]),
-        ("shell", "Sandboxed shell command.", "cap:shell:exec", "web", &["WASM", "Landlock", "seccomp", "bwrap"]),
+        (
+            "env_get",
+            "Read an allow-listed env var.",
+            "cap:env:read",
+            "user",
+            &["WASM"],
+        ),
+        (
+            "file_read",
+            "Read a permitted file.",
+            "cap:fs:read",
+            "user",
+            &["Landlock", "seccomp"],
+        ),
+        (
+            "file_write",
+            "Write to a permitted path.",
+            "cap:fs:write",
+            "user",
+            &["Landlock", "seccomp"],
+        ),
+        (
+            "hash",
+            "SHA-256 / BLAKE3 digests.",
+            "cap:none",
+            "⊥",
+            &["WASM"],
+        ),
+        (
+            "http_get",
+            "HTTPS GET with header allowlist.",
+            "cap:network:http_get",
+            "web",
+            &["WASM"],
+        ),
+        (
+            "http_head",
+            "HTTPS HEAD probe.",
+            "cap:network:http_get",
+            "web",
+            &["WASM"],
+        ),
+        (
+            "http_post",
+            "HTTPS POST with body cap.",
+            "cap:network:http_post",
+            "web",
+            &["WASM"],
+        ),
+        (
+            "json_get",
+            "RFC 6901 JSON Pointer get.",
+            "cap:none",
+            "⊥",
+            &["WASM"],
+        ),
+        (
+            "json_set",
+            "RFC 6901 JSON Pointer set.",
+            "cap:none",
+            "⊥",
+            &["WASM"],
+        ),
+        (
+            "math_eval",
+            "Pure-function arithmetic.",
+            "cap:none",
+            "⊥",
+            &["WASM"],
+        ),
+        (
+            "regex_match",
+            "Compiled regex matching.",
+            "cap:none",
+            "⊥",
+            &["WASM"],
+        ),
+        (
+            "shell",
+            "Sandboxed shell command.",
+            "cap:shell:exec",
+            "web",
+            &["WASM", "Landlock", "seccomp", "bwrap"],
+        ),
         ("upper", "Uppercase a string.", "cap:none", "⊥", &["WASM"]),
-        ("uuid", "Generate UUIDv4 / UUIDv7.", "cap:none", "⊥", &["WASM"]),
+        (
+            "uuid",
+            "Generate UUIDv4 / UUIDv7.",
+            "cap:none",
+            "⊥",
+            &["WASM"],
+        ),
     ];
     ROWS.iter()
         .map(|(n, d, c, t, l)| ToolRow {
@@ -662,7 +758,10 @@ taint = "trusted"
         assert_eq!(verify_axis(&Signature("fail".into())), "signature");
         assert_eq!(verify_axis(&WitnessHeadMismatch), "witness_head");
         assert_eq!(
-            verify_axis(&WitnessIndexExceedsChain { index: 5, length: 2 }),
+            verify_axis(&WitnessIndexExceedsChain {
+                index: 5,
+                length: 2
+            }),
             "witness_index"
         );
     }

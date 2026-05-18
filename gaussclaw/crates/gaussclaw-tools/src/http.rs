@@ -115,7 +115,9 @@ pub enum HttpClientError {
     PolicyDenied(String),
     /// Default backend is not wired — production deployments must
     /// inject a real [`HttpClient`].
-    #[error("HttpClient not configured for this deployment; inject one before invoking http_* tools")]
+    #[error(
+        "HttpClient not configured for this deployment; inject one before invoking http_* tools"
+    )]
     NotConfigured,
 }
 
@@ -155,7 +157,11 @@ impl HttpToolPolicy {
             .split_once("://")
             .map(|(s, _)| s.to_ascii_lowercase())
             .unwrap_or_default();
-        if !self.allowed_schemes.iter().any(|s| s.eq_ignore_ascii_case(&scheme)) {
+        if !self
+            .allowed_schemes
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(&scheme))
+        {
             return Err(HttpClientError::PolicyDenied(format!(
                 "scheme `{scheme}` not in allowlist {:?}",
                 self.allowed_schemes
@@ -166,7 +172,8 @@ impl HttpToolPolicy {
             .iter()
             .map(|h| h.to_ascii_lowercase())
             .collect();
-        req.headers.retain(|k, _| allow.contains(&k.to_ascii_lowercase()));
+        req.headers
+            .retain(|k, _| allow.contains(&k.to_ascii_lowercase()));
         Ok(req)
     }
 
@@ -310,7 +317,12 @@ pub struct HttpTool {
 }
 
 impl HttpTool {
-    fn build(name: &'static str, toml: &str, method: HttpMethod, client: Arc<dyn HttpClient>) -> Self {
+    fn build(
+        name: &'static str,
+        toml: &str,
+        method: HttpMethod,
+        client: Arc<dyn HttpClient>,
+    ) -> Self {
         let skill = SkillManifest::from_toml(toml).expect("embedded skill toml");
         let manifest = skill
             .compile(ToolId(name.into()))
@@ -433,7 +445,11 @@ mod tests {
     #[tokio::test]
     async fn http_post_forwards_body() {
         let mock = MockHttpClient::new();
-        mock.expect(HttpMethod::Post, "https://example.test/echo", resp(201, "{\"ok\":true}"));
+        mock.expect(
+            HttpMethod::Post,
+            "https://example.test/echo",
+            resp(201, "{\"ok\":true}"),
+        );
         let tool = HttpTool::post(Arc::new(mock.clone()));
         tool.invoke_raw(serde_json::json!({
             "url": "https://example.test/echo",

@@ -68,7 +68,8 @@ fn main() -> ExitCode {
     };
     let sha256_hex = hex_lower(&Sha256::digest(&body));
 
-    let sk_bytes = match base64::engine::general_purpose::STANDARD.decode(&args.signing_key_base64) {
+    let sk_bytes = match base64::engine::general_purpose::STANDARD.decode(&args.signing_key_base64)
+    {
         Ok(b) => b,
         Err(e) => {
             eprintln!("--signing-key-base64 is not valid base64: {e}");

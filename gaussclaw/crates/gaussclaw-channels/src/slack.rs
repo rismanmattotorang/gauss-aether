@@ -207,9 +207,7 @@ mod tests {
         secrets.insert("SLACK_SIGNING_SECRET", b"shhh".to_vec());
         let ch = SlackChannel::new(secrets, kernel(), "SLACK_SIGNING_SECRET");
         let ts = unix_now().unwrap().to_string();
-        let result = ch
-            .handle_webhook(&ts, "v0=deadbeef", b"body", "@bob")
-            .await;
+        let result = ch.handle_webhook(&ts, "v0=deadbeef", b"body", "@bob").await;
         assert!(matches!(result, Err(ChannelError::BadSignature)));
     }
 
@@ -229,7 +227,9 @@ mod tests {
     async fn outbound_queues_to_outbox() {
         let secrets = Arc::new(InMemorySecretStore::default());
         let ch = SlackChannel::new(secrets, kernel(), "h");
-        ch.send(OutboundMessage::new("#general", "hi")).await.unwrap();
+        ch.send(OutboundMessage::new("#general", "hi"))
+            .await
+            .unwrap();
         let out = ch.drain_outbox().await;
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].body, "hi");

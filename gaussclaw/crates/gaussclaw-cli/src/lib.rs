@@ -90,8 +90,62 @@ pub enum Command {
     #[command(subcommand)]
     Receipt(ReceiptCmd),
 
+    /// Manage scheduled cron jobs (Sprint 5 §1).
+    #[command(subcommand)]
+    Cron(CronCmd),
+
     /// Launch the web dashboard (Axum + retained React frontend) (GaussClaw extension).
     Web(WebArgs),
+}
+
+// ─── cron ───────────────────────────────────────────────────────────────────
+
+/// `cron` subcommand variants.
+#[derive(Debug, clap::Subcommand)]
+pub enum CronCmd {
+    /// List every scheduled job (id, label, schedule, status,
+    /// next-fire-at, last-fired-at, fire count).
+    List,
+    /// Add a new job. Schedule grammar: a duration (`30m`, `2h15m`),
+    /// a 5-field cron expression (`*/15 * * * *`), or an RFC 3339
+    /// timestamp (`2026-05-20T14:30:00Z`).
+    Add {
+        /// Schedule grammar.
+        #[arg(value_name = "SCHEDULE")]
+        schedule: String,
+        /// Free-text label that surfaces in `cron list` output.
+        #[arg(short = 'l', long = "label", default_value = "(unlabeled)")]
+        label: String,
+        /// Inline JSON payload the job's fire callback receives.
+        #[arg(long = "payload", default_value = "null")]
+        payload: String,
+    },
+    /// Pause a job. `next_fire_at` is preserved; resuming a paused
+    /// job fires immediately if its fire-time was reached during
+    /// the pause window.
+    Pause {
+        /// Job id (from `cron list`).
+        #[arg(value_name = "ID")]
+        id: u64,
+    },
+    /// Resume a paused job.
+    Resume {
+        /// Job id (from `cron list`).
+        #[arg(value_name = "ID")]
+        id: u64,
+    },
+    /// Remove a job from the scheduler.
+    Remove {
+        /// Job id (from `cron list`).
+        #[arg(value_name = "ID")]
+        id: u64,
+    },
+    /// Show one job's full record (status, payload, fire history).
+    Status {
+        /// Job id (from `cron list`).
+        #[arg(value_name = "ID")]
+        id: u64,
+    },
 }
 
 // ─── web ────────────────────────────────────────────────────────────────────
@@ -287,6 +341,7 @@ pub const fn dispatch_id(cmd: &Command) -> &'static str {
         Command::Doctor(_) => "doctor",
         Command::Import(_) => "import",
         Command::Receipt(_) => "receipt",
+        Command::Cron(_) => "cron",
         Command::Web(_) => "web",
     }
 }
@@ -305,6 +360,7 @@ pub const SUBCOMMANDS: &[(&str, bool)] = &[
     ("doctor", true),
     ("import", false),
     ("receipt", false),
+    ("cron", true),
     ("web", false),
 ];
 
@@ -332,6 +388,7 @@ mod tests {
             ("doctor", &["gaussclaw", "doctor"]),
             ("import", &["gaussclaw", "import", "/tmp/cfg.toml"]),
             ("receipt", &["gaussclaw", "receipt", "head"]),
+            ("cron", &["gaussclaw", "cron", "list"]),
             ("web", &["gaussclaw", "web"]),
         ];
         for (id, argv) in leaf {

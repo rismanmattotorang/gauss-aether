@@ -72,12 +72,15 @@ pub fn run(config: Config, kernel: KernelHandle, audit: AuditTrace) -> anyhow::R
     let server_state = Arc::new(crate::state::build(config, kernel, audit));
 
     let builder = tauri::Builder::default()
-        .plugin(init_single_instance(|app, _argv, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-        }, None))
+        .plugin(init_single_instance(
+            |app, _argv, _cwd| {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            },
+            None,
+        ))
         .plugin(WindowStateBuilder::default().build())
         .plugin(GlobalShortcutBuilder::new().build())
         .plugin(init_clipboard())
@@ -139,12 +142,16 @@ macro_rules! state_arc {
 }
 
 #[tauri::command]
-async fn tauri_gc_status(state: tauri::State<'_, AppState>) -> commands::Envelope<commands::StatusPayload> {
+async fn tauri_gc_status(
+    state: tauri::State<'_, AppState>,
+) -> commands::Envelope<commands::StatusPayload> {
     commands::status(&*state_arc!(state)).await
 }
 
 #[tauri::command]
-async fn tauri_gc_config_get(state: tauri::State<'_, AppState>) -> commands::Envelope<commands::ConfigPayload> {
+async fn tauri_gc_config_get(
+    state: tauri::State<'_, AppState>,
+) -> commands::Envelope<commands::ConfigPayload> {
     commands::config_get(&*state_arc!(state)).await
 }
 
@@ -173,12 +180,16 @@ async fn tauri_gc_receipts_recent(
 }
 
 #[tauri::command]
-async fn tauri_gc_caps(state: tauri::State<'_, AppState>) -> commands::Envelope<commands::CapsPayload> {
+async fn tauri_gc_caps(
+    state: tauri::State<'_, AppState>,
+) -> commands::Envelope<commands::CapsPayload> {
     commands::caps(&*state_arc!(state)).await
 }
 
 #[tauri::command]
-async fn tauri_gc_health(state: tauri::State<'_, AppState>) -> commands::Envelope<commands::HealthPayload> {
+async fn tauri_gc_health(
+    state: tauri::State<'_, AppState>,
+) -> commands::Envelope<commands::HealthPayload> {
     commands::health(&*state_arc!(state)).await
 }
 

@@ -61,10 +61,7 @@ impl ToolTrait for DatetimeTool {
     }
 
     async fn invoke_raw(&self, args: serde_json::Value) -> GaussResult<serde_json::Value> {
-        let op = args
-            .get("op")
-            .and_then(|v| v.as_str())
-            .unwrap_or("now");
+        let op = args.get("op").and_then(|v| v.as_str()).unwrap_or("now");
 
         match op {
             "now" => {
@@ -83,8 +80,9 @@ impl ToolTrait for DatetimeTool {
                     .get("input")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| GaussError::Internal("missing `input` for op=parse".into()))?;
-                let dt = OffsetDateTime::parse(input, &time::format_description::well_known::Rfc3339)
-                    .map_err(|e| GaussError::Internal(format!("parse: {e}")))?;
+                let dt =
+                    OffsetDateTime::parse(input, &time::format_description::well_known::Rfc3339)
+                        .map_err(|e| GaussError::Internal(format!("parse: {e}")))?;
                 Ok(serde_json::json!({
                     "op": "parse",
                     "input": input,
@@ -106,7 +104,10 @@ mod tests {
     #[tokio::test]
     async fn now_returns_recent_unix_seconds() {
         let t = DatetimeTool::new();
-        let out = t.invoke_raw(serde_json::json!({ "op": "now" })).await.unwrap();
+        let out = t
+            .invoke_raw(serde_json::json!({ "op": "now" }))
+            .await
+            .unwrap();
         let ts = out["unix_seconds"].as_i64().expect("integer seconds");
         // Generous lower bound: 1.7e9 ≈ 2023-11-15. If we ever ship the
         // tool with a system clock predating that we have bigger problems.

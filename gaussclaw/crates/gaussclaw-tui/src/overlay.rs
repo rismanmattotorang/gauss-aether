@@ -133,7 +133,9 @@ impl Overlay {
                 KeyCode::Char('d') | KeyCode::Char('?') => OverlayResult::Details,
                 _ => OverlayResult::Continue,
             },
-            Self::Clarify { options, cursor, .. } => match key.code {
+            Self::Clarify {
+                options, cursor, ..
+            } => match key.code {
                 KeyCode::Up | KeyCode::Char('k') => {
                     if *cursor > 0 {
                         *cursor -= 1;
@@ -197,24 +199,38 @@ impl Overlay {
                 let inner_area = inner.inner(panel);
                 frame.render_widget(inner, panel);
 
-                let mut lines: Vec<Line> = body
-                    .iter()
-                    .map(|l| Line::raw(l.clone()))
-                    .collect();
+                let mut lines: Vec<Line> = body.iter().map(|l| Line::raw(l.clone())).collect();
                 lines.push(Line::raw(""));
                 lines.push(Line::from(vec![
-                    Span::styled("[o]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        "[o]",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::raw(" approve  "),
-                    Span::styled("[s]", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        "[s]",
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    ),
                     Span::raw(" refuse  "),
-                    Span::styled("[d]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        "[d]",
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::raw(" details  "),
                     Span::styled("[Esc]", Style::default().fg(Color::DarkGray)),
                     Span::raw(" cancel"),
                 ]));
                 frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner_area);
             }
-            Self::Clarify { title, options, cursor } => {
+            Self::Clarify {
+                title,
+                options,
+                cursor,
+            } => {
                 let inner = block.clone().title(format!(" {title} "));
                 let inner_area = inner.inner(panel);
                 frame.render_widget(inner, panel);
@@ -226,7 +242,9 @@ impl Overlay {
                         let key = format!("{}", i.saturating_add(1));
                         let prefix = if i == *cursor { "› " } else { "  " };
                         let style = if i == *cursor {
-                            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD)
                         } else {
                             Style::default()
                         };

@@ -68,7 +68,10 @@ impl EmailChannel {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.allowlist = addrs.into_iter().map(|s| s.into().to_ascii_lowercase()).collect();
+        self.allowlist = addrs
+            .into_iter()
+            .map(|s| s.into().to_ascii_lowercase())
+            .collect();
         self
     }
 
@@ -87,18 +90,21 @@ impl EmailChannel {
     /// configured allowlist, [`ChannelError::Denied`] on kernel-admit
     /// refusal.
     pub async fn ingest_message(&self, mail: &ParsedEmail) -> ChannelResult<ChannelMessage> {
-        if !self.allowlist.is_empty()
-            && !self.allowlist.contains(&mail.from.to_ascii_lowercase())
-        {
+        if !self.allowlist.is_empty() && !self.allowlist.contains(&mail.from.to_ascii_lowercase()) {
             return Err(ChannelError::BadSignature);
         }
         self.kernel
             .admit(self.required_caps(), self.default_taint)
             .map_err(ChannelError::Denied)?;
-        Ok(ChannelMessage::new(&self.id, mail.from.clone(), mail.body.clone())
-            .with_taint(self.default_taint)
-            .with_meta("subject", serde_json::Value::String(mail.subject.clone()))
-            .with_meta("message_id", serde_json::Value::String(mail.message_id.clone())))
+        Ok(
+            ChannelMessage::new(&self.id, mail.from.clone(), mail.body.clone())
+                .with_taint(self.default_taint)
+                .with_meta("subject", serde_json::Value::String(mail.subject.clone()))
+                .with_meta(
+                    "message_id",
+                    serde_json::Value::String(mail.message_id.clone()),
+                ),
+        )
     }
 
     /// Outbox accessor for the SMTP transport driver.

@@ -383,7 +383,10 @@ impl AgentLoop {
             };
 
             // Call provider with fallback chain.
-            let completion = match self.run_with_fallback(&iter_prompt, taint, session_id, sink).await {
+            let completion = match self
+                .run_with_fallback(&iter_prompt, taint, session_id, sink)
+                .await
+            {
                 Ok(c) => c,
                 Err(e) => {
                     sink.emit(LoopEvent::Done {
@@ -478,7 +481,11 @@ impl AgentLoop {
         session_id: Option<&str>,
         sink: &dyn LoopSink,
     ) -> TurnResult<Completion> {
-        match self.policy.run_in_session(prompt.clone(), taint, session_id).await {
+        match self
+            .policy
+            .run_in_session(prompt.clone(), taint, session_id)
+            .await
+        {
             Ok(c) => Ok(c),
             Err(TurnError::Provider(primary_err)) if !self.fallback.is_empty() => {
                 let mut last_err = primary_err;
@@ -590,9 +597,7 @@ mod tests {
             self.name
         }
         async fn complete(&self, _p: &Prompt) -> Result<Completion, ProviderError> {
-            let i = self
-                .idx
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let i = self.idx.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.script
                 .get(i)
                 .cloned()
@@ -658,7 +663,10 @@ mod tests {
         assert_eq!(outcome.iterations, 1);
         assert_eq!(outcome.stop_reason, "stop");
         let events = sink.events().await;
-        assert!(matches!(events.first(), Some(LoopEvent::UserSubmitted { .. })));
+        assert!(matches!(
+            events.first(),
+            Some(LoopEvent::UserSubmitted { .. })
+        ));
         assert!(matches!(events.last(), Some(LoopEvent::Done { .. })));
     }
 
@@ -693,8 +701,12 @@ mod tests {
         assert_eq!(outcome.iterations, 2);
         assert_eq!(outcome.stop_reason, "stop");
         let events = sink.events().await;
-        assert!(events.iter().any(|e| matches!(e, LoopEvent::ToolStart { name, .. } if name == "echo")));
-        assert!(events.iter().any(|e| matches!(e, LoopEvent::ToolComplete { name, ok, .. } if name == "echo" && *ok)));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, LoopEvent::ToolStart { name, .. } if name == "echo")));
+        assert!(events.iter().any(
+            |e| matches!(e, LoopEvent::ToolComplete { name, ok, .. } if name == "echo" && *ok)
+        ));
     }
 
     #[tokio::test]
