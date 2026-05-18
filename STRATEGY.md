@@ -33,7 +33,7 @@ state — distinct from what the README marketing claims:
 | `gaussclaw-conformance` | 5 | 1,044 | **Shipping** — Hermes-parity tests. |
 | `gaussclaw-tui` | 1 | 616 | **Bare minimum.** /help, /quit, /clear. No streaming, no slash-command autocomplete, no overlays, no $EDITOR, no history file. |
 | `gaussclaw-web` | 1 | 763 | **Backend shipping.** Frontend is a placeholder `index.html`. |
-| `gaussclaw-desktop` | 4 | 470 | **Scaffold only.** Tauri 2 wired, two commands, no screens. |
+| `gaussclaw-desktop` | 7 | 1,820 | **Shipping** — 18 IPC commands (12 dashboard mirrors, 5 desktop-only, 1 chain-verified updater), Tauri 2 builder wired behind `tauri-runtime` feature, README with build/sign recipe. Sprint 3. |
 | `gaussclaw-api-modes` | 1 | 6 | **Empty.** Placeholder lib.rs. |
 
 ### Headline gaps vs. the README (Sprint 0 + Sprint 1 status)
@@ -43,7 +43,7 @@ state — distinct from what the README marketing claims:
 - ~~Channels: 2 / 20~~ → **Sprint 1**: 6 / 20 (Webhook, InMemory, Slack, Telegram, Discord, Email).
 - ~~Tools: 11 / 30+~~ → **Sprint 1**: 15 / 30+. **Sprint 2**: 18 / 30+ (added http_get, http_post, http_head with injectable `HttpClient` + header allowlist + body cap).
 - ~~Providers: 9 / 20~~ → **Sprint 1**: 21 effective via the OpenAI-compat shim catalogue.
-- Desktop: scaffold → **Sprint 3 target**.
+- ~~Desktop: scaffold with 3 IPC commands~~ → **Sprint 3**: 18 IPC commands (12 dashboard mirrors + 5 desktop-only + 1 chain-verified updater); Tauri 2 runtime wired behind the `tauri-runtime` feature; signing recipe documented; chain-anchored updater verification implemented.
 
 ---
 
@@ -181,10 +181,55 @@ Deferred to a follow-on:
 - Replay corpus diff visualiser — defers to when we have an actual
   shipped corpus to demo against.
 
-### Sprint 3 — *the desktop story*
+### Sprint 3 — *the desktop story* ✅ **shipped**
 
-- Build out `gaussclaw-desktop` from scaffold to a real Tauri 2 app that wraps the same dashboard. Add `gauss-canvas`-driven dynamic widgets.
-- Sign + notarise the macOS / Windows / Linux installers.
+What landed:
+
+- **`gaussclaw-desktop` IPC surface grows from 6 to 18 commands** in
+  three modules:
+  - **Dashboard mirrors** (`commands.rs`, +6): `gc_health`,
+    `gc_sessions_recent`, `gc_receipts_recent`, `gc_envelope_verify`,
+    `gc_skill_preview`, `gc_tools_list`. Every panel the web dashboard
+    surfaces is also reachable from the desktop without an HTTP
+    round-trip.
+  - **Desktop-only commands** (`system.rs`, +5): `gc_clipboard_copy`,
+    `gc_global_hotkey_register` (with chord-grammar validation),
+    `gc_tray_menu` (operator-configurable tray model),
+    `gc_notify` (native notifications), and
+    `gc_updater_verify_artifact`.
+  - **Chain-verified updater** (`updater.rs`, new): `ReleaseManifest`
+    + `verify_release_artifact` — checks SHA-256 binding, publisher
+    Ed25519 signature over `version:target:sha256_hex`, target-triple
+    match, and strict-greater SemVer (refuses downgrade attacks).
+    Hermes ships unsigned binaries with no chain anchor — its
+    updater verifies nothing.
+- **`runtime.rs` is no longer a stub.** Behind the existing
+  `tauri-runtime` feature gate, it now boots a real `tauri::Builder`
+  with seven official plugins (`single-instance`, `window-state`,
+  `global-shortcut`, `clipboard-manager`, `notification`, `deep-link`,
+  `updater`), registers all 18 IPC commands via
+  `tauri::generate_handler!`, and runs the event loop. The default
+  (no-feature) build remains runtime-free so CI on plain runners
+  still compiles + tests the library half.
+- **Build + sign recipe** documented in
+  `gaussclaw/crates/gaussclaw-desktop/README.md`: per-OS environment
+  variables for Apple Developer ID notarisation, Windows Authenticode,
+  and Linux GPG / AppImage signing. The `bundle.macOS` /
+  `bundle.windows` / `bundle.linux` sections of `tauri.conf.json`
+  are wired to consume them.
+- **34 tests** (up from 8) cover every IPC command's envelope shape,
+  kernel-denied edge cases, hotkey chord parsing, every
+  `UpdaterVerifyError` variant, and the canonical signed-message
+  format.
+
+What's deferred:
+
+- Producing the actual signed installers (needs operator-supplied
+  certificate material; the recipe is documented, the CI hookup is
+  not).
+- Tauri-side e2e tests with `webdriverio + tauri-driver` — those need
+  a real WebView at test time. The pure-function test suite already
+  covers the IPC contract.
 
 ---
 

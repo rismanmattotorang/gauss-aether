@@ -45,17 +45,40 @@ produces the matching scoped FS permission as a build-time artefact.
 Front-door and tool-dispatch capabilities are one artefact — no
 policy drift.
 
+## IPC command surface
+
+Eighteen typed `gc_*` IPC commands live in
+[`gaussclaw-desktop`](https://github.com/rismanmattotorang/gauss-aether/tree/main/gaussclaw/crates/gaussclaw-desktop).
+The frontend invokes them as `invoke('gc_status')`, `invoke('gc_envelope_verify', {...})`,
+etc. Every command is a pure async function over `ServerState`; the
+`tauri::generate_handler!` wiring lives in `src/runtime.rs` behind the
+`tauri-runtime` feature.
+
+| Category | Commands |
+|---|---|
+| **Status & config** | `gc_status`, `gc_config_get`, `gc_config_set` |
+| **Audit & caps** | `gc_receipt_head`, `gc_receipts_recent`, `gc_caps` |
+| **Dashboard mirrors** | `gc_health`, `gc_sessions_recent`, `gc_tools_list`, `gc_envelope_verify`, `gc_skill_preview` |
+| **Chat** | `gc_chat` |
+| **Desktop-only** | `gc_clipboard_copy`, `gc_global_hotkey_register`, `gc_tray_menu`, `gc_notify`, `gc_updater_verify_artifact` |
+
 ## Build
 
-```bash
-cd crates/gaussclaw-web/frontend && pnpm install && pnpm build
-cd ../..
-cargo install tauri-cli@^2
-cargo tauri build --features tauri-runtime
-```
+The crate's default build is runtime-free so the library half always
+compiles + tests on any CI runner. The full desktop binary is a
+deliberate feature opt-in:
 
-On Linux, install `webkit2gtk-4.1` development headers first. On
-macOS, Xcode CLT. On Windows, WebView2 ships with recent Windows 11.
+```bash
+# Library half — always builds (no webkit2gtk / WebView2 required).
+cargo build -p gaussclaw-desktop
+
+# Full Tauri 2 binary. Requires the platform WebView dependencies:
+#   Linux:    apt install libwebkit2gtk-4.1-dev libsoup-3.0-dev
+#   macOS:    xcode-select --install
+#   Windows:  Microsoft Edge WebView2 Runtime (ships with Win 11)
+cargo install tauri-cli@^2
+cargo tauri build              # bundles into target/release/bundle/
+```
 
 ## Distribution
 
@@ -66,6 +89,31 @@ macOS, Xcode CLT. On Windows, WebView2 ships with recent Windows 11.
 | Linux | `.AppImage`, `.deb`, `.rpm`, Flatpak | GPG; Flathub manifest |
 | iOS (v2) | TestFlight `.ipa` via Tauri 2 mobile | App Store |
 | Android (v2) | `.apk`, `.aab` via Tauri 2 mobile | Play Console / F-Droid |
+
+## Updater integrity (Hermes ships none of this)
+
+Every release artefact ships with a `ReleaseManifest` carrying:
+
+- the artefact's **SHA-256** (hex);
+- the publisher's **Ed25519 signature** over `version:target:sha256_hex`;
+- the **chain index** the publisher anchored the release at;
+- the **target triple** (`x86_64-apple-darwin`, etc.).
+
+The local updater calls
+[`verify_release_artifact`](https://github.com/rismanmattotorang/gauss-aether/blob/main/gaussclaw/crates/gaussclaw-desktop/src/updater.rs)
+**before** swapping the binary, checking:
+
+1. Computed SHA-256 of the downloaded bytes matches the manifest claim.
+2. The publisher's Ed25519 signature verifies under the locally
+   trusted publisher key.
+3. The artefact's target triple matches the running host (no
+   cross-target swaps).
+4. The manifest version is strictly **newer** than the running
+   version (refuses downgrade attacks).
+
+A compromised CDN cannot ship a malicious update. Hermes's updater
+performs none of these checks — its installers are unsigned and its
+update flow trusts whatever the CDN returns.
 
 ## Native features
 
