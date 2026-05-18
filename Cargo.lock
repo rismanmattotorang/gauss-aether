@@ -3016,6 +3016,7 @@ dependencies = [
  "gauss-sandbox",
  "gauss-traits",
  "gaussclaw-skill",
+ "gaussclaw-store",
  "rand_core 0.6.4",
  "regex",
  "serde",

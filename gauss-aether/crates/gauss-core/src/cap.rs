@@ -48,6 +48,15 @@ impl CapToken {
     /// particular variable — the tool implementation enforces the
     /// per-variable check.
     pub const ENV_READ: Self = Self(1 << 9);
+    /// Read past conversations from the session store (FTS / HNSW
+    /// hybrid recall). Refused under `Adversarial` taint by the
+    /// default declass map, so a web-fetched message cannot query the
+    /// user's history.
+    pub const MEMORY_READ: Self = Self(1 << 10);
+    /// Open an approval / clarification prompt on the operator's
+    /// behalf. Cap-gated so a low-privilege sub-agent can't surface a
+    /// modal pretending to be the parent agent.
+    pub const APPROVAL_ASK: Self = Self(1 << 11);
 
     /// Construct from a raw bitmask.
     #[inline]

@@ -54,6 +54,7 @@
 #![allow(clippy::doc_markdown, clippy::missing_docs_in_private_items)]
 
 pub mod base64_tool;
+pub mod clarify;
 pub mod csv_parse;
 pub mod datetime;
 pub mod echo;
@@ -67,12 +68,14 @@ pub mod json_set;
 pub mod math_eval;
 pub mod regex_match;
 pub mod registry;
+pub mod session_search;
 pub mod shell;
 pub mod spawners;
 pub mod upper;
 pub mod uuid;
 
 pub use base64_tool::Base64Tool;
+pub use clarify::ClarifyTool;
 pub use csv_parse::CsvParseTool;
 pub use datetime::DatetimeTool;
 pub use echo::EchoTool;
@@ -89,6 +92,7 @@ pub use json_set::JsonSetTool;
 pub use math_eval::MathEvalTool;
 pub use regex_match::RegexMatchTool;
 pub use registry::{RegistryError, RegistryResult, ToolRegistry};
+pub use session_search::SessionSearchTool;
 pub use shell::ShellTool;
 pub use spawners::{composite_sandboxed, noop_sandboxed, unsandboxed};
 pub use upper::UpperTool;
@@ -125,6 +129,11 @@ pub fn default_registry() -> ToolRegistry {
     reg.register(Arc::new(HttpTool::get(unconfigured.clone())));
     reg.register(Arc::new(HttpTool::post(unconfigured.clone())));
     reg.register(Arc::new(HttpTool::head(unconfigured)));
+    // ClarifyTool ships in the default registry — every agent loop
+    // should be able to pause and ask. SessionSearchTool requires a
+    // SessionStore, so callers register it explicitly via
+    // `reg.register(Arc::new(SessionSearchTool::new(store)))`.
+    reg.register(Arc::new(ClarifyTool::new()));
     reg
 }
 
@@ -135,12 +144,13 @@ mod tests {
     use gauss_hwca::WorkerSpawner;
 
     #[test]
-    fn default_registry_has_eighteen_tools() {
+    fn default_registry_has_nineteen_tools() {
         let reg = default_registry();
-        assert_eq!(reg.len(), 18);
+        assert_eq!(reg.len(), 19);
         let ids: Vec<&str> = reg.ids();
         for expected in [
             "base64",
+            "clarify",
             "csv_parse",
             "datetime",
             "echo",

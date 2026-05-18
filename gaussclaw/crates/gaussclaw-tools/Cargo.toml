@@ -17,6 +17,7 @@ gauss-traits    = { workspace = true }
 gauss-hwca      = { workspace = true }
 gauss-sandbox   = { workspace = true }
 gaussclaw-skill = { workspace = true }
+gaussclaw-store = { workspace = true }
 async-trait     = { workspace = true }
 serde           = { workspace = true }
 serde_json      = { workspace = true }

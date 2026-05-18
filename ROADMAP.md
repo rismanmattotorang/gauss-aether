@@ -439,28 +439,67 @@ Each sprint has **concrete deliverables**, **success criteria** (a
 green test or a working demo), and a **rough size estimate** (S = a
 day, M = a week, L = a month).
 
-### Sprint 4 — the loop (size: L)
+### Sprint 4 — the loop (size: L) — ✅ **first cut shipped**
 
-**Goal:** make the agent actually iterate.
+**Status:** the core iterator + tool-call parsing + fallback chain +
+two new tools ship in this commit. Token-level WebSocket streaming
+end-to-end + Ctrl-C mid-turn cancel through the TUI are tracked for
+the Sprint-4 follow-on.
 
-Deliverables:
+**What landed in this commit:**
 
-1. `gaussclaw-agent::AgentLoop` — drives `run_in_session` repeatedly,
+- `gaussclaw-agent::agent_loop` module (~800 LOC + 7 tests): `AgentLoop`
+  driver, `LoopEvent` enum (`user_submitted` / `token` / `assistant` /
+  `tool_start` / `tool_complete` / `fallback_attempt` / `done`),
+  `LoopSink` trait with `NoopSink` + `MemorySink` impls,
+  `ToolCall::parse_inline_tool_calls` for providers that emit
+  `<tool name="…">{…}</tool>` markup.
+- `Completion::tool_calls` field — providers that speak structured
+  tool-calls populate this directly; inline parsing runs only when
+  the vector is empty.
+- `AgentLoop::with_fallback(Arc<dyn ProviderHandle>)` — primary
+  `ProviderError` walks the fallback list; each attempt emits a
+  `LoopEvent::FallbackAttempt`.
+- Iteration cap (default 32 = Hermes parity) + cancellation flag
+  honoured at every iteration boundary.
+- `ClarifyTool` — pauses the loop with a structured `clarify_pending`
+  payload the host surface intercepts. Cap-gated by new
+  `cap:approval:ask`.
+- `SessionSearchTool` — wraps `SessionStore::hybrid_search`; surfaces
+  BM25 + HNSW union as structured JSON. Cap-gated by new
+  `cap:memory:read` (refused under Adversarial taint by default).
+- Two new caps in `gauss-core::CapToken`: `MEMORY_READ` (bit 10),
+  `APPROVAL_ASK` (bit 11). `gaussclaw-skill::parse_cap` accepts
+  `"memory:read"` and `"approval:ask"`.
+- `ClarifyTool` ships in `default_registry`; `SessionSearchTool`
+  needs an explicit `SessionStore` so it's a caller-side register.
+- Dashboard fallback tool list updated (19 entries; +2 for clarify
+  and session_search).
+
+**Deliverables — status after this commit:**
+
+1. ✅ `gaussclaw-agent::AgentLoop` — drives `run_in_session` repeatedly,
    parses tool calls from the provider's response, dispatches each
    through the existing HWCA spawner, re-prompts with tool results,
    stops on the model's stop reason or an iteration cap.
-2. Token-level streaming over `/api/chat/ws` — the agent emits
-   `{type: 'token', text: '…'}` frames; the dashboard appends them
-   live; the TUI re-renders the partial assistant line.
-3. `FallbackChain` wiring — on provider error the loop hands off to
-   the next leaf in the active `Catalogue`; the `AttemptRecord` joins
-   the receipt chain.
-4. `Ctrl+C` mid-turn cancellation in the TUI + dashboard. Hierarchy:
-   first press cancels the active model call, second resets the
-   draft, third quits.
-5. `clarify_tool` — a tool that pauses the loop and surfaces the
+2. 🟡 Token-level streaming over `/api/chat/ws` — the agent emits
+   `LoopEvent::Token` frames and `LoopSink` is the canonical
+   forwarding surface; the dashboard `app.js` already understands
+   `token` / `tool.start` / `tool.complete` / `assistant` frame
+   shapes. The web crate's WebSocket handler still echoes the user
+   message — it needs to instantiate an `AgentLoop`, plumb a
+   `LoopSink` that forwards events to the socket, and run the loop
+   to completion. **Sprint-4 follow-on.**
+3. ✅ `FallbackChain` wiring — on provider error the loop walks the
+   fallback list and emits `LoopEvent::FallbackAttempt` per attempt.
+4. 🟡 `Ctrl+C` mid-turn cancellation — `MemorySink::request_cancel`
+   is the underlying primitive (the loop checks `should_cancel` at
+   every iteration boundary). The TUI / dashboard hookup is the
+   **Sprint-4 follow-on**: TUI sets the flag on `Ctrl+C`; dashboard
+   sets it on `WS Close`.
+5. ✅ `ClarifyTool` — a tool that pauses the loop and surfaces the
    approval overlay; resumes when the operator picks an option.
-6. `session_search_tool` — a tool that calls
+6. ✅ `SessionSearchTool` — a tool that calls
    `SessionStore::hybrid_search` and feeds the result back as
    structured JSON.
 
