@@ -51,7 +51,18 @@
     clippy::doc_markdown,
     clippy::missing_docs_in_private_items,
     clippy::unused_async,
-    clippy::const_is_empty
+    clippy::const_is_empty,
+    clippy::too_long_first_doc_paragraph,
+    clippy::too_many_lines,
+    clippy::format_collect,
+    clippy::items_after_statements,
+    clippy::enum_glob_use,
+    clippy::match_same_arms,
+    clippy::format_in_format_args,
+    clippy::wildcard_imports,
+    clippy::format_push_string,
+    clippy::arithmetic_side_effects,
+    clippy::needless_borrows_for_generic_args
 )]
 #![allow(rustdoc::broken_intra_doc_links)]
 

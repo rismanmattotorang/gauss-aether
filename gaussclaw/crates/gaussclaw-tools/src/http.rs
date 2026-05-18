@@ -82,8 +82,11 @@ pub struct HttpResponse {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum HttpMethod {
+    /// HTTP GET.
     Get,
+    /// HTTP POST.
     Post,
+    /// HTTP HEAD.
     Head,
 }
 
@@ -108,7 +111,12 @@ pub enum HttpClientError {
     Transport(String),
     /// Server returned an HTTP status outside `2xx`.
     #[error("server returned {status}")]
-    Status { status: u16, body: String },
+    Status {
+        /// HTTP status code.
+        status: u16,
+        /// Response body text.
+        body: String,
+    },
     /// Operator policy refused the request (header outside allowlist,
     /// body too big, URL scheme disallowed).
     #[error("policy denied: {0}")]

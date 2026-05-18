@@ -5,7 +5,7 @@
 //! dependency — they're tiny and the RFC 4122 bit-layout is stable.
 
 use async_trait::async_trait;
-use gauss_core::{GaussError, GaussResult, ToolId};
+use gauss_core::{GaussResult, ToolId};
 use gauss_traits::{ToolManifest, ToolTrait};
 use gaussclaw_skill::SkillManifest;
 use rand_core::{OsRng, RngCore};

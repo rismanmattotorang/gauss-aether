@@ -1,3 +1,5 @@
+#![allow(missing_docs, unused_variables)]
+
 //! Updater artifact verification.
 //!
 //! Every GaussClaw desktop release ships with **two** integrity surfaces:

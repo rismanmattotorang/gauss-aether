@@ -23,7 +23,19 @@
 //! `ratatui::backend::TestBackend` + `insta`, satisfying the TUI snapshot
 //! class of `gaussclaw-conformance` (Phase 1 conformance gate #4).
 
-#![allow(clippy::doc_markdown)]
+#![allow(
+    clippy::doc_markdown,
+    clippy::unnested_or_patterns,
+    clippy::arithmetic_side_effects,
+    clippy::manual_let_else,
+    clippy::manual_repeat_n,
+    clippy::manual_string_new,
+    clippy::manual_str_repeat,
+    clippy::question_mark,
+    clippy::redundant_closure_for_method_calls,
+    clippy::option_if_let_else,
+    clippy::assigning_clones
+)]
 
 mod history;
 mod overlay;

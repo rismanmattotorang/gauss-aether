@@ -526,8 +526,8 @@ fn run_cron(sub: CronCmd) -> anyhow::Result<()> {
                     println!("(no scheduled jobs)");
                 } else {
                     println!(
-                        "{:<4}  {:<20}  {:<24}  {:<10}  {:<10}  {}",
-                        "id", "label", "schedule", "status", "fires", "next_fire_at"
+                        "{:<4}  {:<20}  {:<24}  {:<10}  {:<10}  next_fire_at",
+                        "id", "label", "schedule", "status", "fires"
                     );
                     for j in &jobs {
                         println!(

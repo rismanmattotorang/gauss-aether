@@ -199,7 +199,7 @@ impl Overlay {
                 let inner_area = inner.inner(panel);
                 frame.render_widget(inner, panel);
 
-                let mut lines: Vec<Line> = body.iter().map(|l| Line::raw(l.clone())).collect();
+                let mut lines: Vec<Line<'_>> = body.iter().map(|l| Line::raw(l.clone())).collect();
                 lines.push(Line::raw(""));
                 lines.push(Line::from(vec![
                     Span::styled(
@@ -235,7 +235,7 @@ impl Overlay {
                 let inner_area = inner.inner(panel);
                 frame.render_widget(inner, panel);
 
-                let mut lines: Vec<Line> = options
+                let mut lines: Vec<Line<'_>> = options
                     .iter()
                     .enumerate()
                     .map(|(i, o)| {
@@ -270,7 +270,7 @@ impl Overlay {
                 let inner_area = inner.inner(panel);
                 frame.render_widget(inner, panel);
 
-                let mut lines: Vec<Line> = Vec::new();
+                let mut lines: Vec<Line<'_>> = Vec::new();
                 lines.push(Line::raw(hint.as_ref()));
                 lines.push(Line::raw(""));
                 let mask: String = std::iter::repeat('•').take(buf.chars().count()).collect();

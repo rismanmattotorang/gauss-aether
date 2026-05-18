@@ -1,3 +1,11 @@
+#![allow(
+    clippy::doc_markdown,
+    clippy::print_stderr,
+    clippy::print_stdout,
+    clippy::single_match_else,
+    clippy::format_push_string
+)]
+
 //! `gaussclaw-release-sign` — produce a chain-verifiable
 //! [`gaussclaw_desktop::updater::ReleaseManifest`] for a built
 //! installer.

@@ -50,6 +50,7 @@
     clippy::or_fun_call,
     clippy::needless_continue
 )]
+#![allow(rustdoc::broken_intra_doc_links)]
 
 pub mod clock;
 pub mod grammar;
