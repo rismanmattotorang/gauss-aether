@@ -1,0 +1,206 @@
+# Desktop installer release pipeline.
+#
+# Triggers on a `v*` tag push (or a manual `workflow_dispatch`). Builds
+# the Tauri 2 desktop binary on each OS, signs it with the
+# operator-supplied certificate material from GitHub Secrets, runs the
+# `gaussclaw-release-sign` CLI to emit a chain-anchored
+# `ReleaseManifest` for each artefact, then uploads everything to a
+# GitHub Release. The publisher's Ed25519 secret key never leaves the
+# runner; the corresponding public key is baked into the desktop
+# binary as the trust anchor for `verify_release_artifact`.
+#
+# Required GitHub Secrets (set under repo Settings → Secrets):
+#
+#   RELEASE_ED25519_SK_BASE64     - 32-byte Ed25519 secret key, base64
+#
+#   APPLE_CERTIFICATE             - Developer ID Application .p12, base64
+#   APPLE_CERTIFICATE_PASSWORD    - the .p12 password
+#   APPLE_SIGNING_IDENTITY        - "Developer ID Application: Acme (ABCD1234)"
+#   APPLE_ID                      - Apple ID for notarisation
+#   APPLE_PASSWORD                - app-specific notarisation password
+#   APPLE_TEAM_ID                 - Apple team id (e.g. ABCD1234)
+#
+#   WINDOWS_CERTIFICATE           - Authenticode .pfx, base64
+#   WINDOWS_CERTIFICATE_PASSWORD  - the .pfx password
+#
+#   GPG_PRIVATE_KEY               - ASCII-armoured GPG private key
+#   GPG_PASSPHRASE                - GPG passphrase
+#
+# When a secret is absent the job step is skipped — local-developer
+# unsigned bundles still build, they just won't pass `gpg --verify` /
+# Gatekeeper / SmartScreen.
+
+name: desktop-release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Override release version (defaults to tag name)"
+        required: false
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  GAUSSCLAW_BUNDLE_DIR: target/release/bundle
+
+permissions:
+  contents: write
+
+jobs:
+
+  build:
+    name: build (${{ matrix.platform.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - { os: ubuntu-22.04,  target: x86_64-unknown-linux-gnu,  artefact_glob: "bundle/**/*.{AppImage,deb,rpm}" }
+          - { os: macos-14,      target: aarch64-apple-darwin,      artefact_glob: "bundle/**/*.dmg" }
+          - { os: macos-13,      target: x86_64-apple-darwin,       artefact_glob: "bundle/**/*.dmg" }
+          - { os: windows-2022,  target: x86_64-pc-windows-msvc,    artefact_glob: "bundle/**/*.{msi,exe}" }
+
+    runs-on: ${{ matrix.platform.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release version
+        id: ver
+        shell: bash
+        run: |
+          if [[ -n "${{ inputs.version }}" ]]; then
+            v="${{ inputs.version }}"
+          elif [[ "${{ github.ref }}" =~ ^refs/tags/v(.+)$ ]]; then
+            v="${BASH_REMATCH[1]}"
+          else
+            v="0.0.0-dev"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Release version resolved to: $v"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: desktop-release-${{ matrix.platform.target }}
+
+      # ─── platform-specific setup ───────────────────────────────────
+      - name: Install Linux WebView deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            gpg
+
+      - name: Install tauri-cli
+        run: cargo install tauri-cli@^2 --locked
+
+      # ─── build the bundle ──────────────────────────────────────────
+      - name: Build Tauri 2 bundle
+        working-directory: gaussclaw/crates/gaussclaw-desktop
+        env:
+          # macOS signing — Tauri reads these natively.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Windows Authenticode.
+          TAURI_PRIVATE_KEY: ${{ secrets.WINDOWS_CERTIFICATE }}
+          TAURI_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: cargo tauri build --target ${{ matrix.platform.target }}
+
+      # ─── Linux: GPG-sign and AppImage-sign ────────────────────────
+      - name: Sign Linux artefacts (GPG + AppImage)
+        if: runner.os == 'Linux' && env.GPG_PRIVATE_KEY != ''
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
+        run: ./scripts/desktop/sign-linux.sh "$GAUSSCLAW_BUNDLE_DIR"
+
+      # ─── Windows: signtool if present ─────────────────────────────
+      - name: Sign Windows artefacts (signtool)
+        if: runner.os == 'Windows' && env.WINDOWS_CERTIFICATE != ''
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE:          ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: ./scripts/desktop/sign-windows.ps1 -BundleDir "$env:GAUSSCLAW_BUNDLE_DIR"
+
+      # macOS: Tauri's bundler already invoked codesign + notarytool via
+      # the env vars above when APPLE_* secrets are present.
+
+      # ─── chain-anchored manifest per artefact ─────────────────────
+      - name: Build release-sign CLI
+        run: cargo build -p gaussclaw-desktop --bin gaussclaw-release-sign --release
+
+      - name: Emit ReleaseManifests
+        if: env.RELEASE_ED25519_SK_BASE64 != ''
+        shell: bash
+        env:
+          RELEASE_ED25519_SK_BASE64: ${{ secrets.RELEASE_ED25519_SK_BASE64 }}
+        run: |
+          set -euo pipefail
+          out_dir="release-out"
+          mkdir -p "$out_dir"
+          # Find every bundled artefact for this target. Globs vary per OS;
+          # we match a permissive set then filter to known extensions.
+          shopt -s globstar nullglob
+          for artefact in target/${{ matrix.platform.target }}/release/bundle/**/*; do
+            case "$artefact" in
+              *.dmg|*.msi|*.exe|*.AppImage|*.deb|*.rpm)
+                cp "$artefact" "$out_dir/"
+                name="$(basename "$artefact")"
+                ./target/release/gaussclaw-release-sign \
+                  --version "${{ steps.ver.outputs.version }}" \
+                  --target "${{ matrix.platform.target }}" \
+                  --artefact "$artefact" \
+                  --signing-key-base64 "$RELEASE_ED25519_SK_BASE64" \
+                  --chain-index "${{ github.run_number }}" \
+                  > "$out_dir/$name.manifest.json"
+                echo "signed: $name"
+                ;;
+            esac
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gaussclaw-desktop-${{ matrix.platform.target }}
+          path: release-out/
+          if-no-files-found: warn
+
+  publish:
+    name: publish github release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
+          generate_release_notes: true
+          body: |
+            Signed GaussClaw Desktop bundles. Every artefact carries a
+            chain-anchored `*.manifest.json` that the in-app updater
+            verifies via `gaussclaw_desktop::updater::verify_release_artifact`.
