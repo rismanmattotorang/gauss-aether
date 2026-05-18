@@ -57,6 +57,8 @@
 
 pub mod commands;
 pub mod state;
+pub mod system;
+pub mod updater;
 
 #[cfg(feature = "tauri-runtime")]
 pub mod runtime;

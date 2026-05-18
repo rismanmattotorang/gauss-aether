@@ -2857,13 +2857,19 @@ name = "gaussclaw-desktop"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
+ "ed25519-dalek",
  "gauss-core",
  "gauss-kernel",
  "gaussclaw-agent",
  "gaussclaw-config",
+ "gaussclaw-export",
+ "gaussclaw-skill",
  "gaussclaw-web",
+ "rand_core 0.6.4",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-plugin-clipboard-manager",
  "tauri-plugin-deep-link",
@@ -2874,6 +2880,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
