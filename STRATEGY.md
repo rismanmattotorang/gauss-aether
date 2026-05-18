@@ -224,12 +224,50 @@ What landed:
 
 What's deferred:
 
-- Producing the actual signed installers (needs operator-supplied
-  certificate material; the recipe is documented, the CI hookup is
-  not).
 - Tauri-side e2e tests with `webdriverio + tauri-driver` — those need
   a real WebView at test time. The pure-function test suite already
   covers the IPC contract.
+
+### Sprint 3 follow-on — *signed-installer pipeline* ✅ **shipped**
+
+The CI hookup that turns the Sprint-3 recipe into actual signed
+artefacts on every tag push.
+
+What landed:
+
+- **`gaussclaw-release-sign` CLI** at
+  `gaussclaw/crates/gaussclaw-desktop/src/bin/release-sign.rs`. Reads
+  a built installer, computes its SHA-256, signs
+  `version:target:sha256_hex` with the publisher's Ed25519 secret key,
+  emits a JSON `ReleaseManifest` on stdout. Exposed via a new
+  `[[bin]]` entry; default build (no `tauri-runtime` feature) still
+  compiles on plain runners.
+- **`ReleaseManifest::new()` constructor** — lets the bin construct
+  the `#[non_exhaustive]` struct from a separate compilation unit.
+- **`.github/workflows/desktop-release.yml`** matrix workflow:
+  - Triggers on `v*` tag pushes (and `workflow_dispatch`).
+  - Builds the Tauri 2 bundle on `ubuntu-22.04` /
+    `macos-14` (aarch64) / `macos-13` (x86_64) /
+    `windows-2022`.
+  - Wires `APPLE_*`, `WINDOWS_*`, `GPG_*` GitHub Secrets into the
+    Tauri bundler + the per-OS signing scripts.
+  - Runs `gaussclaw-release-sign` against every produced artefact;
+    emits `<artefact>.manifest.json` next to each one.
+  - Uploads everything to a GitHub Release with auto-generated notes.
+- **Per-OS signing scripts** under `scripts/desktop/`:
+  - `sign-linux.sh` — GPG-detached `.asc` for each `.AppImage` /
+    `.deb`, with `rpmsign --addsign` for `.rpm` when available.
+  - `sign-macos.sh` — `codesign --options runtime --timestamp` plus
+    `xcrun notarytool submit --wait` plus `xcrun stapler staple`.
+  - `sign-windows.ps1` — auto-locates the latest Win SDK `signtool`
+    and signs with SHA-256 + RFC 3161 timestamping.
+- **`scripts/desktop/README.md`** documents every required secret,
+  the operator-local fallback for manual signing, and the
+  end-user verification recipe (`shasum` + manifest inspection).
+
+Provenance contract: all signing code is in-tree under MIT; the
+operator's cert material is never checked in — it lives exclusively
+in GitHub Secrets and the ephemeral runner filesystem.
 
 ---
 

@@ -49,6 +49,28 @@ pub struct ReleaseManifest {
     pub chain_index: u64,
 }
 
+impl ReleaseManifest {
+    /// Build a manifest. Public so the release-signing CLI (a separate
+    /// compilation unit) can construct one without hitting the
+    /// `#[non_exhaustive]` restriction.
+    #[must_use]
+    pub fn new(
+        version: impl Into<String>,
+        target: impl Into<String>,
+        sha256_hex: impl Into<String>,
+        publisher_signature_hex: impl Into<String>,
+        chain_index: u64,
+    ) -> Self {
+        Self {
+            version: version.into(),
+            target: target.into(),
+            sha256_hex: sha256_hex.into(),
+            publisher_signature_hex: publisher_signature_hex.into(),
+            chain_index,
+        }
+    }
+}
+
 /// Verification outcome.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]

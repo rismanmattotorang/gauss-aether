@@ -56,3 +56,10 @@ tauri-plugin-updater             = { version = "2", optional = true }
 gauss-kernel = { workspace = true }
 rand_core    = { workspace = true }
 tokio        = { workspace = true, features = ["test-util", "macros"] }
+
+# Release-signing CLI used by .github/workflows/desktop-release.yml.
+# Builds without the tauri-runtime feature — pure compute over the
+# updater module + a small arg parser. Always available.
+[[bin]]
+name = "gaussclaw-release-sign"
+path = "src/bin/release-sign.rs"
