@@ -2538,6 +2538,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gauss-cron"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "gauss-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "time",
+ "tokio",
+]
+
+[[package]]
 name = "gauss-dp"
 version = "0.0.1"
 dependencies = [
@@ -2773,6 +2786,7 @@ dependencies = [
  "async-trait",
  "clap",
  "gauss-core",
+ "gauss-cron",
  "gauss-health",
  "gauss-traits",
  "gaussclaw-agent",
@@ -3012,6 +3026,7 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "gauss-core",
+ "gauss-cron",
  "gauss-hwca",
  "gauss-sandbox",
  "gauss-traits",

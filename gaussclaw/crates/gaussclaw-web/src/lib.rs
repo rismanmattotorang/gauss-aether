@@ -655,9 +655,10 @@ async fn handle_skill_preview(
 
 /// Lower-case hex encode.
 fn hex_lower(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
     let mut s = String::with_capacity(bytes.len().saturating_mul(2));
     for b in bytes {
-        s.push_str(&format!("{b:02x}"));
+        let _ = write!(s, "{b:02x}");
     }
     s
 }
@@ -743,8 +744,14 @@ pub fn router(state: ServerState) -> Router {
         .route("/api/tools", get(handle_tools))
         .route("/api/receipt/head", get(handle_receipt_head))
         .route("/api/receipts/recent", get(handle_receipts_recent))
-        .route("/api/envelope/verify", axum::routing::post(handle_envelope_verify))
-        .route("/api/skills/preview", axum::routing::post(handle_skill_preview))
+        .route(
+            "/api/envelope/verify",
+            axum::routing::post(handle_envelope_verify),
+        )
+        .route(
+            "/api/skills/preview",
+            axum::routing::post(handle_skill_preview),
+        )
         .route("/api/chat/ws", get(handle_chat_ws))
         // Frontend
         .route("/", get(handle_root))
@@ -1037,8 +1044,11 @@ taint = "trusted"
 
     #[tokio::test]
     async fn skill_preview_reports_invalid_toml() {
-        let (status, body) =
-            post_json("/api/skills/preview", serde_json::json!({ "toml": "this = is = not toml" })).await;
+        let (status, body) = post_json(
+            "/api/skills/preview",
+            serde_json::json!({ "toml": "this = is = not toml" }),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["data"]["parsed"], false);
         assert!(body["data"]["error"].is_string());
@@ -1070,8 +1080,10 @@ taint = "trusted"
         let (status, body) = post_json("/api/envelope/verify", bogus).await;
         // The malformed envelope may even fail to parse — both 422 and
         // a 200 with verified=false demonstrate the verify path works.
-        assert!(status == StatusCode::OK || status.as_u16() == 422,
-            "unexpected status: {status}");
+        assert!(
+            status == StatusCode::OK || status.as_u16() == 422,
+            "unexpected status: {status}"
+        );
         if status == StatusCode::OK {
             assert_eq!(body["data"]["verified"], false);
             assert!(body["data"]["failed_axis"].is_string());

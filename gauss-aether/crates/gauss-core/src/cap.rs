@@ -57,6 +57,12 @@ impl CapToken {
     /// behalf. Cap-gated so a low-privilege sub-agent can't surface a
     /// modal pretending to be the parent agent.
     pub const APPROVAL_ASK: Self = Self(1 << 11);
+    /// Schedule a future job through the cron scheduler. The cap admits
+    /// the *act of scheduling*, not the privileges of the scheduled
+    /// payload itself — each job runs with its own admit gate at fire
+    /// time, capped at the grant the operator authorised on `add`.
+    /// Sub-agents can't quietly persist long-lived side effects.
+    pub const CRON_SCHEDULE: Self = Self(1 << 12);
 
     /// Construct from a raw bitmask.
     #[inline]

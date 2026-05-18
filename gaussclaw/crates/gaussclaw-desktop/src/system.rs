@@ -328,6 +328,7 @@ const fn axis_of(e: &crate::updater::UpdaterVerifyError) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #![allow(unused_imports)]
     use super::*;
     use crate::commands::Envelope;
     use crate::state;

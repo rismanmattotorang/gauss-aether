@@ -1,0 +1,23 @@
+---
+source: gaussclaw/crates/gaussclaw-conformance/src/cli_parity.rs
+expression: body
+---
+Manage scheduled cron jobs (Sprint 5 §1)
+
+Usage: cron <COMMAND>
+
+Commands:
+  list    List every scheduled job (id, label, schedule, status, next-fire-at, last-fired-at, fire
+          count)
+  add     Add a new job. Schedule grammar: a duration (`30m`, `2h15m`), a 5-field cron expression
+          (`*/15 * * * *`), or an RFC 3339 timestamp (`2026-05-20T14:30:00Z`)
+  pause   Pause a job. `next_fire_at` is preserved; resuming a paused job fires immediately if its
+          fire-time was reached during the pause window
+  resume  Resume a paused job
+  remove  Remove a job from the scheduler
+  status  Show one job's full record (status, payload, fire history)
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help
+          Print help

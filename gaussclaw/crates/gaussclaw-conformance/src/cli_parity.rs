@@ -14,8 +14,11 @@
 /// `docs/HERMES_ADAPTER_MATRIX.md`. Any addition or removal in upstream
 /// Hermes is reflected here in lock-step.
 pub const HERMES_SUBCOMMANDS: &[&str] = &[
-    "model", "tools", "config", "gateway", "setup", "update",
-    "doctor",
+    "model", "tools", "config", "gateway", "setup", "update", "doctor",
+    // `cron` is Hermes parity — Hermes's `hermes cron` ships scheduled
+    // job management (per the parity matrix in `/ROADMAP.md`). The
+    // GaussClaw implementation lands as Sprint 5 §1.
+    "cron",
     // `web` is a GaussClaw extension — see SUBCOMMANDS for the parity flag.
 ];
 

@@ -17,8 +17,8 @@
 
 use clap::Parser;
 use gaussclaw_cli::{
-    ChatArgs, Cli, Command, ConfigCmd, DoctorArgs, GatewayCmd, ImportArgs, ModelCmd, ReceiptCmd,
-    ToolsCmd, WebArgs,
+    ChatArgs, Cli, Command, ConfigCmd, CronCmd, DoctorArgs, GatewayCmd, ImportArgs, ModelCmd,
+    ReceiptCmd, ToolsCmd, WebArgs,
 };
 use gaussclaw_tui::StatusInfo;
 
@@ -141,6 +141,7 @@ fn dispatch(
             ReceiptCmd::Head => run_receipt_head(),
             ReceiptCmd::Verify { envelope } => run_receipt_verify(envelope),
         },
+        Command::Cron(sub) => run_cron(sub),
         Command::Web(_) => unreachable!("`web` is dispatched above in main()"),
     }
 }
@@ -500,4 +501,91 @@ fn run_receipt_verify(envelope_path: std::path::PathBuf) -> anyhow::Result<()> {
         envelope.receipt.taint
     );
     Ok(())
+}
+
+// ─── Sprint 5 §1: cron ──────────────────────────────────────────────────────
+
+fn run_cron(sub: CronCmd) -> anyhow::Result<()> {
+    // The shipping binary builds a fresh in-memory scheduler per
+    // invocation — the actual production wiring (one scheduler per
+    // process, persisted to the Trinity store) lands in Sprint 5 §2.
+    // The CLI surface is still useful for verifying schedule grammar
+    // and exercising the cap-gate end-to-end.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async move {
+        use std::sync::Arc;
+        let store = Arc::new(gauss_cron::InMemoryJobStore::new());
+        let sched = gauss_cron::Scheduler::new(store, gauss_cron::SystemClock);
+        match sub {
+            CronCmd::List => {
+                let jobs = sched.list().await
+                    .map_err(|e| anyhow::anyhow!("scheduler list: {e}"))?;
+                if jobs.is_empty() {
+                    println!("(no scheduled jobs)");
+                } else {
+                    println!(
+                        "{:<4}  {:<20}  {:<24}  {:<10}  {:<10}  next_fire_at",
+                        "id", "label", "schedule", "status", "fires"
+                    );
+                    for j in &jobs {
+                        println!(
+                            "{:<4}  {:<20}  {:<24}  {:<10?}  {:<10}  {:?}",
+                            j.id.0, j.label, j.schedule, j.status, j.fire_count, j.next_fire_at
+                        );
+                    }
+                }
+            }
+            CronCmd::Add { schedule, label, payload } => {
+                let schedule = gauss_cron::parse_schedule(&schedule)
+                    .map_err(|e| anyhow::anyhow!("schedule grammar: {e}"))?;
+                let payload_value: serde_json::Value = serde_json::from_str(&payload)
+                    .unwrap_or(serde_json::Value::Null);
+                let j = gauss_cron::Job::new(
+                    gauss_cron::JobId::new(0),
+                    label,
+                    schedule,
+                    gauss_core::CapToken::BOTTOM,
+                    payload_value,
+                    0,
+                );
+                let added = sched.add(j).await
+                    .map_err(|e| anyhow::anyhow!("scheduler add: {e}"))?;
+                println!(
+                    "ok: cron job added\n  id:           {}\n  label:        {}\n  schedule:     {}\n  next_fire_at: {:?}",
+                    added.id.0, added.label, added.schedule, added.next_fire_at
+                );
+            }
+            CronCmd::Pause { id } => {
+                sched.pause(gauss_cron::JobId::new(id)).await
+                    .map_err(|e| anyhow::anyhow!("scheduler pause: {e}"))?;
+                println!("ok: paused {id}");
+            }
+            CronCmd::Resume { id } => {
+                sched.resume(gauss_cron::JobId::new(id)).await
+                    .map_err(|e| anyhow::anyhow!("scheduler resume: {e}"))?;
+                println!("ok: resumed {id}");
+            }
+            CronCmd::Remove { id } => {
+                sched.cancel(gauss_cron::JobId::new(id)).await
+                    .map_err(|e| anyhow::anyhow!("scheduler cancel: {e}"))?;
+                println!("ok: removed {id}");
+            }
+            CronCmd::Status { id } => {
+                let jobs = sched.list().await
+                    .map_err(|e| anyhow::anyhow!("scheduler list: {e}"))?;
+                match jobs.into_iter().find(|j| j.id.0 == id) {
+                    Some(j) => {
+                        println!("{}", serde_json::to_string_pretty(&j)?);
+                    }
+                    None => {
+                        eprintln!("unknown job: {id}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    })
 }

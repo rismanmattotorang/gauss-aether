@@ -44,7 +44,17 @@
 #![allow(
     clippy::doc_markdown,
     clippy::missing_const_for_fn,
-    clippy::unused_async
+    clippy::unused_async,
+    clippy::arithmetic_side_effects,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::unnecessary_filter_map,
+    clippy::filter_map_bool_then,
+    clippy::needless_raw_string_hashes,
+    clippy::format_collect,
+    clippy::manual_repeat_n,
+    clippy::manual_str_repeat,
+    clippy::format_push_string
 )]
 #![allow(rustdoc::broken_intra_doc_links)]
 

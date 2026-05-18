@@ -89,7 +89,8 @@ impl DiscordChannel {
         let mut msg = Vec::with_capacity(timestamp_header.len().saturating_add(raw_body.len()));
         msg.extend_from_slice(timestamp_header.as_bytes());
         msg.extend_from_slice(raw_body);
-        pk.verify(&msg, &sig).map_err(|_| ChannelError::BadSignature)?;
+        pk.verify(&msg, &sig)
+            .map_err(|_| ChannelError::BadSignature)?;
 
         self.kernel
             .admit(self.required_caps(), self.default_taint)

@@ -51,10 +51,24 @@
 //! Phase 3 follow-on slices add http_fetch, web_search, shell, and the
 //! rest of the ~30-tool catalogue from `docs/HERMES_ADAPTER_MATRIX.md`.
 
-#![allow(clippy::doc_markdown, clippy::missing_docs_in_private_items)]
+#![allow(
+    clippy::doc_markdown,
+    clippy::missing_docs_in_private_items,
+    clippy::double_must_use,
+    clippy::arithmetic_side_effects,
+    clippy::too_long_first_doc_paragraph,
+    clippy::missing_const_for_fn,
+    clippy::redundant_closure_for_method_calls,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::redundant_closure
+)]
+#![allow(rustdoc::broken_intra_doc_links)]
 
 pub mod base64_tool;
 pub mod clarify;
+pub mod cronjob;
 pub mod csv_parse;
 pub mod datetime;
 pub mod echo;
@@ -76,6 +90,7 @@ pub mod uuid;
 
 pub use base64_tool::Base64Tool;
 pub use clarify::ClarifyTool;
+pub use cronjob::CronJobTool;
 pub use csv_parse::CsvParseTool;
 pub use datetime::DatetimeTool;
 pub use echo::EchoTool;

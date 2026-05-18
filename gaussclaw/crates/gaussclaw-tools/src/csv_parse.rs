@@ -269,7 +269,10 @@ mod tests {
     #[tokio::test]
     async fn rejects_empty_input() {
         let t = CsvParseTool::new();
-        let err = t.invoke_raw(serde_json::json!({ "input": "" })).await.unwrap_err();
+        let err = t
+            .invoke_raw(serde_json::json!({ "input": "" }))
+            .await
+            .unwrap_err();
         assert!(matches!(err, GaussError::Internal(_)));
     }
 

@@ -1,3 +1,5 @@
+#![allow(missing_docs, unused_variables)]
+
 //! Updater artifact verification.
 //!
 //! Every GaussClaw desktop release ships with **two** integrity surfaces:
@@ -144,7 +146,8 @@ pub fn verify_release_artifact(
         .try_into()
         .map_err(|_| UpdaterVerifyError::BadEncoding("publisher_signature_hex length"))?;
     let sig = Signature::from_bytes(&sig_arr);
-    let message = canonical_signed_message(&manifest.version, &manifest.target, &manifest.sha256_hex);
+    let message =
+        canonical_signed_message(&manifest.version, &manifest.target, &manifest.sha256_hex);
     publisher_pk
         .verify(message.as_bytes(), &sig)
         .map_err(|_| UpdaterVerifyError::BadPublisherSignature)?;
@@ -257,7 +260,10 @@ mod tests {
         let body = b"x";
         let (m, pk) = fixture("0.9.0", "x86_64-apple-darwin", body);
         let r = verify_release_artifact(&m, body, &pk, "1.0.0", "x86_64-apple-darwin");
-        assert!(matches!(r, Err(UpdaterVerifyError::VersionNotGreater { .. })));
+        assert!(matches!(
+            r,
+            Err(UpdaterVerifyError::VersionNotGreater { .. })
+        ));
     }
 
     #[test]

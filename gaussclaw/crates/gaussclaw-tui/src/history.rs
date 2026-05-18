@@ -91,8 +91,12 @@ impl HistoryStore {
         if self.entries.is_empty() {
             return None;
         }
-        self.cursor = Some(self.cursor.map_or(self.entries.len() - 1, |c| c.saturating_sub(1)));
-        self.cursor.and_then(|c| self.entries.get(c).map(String::as_str))
+        self.cursor = Some(
+            self.cursor
+                .map_or(self.entries.len() - 1, |c| c.saturating_sub(1)),
+        );
+        self.cursor
+            .and_then(|c| self.entries.get(c).map(String::as_str))
     }
 
     /// Walk one step forward in history. Returns `None` when we step off the

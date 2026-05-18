@@ -5,7 +5,7 @@
 //! dependency — they're tiny and the RFC 4122 bit-layout is stable.
 
 use async_trait::async_trait;
-use gauss_core::{GaussError, GaussResult, ToolId};
+use gauss_core::{GaussResult, ToolId};
 use gauss_traits::{ToolManifest, ToolTrait};
 use gaussclaw_skill::SkillManifest;
 use rand_core::{OsRng, RngCore};
@@ -65,7 +65,11 @@ impl ToolTrait for UuidTool {
 
     async fn invoke_raw(&self, args: serde_json::Value) -> GaussResult<serde_json::Value> {
         let version = args.get("version").and_then(|v| v.as_u64()).unwrap_or(4);
-        let count = args.get("count").and_then(|v| v.as_u64()).unwrap_or(1).min(MAX_COUNT);
+        let count = args
+            .get("count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1)
+            .min(MAX_COUNT);
         let uuids: Vec<String> = (0..count)
             .map(|_| match version {
                 7 => uuid_v7(),
@@ -140,10 +144,16 @@ mod tests {
     #[tokio::test]
     async fn v7_is_time_ordered() {
         let t = UuidTool::new();
-        let a = t.invoke_raw(serde_json::json!({ "version": 7 })).await.unwrap();
+        let a = t
+            .invoke_raw(serde_json::json!({ "version": 7 }))
+            .await
+            .unwrap();
         // Force a clock tick before the second sample.
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-        let b = t.invoke_raw(serde_json::json!({ "version": 7 })).await.unwrap();
+        let b = t
+            .invoke_raw(serde_json::json!({ "version": 7 }))
+            .await
+            .unwrap();
         let aid = a["uuids"][0].as_str().unwrap();
         let bid = b["uuids"][0].as_str().unwrap();
         assert!(aid < bid, "v7 should be time-ordered: a={aid}, b={bid}");
@@ -152,7 +162,10 @@ mod tests {
     #[tokio::test]
     async fn count_is_clamped_to_max() {
         let t = UuidTool::new();
-        let out = t.invoke_raw(serde_json::json!({ "count": 9999 })).await.unwrap();
+        let out = t
+            .invoke_raw(serde_json::json!({ "count": 9999 }))
+            .await
+            .unwrap();
         assert_eq!(out["count"], 64);
         assert_eq!(out["uuids"].as_array().unwrap().len(), 64);
     }
