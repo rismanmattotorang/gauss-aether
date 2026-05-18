@@ -18,7 +18,13 @@
 
 #![allow(clippy::doc_markdown)]
 
+pub mod agent_loop;
 pub mod audit;
+
+pub use agent_loop::{
+    parse_inline_tool_calls, AgentLoop, LoopEvent, LoopOutcome, LoopSink, MemorySink, NoopSink,
+    ToolCall, DEFAULT_MAX_ITERATIONS,
+};
 
 pub use audit::{
     blake3_hex, AuditEntry, AuditTrace, InboundRecord, OutboundRecord, PlaneLabel,
@@ -220,6 +226,13 @@ pub struct Completion {
     pub finish_reason: String,
     /// Token counters.
     pub usage: TokenCount,
+    /// Optional structured tool calls. Providers that surface
+    /// `tool_calls` natively (OpenAI, Anthropic, Gemini) populate this
+    /// vector; the inline-markup fallback in
+    /// [`agent_loop::parse_inline_tool_calls`] runs only when this is
+    /// empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<agent_loop::ToolCall>,
 }
 
 /// Approximate token counters; populated to whatever fidelity the
@@ -263,7 +276,16 @@ impl Completion {
             model: model.into(),
             finish_reason: finish_reason.into(),
             usage,
+            tool_calls: Vec::new(),
         }
+    }
+
+    /// Attach a list of structured tool calls. The loop driver
+    /// prefers these over inline-markup parsing.
+    #[must_use]
+    pub fn with_tool_calls(mut self, calls: Vec<agent_loop::ToolCall>) -> Self {
+        self.tool_calls = calls;
+        self
     }
 }
 
@@ -356,6 +378,7 @@ impl ProviderHandle for EchoProvider {
                 prompt: prompt_tokens,
                 completion: completion_tokens,
             },
+            tool_calls: Vec::new(),
         })
     }
 }
