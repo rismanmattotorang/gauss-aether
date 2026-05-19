@@ -795,10 +795,7 @@ async fn handle_cron_add(
 }
 
 #[axum::debug_handler]
-async fn handle_cron_get(
-    State(state): State<ServerState>,
-    Path(id): Path<u64>,
-) -> Response {
+async fn handle_cron_get(State(state): State<ServerState>, Path(id): Path<u64>) -> Response {
     let Some(cron) = state.cron() else {
         return cron_unavailable();
     };
@@ -818,10 +815,7 @@ async fn handle_cron_get(
 }
 
 #[axum::debug_handler]
-async fn handle_cron_pause(
-    State(state): State<ServerState>,
-    Path(id): Path<u64>,
-) -> Response {
+async fn handle_cron_pause(State(state): State<ServerState>, Path(id): Path<u64>) -> Response {
     let Some(cron) = state.cron() else {
         return cron_unavailable();
     };
@@ -832,10 +826,7 @@ async fn handle_cron_pause(
 }
 
 #[axum::debug_handler]
-async fn handle_cron_resume(
-    State(state): State<ServerState>,
-    Path(id): Path<u64>,
-) -> Response {
+async fn handle_cron_resume(State(state): State<ServerState>, Path(id): Path<u64>) -> Response {
     let Some(cron) = state.cron() else {
         return cron_unavailable();
     };
@@ -846,10 +837,7 @@ async fn handle_cron_resume(
 }
 
 #[axum::debug_handler]
-async fn handle_cron_remove(
-    State(state): State<ServerState>,
-    Path(id): Path<u64>,
-) -> Response {
+async fn handle_cron_remove(State(state): State<ServerState>, Path(id): Path<u64>) -> Response {
     let Some(cron) = state.cron() else {
         return cron_unavailable();
     };
@@ -860,10 +848,7 @@ async fn handle_cron_remove(
 }
 
 #[axum::debug_handler]
-async fn handle_cron_run(
-    State(state): State<ServerState>,
-    Path(id): Path<u64>,
-) -> Response {
+async fn handle_cron_run(State(state): State<ServerState>, Path(id): Path<u64>) -> Response {
     let Some(cron) = state.cron() else {
         return cron_unavailable();
     };
@@ -1057,16 +1042,16 @@ pub fn router(state: ServerState) -> Router {
             axum::routing::post(handle_skill_preview),
         )
         // Sprint 5 §3 — cron CRUD
-        .route(
-            "/api/cron",
-            get(handle_cron_list).post(handle_cron_add),
-        )
+        .route("/api/cron", get(handle_cron_list).post(handle_cron_add))
         .route(
             "/api/cron/{id}",
             get(handle_cron_get).delete(handle_cron_remove),
         )
         .route("/api/cron/{id}/edit", axum::routing::post(handle_cron_edit))
-        .route("/api/cron/{id}/pause", axum::routing::post(handle_cron_pause))
+        .route(
+            "/api/cron/{id}/pause",
+            axum::routing::post(handle_cron_pause),
+        )
         .route(
             "/api/cron/{id}/resume",
             axum::routing::post(handle_cron_resume),
@@ -1387,17 +1372,25 @@ taint = "trusted"
         ServerState::new(cfg, Some("/tmp/gaussclaw.toml".into())).with_cron(sched)
     }
 
-    async fn oneshot(state: ServerState, method: Method, uri: &str, body: Option<serde_json::Value>) -> (StatusCode, serde_json::Value) {
+    async fn oneshot(
+        state: ServerState,
+        method: Method,
+        uri: &str,
+        body: Option<serde_json::Value>,
+    ) -> (StatusCode, serde_json::Value) {
         let app = router(state);
         let mut req = Request::builder().method(method).uri(uri);
         if body.is_some() {
             req = req.header("content-type", "application/json");
         }
-        let req = req.body(body.map_or_else(Body::empty, |v| Body::from(v.to_string()))).unwrap();
+        let req = req
+            .body(body.map_or_else(Body::empty, |v| Body::from(v.to_string())))
+            .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let status = resp.status();
         let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::json!({}));
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::json!({}));
         (status, json)
     }
 
@@ -1575,13 +1568,8 @@ taint = "trusted"
         .await;
         let id = body["data"]["id"].as_u64().unwrap();
 
-        let (status, _) = oneshot(
-            st.clone(),
-            Method::DELETE,
-            &format!("/api/cron/{id}"),
-            None,
-        )
-        .await;
+        let (status, _) =
+            oneshot(st.clone(), Method::DELETE, &format!("/api/cron/{id}"), None).await;
         assert_eq!(status, StatusCode::OK);
 
         let (status, _) = oneshot(st, Method::GET, &format!("/api/cron/{id}"), None).await;

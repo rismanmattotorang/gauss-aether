@@ -18,7 +18,7 @@
 use clap::Parser;
 use gaussclaw_cli::{
     ChatArgs, Cli, Command, ConfigCmd, CronCmd, DoctorArgs, GatewayCmd, ImportArgs, ModelCmd,
-    ReceiptCmd, ToolsCmd, WebArgs,
+    ReceiptCmd, SnapshotCmd, ToolsCmd, WebArgs,
 };
 use gaussclaw_tui::StatusInfo;
 
@@ -153,6 +153,7 @@ fn dispatch(
             ReceiptCmd::Verify { envelope } => run_receipt_verify(envelope),
         },
         Command::Cron(sub) => run_cron(sub),
+        Command::Snapshot(sub) => run_snapshot(sub),
         Command::Web(_) => unreachable!("`web` is dispatched above in main()"),
     }
 }
@@ -642,6 +643,94 @@ fn run_cron(sub: CronCmd) -> anyhow::Result<()> {
                         std::process::exit(1);
                     }
                 }
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+}
+
+// ─── Sprint 5 §8: snapshot / rollback ──────────────────────────────────────
+
+#[allow(clippy::too_many_lines)]
+fn run_snapshot(sub: SnapshotCmd) -> anyhow::Result<()> {
+    // Each CLI invocation builds a fresh in-memory backend, like cron.
+    // The shipping binary's persistent snapshot store lands once
+    // `gaussclaw-store` grows a `checkpoints` table (Sprint 5 §8.2).
+    // The CLI is still useful for verifying snapshot/rollback grammar
+    // and exercising the cap-gate end-to-end against fresh state.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async move {
+        use std::path::PathBuf;
+        use std::sync::Arc;
+        let backend: Box<dyn gauss_checkpoint::CheckpointBackend> =
+            Box::new(gauss_checkpoint::MemoryBackend::new());
+        let mgr = Arc::new(gauss_checkpoint::CheckpointManager::new(backend));
+        let grant = gauss_core::CapToken::CHECKPOINT_WRITE
+            | gauss_core::CapToken::CHECKPOINT_ROLLBACK;
+        match sub {
+            SnapshotCmd::Save { label, paths, root } => {
+                let root_path = root
+                    .map_or_else(|| std::env::current_dir().unwrap_or_default(), PathBuf::from);
+                let path_bufs: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+                if path_bufs.is_empty() {
+                    eprintln!("error: pass --path PATH (repeatable) listing files to capture");
+                    std::process::exit(1);
+                }
+                let (snap, receipt) = mgr
+                    .snapshot(grant, &root_path, &label, &path_bufs)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("snapshot: {e}"))?;
+                println!(
+                    "ok: snapshot saved\n  id:         {}\n  label:      {}\n  files:      {}\n  bytes:      {}\n  timestamp:  {}",
+                    snap.id, snap.label, receipt.file_count, receipt.size_bytes, receipt.timestamp
+                );
+            }
+            SnapshotCmd::List => {
+                let all = mgr.list().await.map_err(|e| anyhow::anyhow!("list: {e}"))?;
+                if all.is_empty() {
+                    println!("(no snapshots in this process)");
+                } else {
+                    println!(
+                        "{:<64}  {:<32}  {:<6}  {:<10}",
+                        "id", "label", "files", "bytes"
+                    );
+                    for s in &all {
+                        println!(
+                            "{:<64}  {:<32}  {:<6}  {:<10}",
+                            s.id, s.label, s.file_count(), s.size_bytes()
+                        );
+                    }
+                }
+            }
+            SnapshotCmd::Status { id } => {
+                let all = mgr.list().await.map_err(|e| anyhow::anyhow!("list: {e}"))?;
+                match all.into_iter().find(|s| s.id.0 == id) {
+                    Some(s) => println!("{}", serde_json::to_string_pretty(&s)?),
+                    None => {
+                        eprintln!("unknown snapshot: {id}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            SnapshotCmd::Restore { id, root } => {
+                let root_path = root
+                    .map_or_else(|| std::env::current_dir().unwrap_or_default(), PathBuf::from);
+                let receipt = mgr
+                    .rollback(grant, &gauss_checkpoint::CheckpointId::new(id), &root_path)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("rollback: {e}"))?;
+                println!(
+                    "ok: rolled back\n  id:    {}\n  files: {}",
+                    receipt.id, receipt.file_count
+                );
+            }
+            SnapshotCmd::Remove { id } => {
+                mgr.remove(&gauss_checkpoint::CheckpointId::new(id.clone()))
+                    .await
+                    .map_err(|e| anyhow::anyhow!("remove: {e}"))?;
+                println!("ok: removed {id}");
             }
         }
         Ok::<(), anyhow::Error>(())

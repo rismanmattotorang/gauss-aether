@@ -2498,6 +2498,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "gauss-checkpoint"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "gauss-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "time",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "gauss-conformance"
 version = "0.0.1"
 dependencies = [
@@ -2785,6 +2801,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "gauss-checkpoint",
  "gauss-core",
  "gauss-cron",
  "gauss-health",
@@ -3025,6 +3042,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "blake3",
+ "gauss-checkpoint",
  "gauss-core",
  "gauss-cron",
  "gauss-hwca",
@@ -3037,6 +3055,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 2.0.18",
  "time",
  "tokio",

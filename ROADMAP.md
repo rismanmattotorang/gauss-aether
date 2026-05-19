@@ -539,9 +539,13 @@ Deliverables:
    days, merges narrow skills into umbrellas via LLM summary.
 7. `gaussclaw-background-review` — fork a memory-only loop after
    each turn to autosave skills + memories (Hermes parity).
-8. `checkpoint_manager` — `/snapshot` saves the live FS state of the
+8. ✅ `checkpoint_manager` — `/snapshot` saves the live FS state of the
    working directory under a content-addressed key; `/rollback`
-   restores. Backed by `git` when available.
+   restores. *Shipping `gauss-checkpoint` crate with content-addressed
+   `MemoryBackend` + opt-in `GitBackend` (uses `git stash create`).
+   Cap-separated (`cap:checkpoint:write` vs `cap:checkpoint:rollback`).
+   Surfaced as `CheckpointTool` and `gaussclaw snapshot` CLI subcommand
+   with five verbs.*
 9. Five new TUI overlays: model picker, session picker, agents
    overlay, skills hub, todo panel.
 10. Dashboard `LogsPage` + `ProfilesPage` + `AnalyticsPage`.

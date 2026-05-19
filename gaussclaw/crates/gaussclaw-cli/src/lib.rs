@@ -94,6 +94,10 @@ pub enum Command {
     #[command(subcommand)]
     Cron(CronCmd),
 
+    /// Capture or restore working-directory snapshots (Sprint 5 §8).
+    #[command(subcommand)]
+    Snapshot(SnapshotCmd),
+
     /// Launch the web dashboard (Axum + retained React frontend) (GaussClaw extension).
     Web(WebArgs),
 }
@@ -167,6 +171,53 @@ pub enum CronCmd {
         /// Job id (from `cron list`).
         #[arg(value_name = "ID")]
         id: u64,
+    },
+}
+
+// ─── snapshot ───────────────────────────────────────────────────────────────
+
+/// `snapshot` subcommand variants. Sprint 5 §8.
+///
+/// Hermes ships `checkpoint_manager`; GaussClaw separates the two
+/// caps (`cap:checkpoint:write` vs `cap:checkpoint:rollback`) so a
+/// write-only session can still capture state.
+#[derive(Debug, clap::Subcommand)]
+pub enum SnapshotCmd {
+    /// Capture the live working-directory state under a label.
+    Save {
+        /// Free-text label that surfaces in `snapshot list`.
+        #[arg(short = 'l', long = "label", default_value = "(unlabeled)")]
+        label: String,
+        /// Paths to capture (relative to `--root`). Repeat to add more.
+        #[arg(short = 'p', long = "path", value_name = "PATH")]
+        paths: Vec<String>,
+        /// Root directory; defaults to the current working directory.
+        #[arg(long = "root", value_name = "DIR")]
+        root: Option<String>,
+    },
+    /// List every retained snapshot (id, label, file count, size).
+    List,
+    /// Print one snapshot's full record.
+    Status {
+        /// Snapshot id (from `snapshot list`).
+        #[arg(value_name = "ID")]
+        id: String,
+    },
+    /// Restore the working directory from a captured snapshot.
+    /// Requires `cap:checkpoint:rollback`.
+    Restore {
+        /// Snapshot id (from `snapshot list`).
+        #[arg(value_name = "ID")]
+        id: String,
+        /// Root directory; defaults to the current working directory.
+        #[arg(long = "root", value_name = "DIR")]
+        root: Option<String>,
+    },
+    /// Drop a snapshot from the store.
+    Remove {
+        /// Snapshot id (from `snapshot list`).
+        #[arg(value_name = "ID")]
+        id: String,
     },
 }
 
@@ -364,6 +415,7 @@ pub const fn dispatch_id(cmd: &Command) -> &'static str {
         Command::Import(_) => "import",
         Command::Receipt(_) => "receipt",
         Command::Cron(_) => "cron",
+        Command::Snapshot(_) => "snapshot",
         Command::Web(_) => "web",
     }
 }
@@ -383,6 +435,7 @@ pub const SUBCOMMANDS: &[(&str, bool)] = &[
     ("import", false),
     ("receipt", false),
     ("cron", true),
+    ("snapshot", false),
     ("web", false),
 ];
 
@@ -411,6 +464,7 @@ mod tests {
             ("import", &["gaussclaw", "import", "/tmp/cfg.toml"]),
             ("receipt", &["gaussclaw", "receipt", "head"]),
             ("cron", &["gaussclaw", "cron", "list"]),
+            ("snapshot", &["gaussclaw", "snapshot", "list"]),
             ("web", &["gaussclaw", "web"]),
         ];
         for (id, argv) in leaf {

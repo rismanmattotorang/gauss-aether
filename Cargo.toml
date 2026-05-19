@@ -23,6 +23,7 @@ members = [
     "gauss-aether/crates/gauss-learnt",
     "gauss-aether/crates/gauss-robust",
     "gauss-aether/crates/gauss-cron",
+    "gauss-aether/crates/gauss-checkpoint",
     "gauss-aether/crates/gauss-conformance",
 
     # ── GaussClaw — Hermes-to-Rust port (see gaussclaw/ROADMAP.md) ───────────
@@ -79,6 +80,7 @@ gauss-dp        = { path = "gauss-aether/crates/gauss-dp",        version = "0.0
 gauss-learnt    = { path = "gauss-aether/crates/gauss-learnt",    version = "0.0.1" }
 gauss-robust    = { path = "gauss-aether/crates/gauss-robust",    version = "0.0.1" }
 gauss-cron      = { path = "gauss-aether/crates/gauss-cron",      version = "0.0.1" }
+gauss-checkpoint = { path = "gauss-aether/crates/gauss-checkpoint", version = "0.0.1" }
 
 # GaussClaw internal crates (Hermes port; see gaussclaw/ROADMAP.md)
 gaussclaw-agent          = { path = "gaussclaw/crates/gaussclaw-agent",          version = "0.0.1" }
@@ -160,6 +162,10 @@ regex  = { version = "1",    default-features = false, features = ["std", "perf"
 
 # Time — real RFC3339 timestamps for audit records and channel messages.
 time = { version = "0.3", default-features = false, features = ["std", "formatting", "macros"] }
+
+# Filesystem test fixtures — used by gauss-checkpoint to drive
+# round-trip tests against a fresh working directory each run.
+tempfile = "3"
 
 # Composite sandbox — Phase 3. The default WASM layer is wasmi (pure-Rust,
 # fast compile, supports fuel metering). Phase 10 swaps to wasmtime for the

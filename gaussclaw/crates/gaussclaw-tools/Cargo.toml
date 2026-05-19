@@ -16,7 +16,8 @@ gauss-core      = { workspace = true }
 gauss-traits    = { workspace = true }
 gauss-hwca      = { workspace = true }
 gauss-sandbox   = { workspace = true }
-gauss-cron      = { workspace = true }
+gauss-cron       = { workspace = true }
+gauss-checkpoint = { workspace = true }
 gaussclaw-skill = { workspace = true }
 gaussclaw-store = { workspace = true }
 async-trait     = { workspace = true }
@@ -32,4 +33,5 @@ rand_core       = { workspace = true }
 time            = { workspace = true, features = ["parsing"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util", "macros"] }
+tokio    = { workspace = true, features = ["test-util", "macros"] }
+tempfile = { workspace = true }

@@ -548,12 +548,18 @@ mod tests {
         let clock = FixedClock::epoch();
         let s = Scheduler::new(Arc::new(InMemoryJobStore::new()), clock);
         let j = s.add(sample_duration_job(3600)).await.unwrap(); // 1 h from now
-        // Not yet due — a normal tick would do nothing.
+                                                                 // Not yet due — a normal tick would do nothing.
         let r = s.tick(CapToken::TOP, |_| None).await.unwrap();
         assert_eq!(r.fired_count(), 0);
         // run_now fires anyway.
         let out = s.run_now(j.id, CapToken::TOP, |_| Some(7)).await.unwrap();
-        assert!(matches!(out, FireOutcome::Fired { receipt_id: Some(7), .. }));
+        assert!(matches!(
+            out,
+            FireOutcome::Fired {
+                receipt_id: Some(7),
+                ..
+            }
+        ));
         let back = s.list().await.unwrap();
         assert_eq!(back[0].status, JobStatus::Completed);
         assert_eq!(back[0].fire_count, 1);
@@ -611,10 +617,7 @@ mod tests {
         let before_next = added.next_fire_at.unwrap();
         s.clock().advance(100);
         let new_schedule = Schedule::Duration { seconds: 300 };
-        let after = s
-            .edit(added.id, None, Some(new_schedule))
-            .await
-            .unwrap();
+        let after = s.edit(added.id, None, Some(new_schedule)).await.unwrap();
         // Now-time is 100, new duration is 300 → next_fire_at == 400.
         assert_eq!(after.next_fire_at, Some(400));
         assert_ne!(after.next_fire_at.unwrap(), before_next);

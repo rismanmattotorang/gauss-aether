@@ -27,6 +27,7 @@ gaussclaw-agent    = { workspace = true }
 gaussclaw-tools    = { workspace = true }
 gauss-core         = { workspace = true }
 gauss-cron         = { workspace = true }
+gauss-checkpoint   = { workspace = true }
 gauss-health       = { workspace = true }
 gauss-traits       = { workspace = true }
 clap               = { workspace = true }

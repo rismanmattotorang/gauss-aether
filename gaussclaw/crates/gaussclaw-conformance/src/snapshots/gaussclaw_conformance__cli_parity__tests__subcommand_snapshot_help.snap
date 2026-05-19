@@ -1,0 +1,20 @@
+---
+source: gaussclaw/crates/gaussclaw-conformance/src/cli_parity.rs
+expression: body
+---
+Capture or restore working-directory snapshots (Sprint 5 §8)
+
+Usage: snapshot <COMMAND>
+
+Commands:
+  save     Capture the live working-directory state under a label
+  list     List every retained snapshot (id, label, file count, size)
+  status   Print one snapshot's full record
+  restore  Restore the working directory from a captured snapshot. Requires
+           `cap:checkpoint:rollback`
+  remove   Drop a snapshot from the store
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help
+          Print help

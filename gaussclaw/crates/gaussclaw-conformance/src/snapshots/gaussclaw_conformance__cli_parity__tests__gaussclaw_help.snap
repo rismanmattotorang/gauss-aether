@@ -7,19 +7,20 @@ GaussClaw — Hermes-compatible agent on the Gauss-Aether runtime.
 Usage: gaussclaw [OPTIONS] [COMMAND]
 
 Commands:
-  chat     One-shot chat REPL without launching the full TUI (GaussClaw extension)
-  model    Select or inspect the active LLM model. (Hermes parity: `hermes model`.)
-  tools    Enable, disable, or list tools. (Hermes parity: `hermes tools`.)
-  config   Read or write configuration values. (Hermes parity: `hermes config`.)
-  gateway  Start, stop, or inspect the messaging gateway. (Hermes parity: `hermes gateway`.)
-  setup    Interactive first-run setup wizard. (Hermes parity: `hermes setup`.)
-  update   Update GaussClaw to the latest signed release. (Hermes parity: `hermes update`.)
-  doctor   Run the Self-Diagnostic Health Engine invariants. (Hermes parity: `hermes doctor`.)
-  import   Import a Hermes config and migrate it to GaussClaw (GaussClaw extension)
-  receipt  Inspect the receipt chain head or verify an envelope (GaussClaw extension)
-  cron     Manage scheduled cron jobs (Sprint 5 §1)
-  web      Launch the web dashboard (Axum + retained React frontend) (GaussClaw extension)
-  help     Print this message or the help of the given subcommand(s)
+  chat      One-shot chat REPL without launching the full TUI (GaussClaw extension)
+  model     Select or inspect the active LLM model. (Hermes parity: `hermes model`.)
+  tools     Enable, disable, or list tools. (Hermes parity: `hermes tools`.)
+  config    Read or write configuration values. (Hermes parity: `hermes config`.)
+  gateway   Start, stop, or inspect the messaging gateway. (Hermes parity: `hermes gateway`.)
+  setup     Interactive first-run setup wizard. (Hermes parity: `hermes setup`.)
+  update    Update GaussClaw to the latest signed release. (Hermes parity: `hermes update`.)
+  doctor    Run the Self-Diagnostic Health Engine invariants. (Hermes parity: `hermes doctor`.)
+  import    Import a Hermes config and migrate it to GaussClaw (GaussClaw extension)
+  receipt   Inspect the receipt chain head or verify an envelope (GaussClaw extension)
+  cron      Manage scheduled cron jobs (Sprint 5 §1)
+  snapshot  Capture or restore working-directory snapshots (Sprint 5 §8)
+  web       Launch the web dashboard (Axum + retained React frontend) (GaussClaw extension)
+  help      Print this message or the help of the given subcommand(s)
 
 Options:
   -c, --config <PATH>  Path to an alternate `gaussclaw.toml`. If omitted, the loader walks the

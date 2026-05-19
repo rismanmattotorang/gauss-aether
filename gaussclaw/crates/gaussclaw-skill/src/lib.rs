@@ -281,6 +281,8 @@ pub fn parse_cap(cap: &str) -> SkillResult<CapToken> {
         "memory:read" => Ok(CapToken::MEMORY_READ),
         "approval:ask" => Ok(CapToken::APPROVAL_ASK),
         "cron:schedule" => Ok(CapToken::CRON_SCHEDULE),
+        "checkpoint:write" => Ok(CapToken::CHECKPOINT_WRITE),
+        "checkpoint:rollback" => Ok(CapToken::CHECKPOINT_ROLLBACK),
         other => Err(SkillError::UnknownCap(other.into())),
     }
 }

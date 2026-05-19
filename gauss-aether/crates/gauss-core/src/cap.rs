@@ -63,6 +63,16 @@ impl CapToken {
     /// time, capped at the grant the operator authorised on `add`.
     /// Sub-agents can't quietly persist long-lived side effects.
     pub const CRON_SCHEDULE: Self = Self(1 << 12);
+    /// Take a checkpoint of the live working-directory state (Sprint 5
+    /// §8). The cap admits the act of capturing a snapshot; the actual
+    /// path scope is determined by the configured `CheckpointBackend`.
+    /// Default declass map refuses this under `Adversarial` taint.
+    pub const CHECKPOINT_WRITE: Self = Self(1 << 13);
+    /// Roll the working directory back to an earlier checkpoint
+    /// (Sprint 5 §8). Distinct from `CHECKPOINT_WRITE` because
+    /// rollback is destructive of the live state — a tool granted
+    /// `write` may still be denied `rollback` for safety.
+    pub const CHECKPOINT_ROLLBACK: Self = Self(1 << 14);
 
     /// Construct from a raw bitmask.
     #[inline]

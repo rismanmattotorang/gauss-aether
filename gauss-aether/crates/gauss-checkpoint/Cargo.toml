@@ -1,0 +1,27 @@
+[package]
+name        = "gauss-checkpoint"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+description = "Working-directory checkpoint / rollback — content-addressed snapshots with optional git backend."
+
+[lints]
+workspace = true
+
+[dependencies]
+gauss-core  = { workspace = true }
+async-trait = { workspace = true }
+blake3      = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+time        = { workspace = true, features = ["parsing"] }
+tokio       = { workspace = true, features = ["sync", "fs", "process", "rt", "macros"] }
+tracing     = { workspace = true }
+
+[dev-dependencies]
+tempfile    = { workspace = true }
+tokio       = { workspace = true, features = ["test-util", "macros", "rt", "rt-multi-thread", "fs", "process"] }
