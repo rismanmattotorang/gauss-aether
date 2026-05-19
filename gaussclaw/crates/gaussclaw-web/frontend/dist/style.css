@@ -1057,3 +1057,112 @@ code {
 @media (max-width: 900px) {
   .cron-add { grid-template-columns: 1fr; }
 }
+
+/* ─── Analytics view ───────────────────────────────────────────────── */
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.85rem;
+}
+
+.stat-card { padding: 1rem 1.1rem; }
+.stat-card-wide { grid-column: 1 / -1; }
+
+.stat-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.stat-value {
+  margin-top: 0.4rem;
+  font-size: 2rem;
+  font-weight: 600;
+  color: var(--fg);
+  line-height: 1.1;
+}
+
+.stat-value-mono {
+  display: inline-block;
+  margin-top: 0.4rem;
+  font-family: var(--mono);
+  font-size: 0.92rem;
+  color: var(--fg);
+  word-break: break-all;
+}
+
+/* ─── Logs view ────────────────────────────────────────────────────── */
+
+.log-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.log-row {
+  display: grid;
+  grid-template-columns: 75px 60px 100px 1fr;
+  gap: 0.75rem;
+  padding: 0.45rem 0.85rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+  font-family: var(--mono);
+  align-items: baseline;
+}
+
+.log-row:last-child { border-bottom: 0; }
+
+.log-ts { color: var(--muted); }
+.log-source { color: var(--accent-2); }
+.log-message { color: var(--fg); white-space: pre-wrap; word-break: break-word; }
+
+.log-level {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.7rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  text-align: center;
+  font-weight: 600;
+}
+
+.log-level.log-info  { color: var(--accent-2); }
+.log-level.log-warn  { color: var(--yellow); }
+.log-level.log-error { color: var(--red); }
+.log-row.log-error   { background: rgba(248, 113, 113, 0.04); }
+
+#logs-filter {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.3rem 0.5rem;
+  font: inherit;
+}
+
+/* ─── Profiles view ────────────────────────────────────────────────── */
+
+.profile-card {
+  padding: 0.85rem 1rem;
+}
+
+.profile-card .card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin-bottom: 0.5rem;
+}
+
+.profile-path {
+  display: block;
+  font-size: 0.82rem;
+  color: var(--muted);
+  word-break: break-all;
+}

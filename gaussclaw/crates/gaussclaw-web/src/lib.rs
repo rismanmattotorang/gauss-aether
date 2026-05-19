@@ -195,6 +195,97 @@ pub struct ReceiptHeadPayload {
     pub turn: u64,
 }
 
+// ─── log buffer ─────────────────────────────────────────────────────────────
+
+/// Severity level for one [`LogEntry`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    /// Informational; nominal request flow.
+    Info,
+    /// Recoverable problem (deprecation, retry succeeded).
+    Warn,
+    /// Failed operation that surfaced to the caller.
+    Error,
+}
+
+impl LogLevel {
+    /// Display-friendly tag.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Warn => "warn",
+            Self::Error => "error",
+        }
+    }
+}
+
+/// One row in the dashboard log feed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogEntry {
+    /// UNIX seconds when the entry was recorded.
+    pub ts_unix: i64,
+    /// Severity.
+    pub level: LogLevel,
+    /// Source tag (e.g. `cron`, `http`, `kernel`).
+    pub source: String,
+    /// Human-readable message.
+    pub message: String,
+}
+
+/// Bounded ring buffer of log entries. Cheap to clone (`Arc`-shared
+/// underlying storage).
+#[derive(Debug)]
+pub struct LogBuffer {
+    capacity: usize,
+    inner: std::sync::Mutex<std::collections::VecDeque<LogEntry>>,
+}
+
+impl LogBuffer {
+    /// Build a buffer with a fixed capacity (oldest entry drops on overflow).
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            capacity,
+            inner: std::sync::Mutex::new(std::collections::VecDeque::with_capacity(capacity)),
+        }
+    }
+
+    /// Append an entry; drops the oldest if at capacity.
+    pub fn push(&self, entry: LogEntry) {
+        let mut g = self.inner.lock().expect("poisoned");
+        if g.len() == self.capacity {
+            g.pop_front();
+        }
+        g.push_back(entry);
+    }
+
+    /// Number of stored entries.
+    pub fn len(&self) -> usize {
+        self.inner.lock().expect("poisoned").len()
+    }
+
+    /// True if the buffer is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Snapshot the most recent `limit` entries (newest first).
+    #[must_use]
+    pub fn recent(&self, limit: usize) -> Vec<LogEntry> {
+        let g = self.inner.lock().expect("poisoned");
+        g.iter().rev().take(limit).cloned().collect()
+    }
+}
+
+fn now_unix_seconds() -> i64 {
+    use std::time::SystemTime;
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+}
+
 // ─── shared state ───────────────────────────────────────────────────────────
 
 /// State passed to every handler. Holds the loaded config, the kernel
@@ -209,6 +300,7 @@ pub struct ServerState {
     audit: AuditTrace,
     store: Option<Arc<SessionStore>>,
     cron: Option<Arc<CronScheduler>>,
+    logs: Arc<LogBuffer>,
 }
 
 impl ServerState {
@@ -247,7 +339,25 @@ impl ServerState {
             audit,
             store: None,
             cron: None,
+            logs: Arc::new(LogBuffer::with_capacity(200)),
         }
+    }
+
+    /// Push a structured log entry into the in-memory ring buffer.
+    /// Consumed by `/api/logs`.
+    pub fn log(&self, level: LogLevel, source: &str, message: impl Into<String>) {
+        self.logs.push(LogEntry {
+            ts_unix: now_unix_seconds(),
+            level,
+            source: source.into(),
+            message: message.into(),
+        });
+    }
+
+    /// Borrow the in-memory log buffer (for testing / introspection).
+    #[must_use]
+    pub const fn logs(&self) -> &Arc<LogBuffer> {
+        &self.logs
     }
 
     /// Attach a Phase 2 session store. The dashboard's `/api/sessions`
@@ -942,6 +1052,151 @@ fn no_content_ok() -> Response {
     Json(Ok::new(serde_json::json!({ "ok": true }))).into_response()
 }
 
+// ─── Sprint-5 §10 — Logs / Profiles / Analytics ────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct LogsListPayload {
+    entries: Vec<LogEntry>,
+    capacity: usize,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct LogsQuery {
+    limit: Option<usize>,
+}
+
+#[axum::debug_handler]
+async fn handle_logs_list(
+    State(state): State<ServerState>,
+    axum::extract::Query(q): axum::extract::Query<LogsQuery>,
+) -> Json<Ok<LogsListPayload>> {
+    let limit = q.limit.unwrap_or(50).min(200);
+    let entries = state.logs.recent(limit);
+    Json(Ok::new(LogsListPayload {
+        entries,
+        capacity: state.logs.capacity,
+    }))
+}
+
+#[derive(Debug, Serialize)]
+struct ProfileRow {
+    /// Profile name (e.g. `default`, `production`, `local`).
+    name: String,
+    /// Absolute path to the profile's `gaussclaw.toml`.
+    path: String,
+    /// Whether this is the currently-active profile.
+    active: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ProfilesListPayload {
+    profiles: Vec<ProfileRow>,
+    /// The active profile's name (empty if no config was loaded).
+    active: String,
+}
+
+#[axum::debug_handler]
+async fn handle_profiles_list(State(state): State<ServerState>) -> Json<Ok<ProfilesListPayload>> {
+    // Sprint 5 §10 ships the surface; multi-profile config persistence
+    // lands when `gaussclaw-config` grows a profile-tree (Sprint 5 §10
+    // follow-on). Until then we surface the loaded config path as the
+    // single "default" profile and list any sibling `*.toml` files in
+    // the same directory.
+    let mut profiles: Vec<ProfileRow> = Vec::new();
+    if let Some(active_path) = state.config_source.as_deref() {
+        let active_name = profile_name_from_path(active_path);
+        profiles.push(ProfileRow {
+            name: active_name,
+            path: active_path.to_string(),
+            active: true,
+        });
+        if let Some(parent) = std::path::Path::new(active_path).parent() {
+            if let Result::Ok(entries) = std::fs::read_dir(parent) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.extension().and_then(|e| e.to_str()) == Some("toml")
+                        && p.to_string_lossy() != active_path
+                    {
+                        let name = profile_name_from_path(&p.to_string_lossy());
+                        profiles.push(ProfileRow {
+                            name,
+                            path: p.to_string_lossy().to_string(),
+                            active: false,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    let active = profiles
+        .iter()
+        .find(|p| p.active)
+        .map_or(String::new(), |p| p.name.clone());
+    Json(Ok::new(ProfilesListPayload { profiles, active }))
+}
+
+fn profile_name_from_path(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map_or_else(
+            || "default".into(),
+            |s| {
+                if s == "gaussclaw" {
+                    "default".into()
+                } else {
+                    s.into()
+                }
+            },
+        )
+}
+
+#[derive(Debug, Serialize, Default)]
+struct AnalyticsSummary {
+    /// Number of sessions in the store.
+    sessions_total: u64,
+    /// Sum of `turn_count` across all sessions.
+    turns_total: u64,
+    /// Chain length (i.e. signed receipts).
+    receipts_total: u64,
+    /// Number of distinct models seen across sessions.
+    distinct_models: u64,
+    /// Average turns per session (0 if no sessions).
+    avg_turns_per_session: f64,
+    /// Most recently created session id (empty if none).
+    most_recent_session_id: String,
+}
+
+#[axum::debug_handler]
+#[allow(clippy::cast_precision_loss)]
+async fn handle_analytics_summary(State(state): State<ServerState>) -> Json<Ok<AnalyticsSummary>> {
+    let Some(store) = state.store() else {
+        return Json(Ok::new(AnalyticsSummary::default()));
+    };
+    let sessions = store.list_recent_sessions(200).await;
+    let sessions_total = sessions.len() as u64;
+    let turns_total: u64 = sessions.iter().map(|s| s.turn_count).sum();
+    let mut models = std::collections::BTreeSet::<&str>::new();
+    for s in &sessions {
+        models.insert(s.model.as_str());
+    }
+    let avg_turns_per_session = if sessions_total == 0 {
+        0.0
+    } else {
+        turns_total as f64 / sessions_total as f64
+    };
+    let most_recent_session_id = sessions.first().map_or(String::new(), |s| s.id.clone());
+    let receipts_total = store.chain_head().await.map_or(0, |h| h.length);
+    Json(Ok::new(AnalyticsSummary {
+        sessions_total,
+        turns_total,
+        receipts_total,
+        distinct_models: models.len() as u64,
+        avg_turns_per_session,
+        most_recent_session_id,
+    }))
+}
+
 /// Lower-case hex encode.
 fn hex_lower(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
@@ -1057,6 +1312,10 @@ pub fn router(state: ServerState) -> Router {
             axum::routing::post(handle_cron_resume),
         )
         .route("/api/cron/{id}/run", axum::routing::post(handle_cron_run))
+        // Sprint 5 §10 — Logs / Profiles / Analytics
+        .route("/api/logs", get(handle_logs_list))
+        .route("/api/profiles", get(handle_profiles_list))
+        .route("/api/analytics/summary", get(handle_analytics_summary))
         .route("/api/chat/ws", get(handle_chat_ws))
         // Frontend
         .route("/", get(handle_root))
@@ -1617,5 +1876,156 @@ taint = "trusted"
             assert_eq!(body["data"]["verified"], false);
             assert!(body["data"]["failed_axis"].is_string());
         }
+    }
+
+    // ─── Sprint-5 §10 — Logs / Profiles / Analytics ────────────────────
+
+    #[tokio::test]
+    async fn logs_endpoint_returns_empty_buffer_by_default() {
+        let (status, body) = get_json("/api/logs?limit=10").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["capacity"], 200);
+        assert!(body["data"]["entries"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn logs_endpoint_returns_pushed_entries_newest_first() {
+        let state = test_state();
+        state.log(LogLevel::Info, "test", "first entry");
+        state.log(LogLevel::Warn, "test", "second entry");
+        state.log(LogLevel::Error, "test", "third entry");
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/logs?limit=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let entries = body["data"]["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0]["message"], "third entry");
+        assert_eq!(entries[0]["level"], "error");
+        assert_eq!(entries[2]["message"], "first entry");
+    }
+
+    #[tokio::test]
+    async fn logs_endpoint_caps_limit_at_200() {
+        let state = test_state();
+        for i in 0..250 {
+            state.log(LogLevel::Info, "test", format!("entry {i}"));
+        }
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/logs?limit=500")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        // Capacity 200, plus the API caps `limit` at 200.
+        assert!(body["data"]["entries"].as_array().unwrap().len() <= 200);
+    }
+
+    #[tokio::test]
+    async fn profiles_endpoint_lists_active_default_when_loaded() {
+        let (status, body) = get_json("/api/profiles").await;
+        assert_eq!(status, StatusCode::OK);
+        // test_state() carries `config_source = Some("/tmp/gaussclaw.toml")`.
+        assert_eq!(body["data"]["active"], "default");
+        let rows = body["data"]["profiles"].as_array().unwrap();
+        assert!(!rows.is_empty());
+        assert_eq!(rows[0]["name"], "default");
+        assert_eq!(rows[0]["active"], true);
+    }
+
+    #[tokio::test]
+    async fn profiles_endpoint_returns_empty_when_no_config_loaded() {
+        let cfg = Config::default();
+        let state = ServerState::new(cfg, None);
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/profiles")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["data"]["active"], "");
+        assert!(body["data"]["profiles"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn analytics_summary_is_zero_without_store() {
+        let (status, body) = get_json("/api/analytics/summary").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["sessions_total"], 0);
+        assert_eq!(body["data"]["turns_total"], 0);
+        assert_eq!(body["data"]["receipts_total"], 0);
+        assert_eq!(body["data"]["distinct_models"], 0);
+    }
+
+    #[tokio::test]
+    async fn analytics_summary_aggregates_when_store_has_data() {
+        use std::sync::Arc;
+        let store = Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let sess1 = store
+            .create_session("rest", "anthropic/claude-3.5-sonnet")
+            .await;
+        let sess2 = store.create_session("rest", "openai/gpt-4").await;
+        for _ in 0..3 {
+            let _ = store
+                .append_turn(&sess1.id, None, "user", "hi", gauss_core::TaintLabel::User)
+                .await
+                .unwrap();
+        }
+        let _ = store
+            .append_turn(
+                &sess2.id,
+                None,
+                "user",
+                "hello",
+                gauss_core::TaintLabel::User,
+            )
+            .await
+            .unwrap();
+
+        let state = test_state().with_store(store);
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/analytics/summary")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["data"]["sessions_total"], 2);
+        assert_eq!(body["data"]["turns_total"], 4);
+        assert_eq!(body["data"]["distinct_models"], 2);
+        assert!(body["data"]["receipts_total"].as_u64().unwrap() >= 4);
     }
 }

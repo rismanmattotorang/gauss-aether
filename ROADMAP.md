@@ -548,7 +548,13 @@ Deliverables:
    with five verbs.*
 9. Five new TUI overlays: model picker, session picker, agents
    overlay, skills hub, todo panel.
-10. Dashboard `LogsPage` + `ProfilesPage` + `AnalyticsPage`.
+10. ✅ Dashboard `LogsPage` + `ProfilesPage` + `AnalyticsPage`.
+    *9 dashboard pages now (chat / sessions / tools / receipts /
+    cron / analytics / logs / profiles / health + settings = 10
+    total); Hermes ships 12. Analytics aggregates over live
+    `SessionStore`; Logs is a 200-entry in-memory ring buffer
+    keyed by an explicit `state.log()` API; Profiles surfaces the
+    loaded config plus sibling `*.toml` files in its directory.*
 
 Success criteria:
 

@@ -105,6 +105,9 @@ const api = {
   cronRun:    id => api.post(`/api/cron/${id}/run`, {}),
   cronEdit:   (id, body) => api.post(`/api/cron/${id}/edit`, body),
   cronRemove: id => api.del(`/api/cron/${id}`),
+  logs:       (limit = 50) => api.get(`/api/logs?limit=${limit}`),
+  profiles:   () => api.get('/api/profiles'),
+  analytics:  () => api.get('/api/analytics/summary'),
 };
 
 // Augment the API client with a generic POST helper.
@@ -646,6 +649,114 @@ function wireCronView() {
   if (refresh) refresh.addEventListener('click', () => renderers.cron());
 }
 
+// ─── 7c. Analytics view ─────────────────────────────────────────────────────
+
+renderers.analytics = async () => {
+  let data = null;
+  try { data = await api.analytics(); } catch { data = null; }
+  if (!data) {
+    $('#stat-sessions').textContent = '—';
+    $('#stat-turns').textContent    = '—';
+    $('#stat-receipts').textContent = '—';
+    $('#stat-models').textContent   = '—';
+    $('#stat-avg-turns').textContent = '—';
+    $('#stat-recent-session').textContent = '—';
+    return;
+  }
+  $('#stat-sessions').textContent      = String(data.sessions_total ?? 0);
+  $('#stat-turns').textContent         = String(data.turns_total ?? 0);
+  $('#stat-receipts').textContent      = String(data.receipts_total ?? 0);
+  $('#stat-models').textContent        = String(data.distinct_models ?? 0);
+  $('#stat-avg-turns').textContent     = (data.avg_turns_per_session ?? 0).toFixed(2);
+  $('#stat-recent-session').textContent = data.most_recent_session_id || '—';
+};
+
+function wireAnalyticsView() {
+  const r = $('#analytics-refresh');
+  if (r) r.addEventListener('click', () => renderers.analytics());
+}
+
+// ─── 7d. Logs view ──────────────────────────────────────────────────────────
+
+renderers.logs = async () => {
+  const list = $('#logs-list');
+  const cap  = $('#logs-capacity');
+  if (!list) return;
+  list.innerHTML = '';
+  let data = null;
+  try { data = await api.logs(200); } catch { data = null; }
+  if (!data) {
+    list.append(el('li', { class: 'card placeholder' }, 'Could not load logs.'));
+    return;
+  }
+  if (cap) cap.textContent = String(data.capacity ?? 200);
+  const filter = $('#logs-filter')?.value ?? 'all';
+  const rows = (data.entries ?? []).filter(e => filter === 'all' || e.level === filter);
+  if (rows.length === 0) {
+    list.append(el('li', { class: 'card placeholder' }, 'No log entries match the current filter.'));
+    return;
+  }
+  rows.forEach(entry => {
+    const ts = entry.ts_unix ? new Date(entry.ts_unix * 1000).toLocaleTimeString() : '—';
+    const cls = entry.level === 'error' ? 'log-error'
+              : entry.level === 'warn'  ? 'log-warn'
+                                        : 'log-info';
+    list.append(
+      el('li', { class: `log-row ${cls}` },
+        el('span', { class: 'log-ts' }, ts),
+        el('span', { class: `log-level log-${entry.level}` }, entry.level),
+        el('span', { class: 'log-source' }, entry.source),
+        el('span', { class: 'log-message' }, entry.message),
+      )
+    );
+  });
+};
+
+function wireLogsView() {
+  const r = $('#logs-refresh');
+  if (r) r.addEventListener('click', () => renderers.logs());
+  const f = $('#logs-filter');
+  if (f) f.addEventListener('change', () => renderers.logs());
+}
+
+// ─── 7e. Profiles view ──────────────────────────────────────────────────────
+
+renderers.profiles = async () => {
+  const list = $('#profiles-list');
+  if (!list) return;
+  list.innerHTML = '';
+  let data = null;
+  try { data = await api.profiles(); } catch { data = null; }
+  if (!data) {
+    list.append(el('div', { class: 'card placeholder' }, 'Could not load profiles.'));
+    return;
+  }
+  const rows = data.profiles ?? [];
+  if (rows.length === 0) {
+    list.append(el('div', { class: 'card placeholder' },
+      'No profile config loaded. Start gaussclaw with --config PATH to surface one.'));
+    return;
+  }
+  rows.forEach(p => {
+    list.append(
+      el('article', { class: 'card profile-card' },
+        el('header', { class: 'card-head' },
+          el('strong', {}, p.name),
+          p.active
+            ? el('span', { class: 'badge badge-ok' }, 'active')
+            : el('span', { class: 'badge' }, 'inactive'),
+        ),
+        el('code', { class: 'profile-path' }, p.path),
+      )
+    );
+  });
+};
+
+function wireProfilesView() {
+  const r = $('#profiles-refresh');
+  if (r) r.addEventListener('click', () => renderers.profiles());
+}
+
 // ─── 8. Health view ─────────────────────────────────────────────────────────
 
 const defaultInvariants = [
@@ -710,18 +821,23 @@ renderers.settings = async () => {
 // ─── 10. Command palette ────────────────────────────────────────────────────
 
 const commands = [
-  { id: 'view-chat',     label: 'Go to Chat',     hint: '⌘1', run: () => switchView('chat')     },
-  { id: 'view-sessions', label: 'Go to Sessions', hint: '⌘2', run: () => switchView('sessions') },
-  { id: 'view-tools',    label: 'Go to Tools',    hint: '⌘3', run: () => switchView('tools')    },
-  { id: 'view-receipts', label: 'Go to Receipts', hint: '⌘4', run: () => switchView('receipts') },
-  { id: 'view-cron',     label: 'Go to Cron',     hint: '⌘5', run: () => switchView('cron')     },
-  { id: 'view-health',   label: 'Go to Health',   hint: '⌘6', run: () => switchView('health')   },
-  { id: 'view-settings', label: 'Go to Settings', hint: '⌘7', run: () => switchView('settings') },
-  { id: 'new-session',   label: 'Start a new chat session',   hint: '',   run: () => $('#chat-new').click() },
-  { id: 'copy-receipt',  label: 'Copy chain head digest',     hint: '',   run: () => $('#receipt-copy')?.click() },
-  { id: 'reload-health', label: 'Reload SDHE health report',  hint: '',   run: () => renderers.health() },
-  { id: 'reload-tools',  label: 'Reload tool catalogue',      hint: '',   run: () => renderers.tools()  },
-  { id: 'reload-cron',   label: 'Reload scheduled jobs',      hint: '',   run: () => renderers.cron()   },
+  { id: 'view-chat',      label: 'Go to Chat',      hint: '⌘1', run: () => switchView('chat')     },
+  { id: 'view-sessions',  label: 'Go to Sessions',  hint: '⌘2', run: () => switchView('sessions') },
+  { id: 'view-tools',     label: 'Go to Tools',     hint: '⌘3', run: () => switchView('tools')    },
+  { id: 'view-receipts',  label: 'Go to Receipts',  hint: '⌘4', run: () => switchView('receipts') },
+  { id: 'view-cron',      label: 'Go to Cron',      hint: '⌘5', run: () => switchView('cron')     },
+  { id: 'view-analytics', label: 'Go to Analytics', hint: '⌘6', run: () => switchView('analytics')},
+  { id: 'view-logs',      label: 'Go to Logs',      hint: '⌘7', run: () => switchView('logs')     },
+  { id: 'view-profiles',  label: 'Go to Profiles',  hint: '⌘8', run: () => switchView('profiles') },
+  { id: 'view-health',    label: 'Go to Health',    hint: '⌘9', run: () => switchView('health')   },
+  { id: 'view-settings',  label: 'Go to Settings',  hint: '',   run: () => switchView('settings') },
+  { id: 'new-session',    label: 'Start a new chat session',   hint: '',   run: () => $('#chat-new').click() },
+  { id: 'copy-receipt',   label: 'Copy chain head digest',     hint: '',   run: () => $('#receipt-copy')?.click() },
+  { id: 'reload-health',  label: 'Reload SDHE health report',  hint: '',   run: () => renderers.health() },
+  { id: 'reload-tools',   label: 'Reload tool catalogue',      hint: '',   run: () => renderers.tools()  },
+  { id: 'reload-cron',    label: 'Reload scheduled jobs',      hint: '',   run: () => renderers.cron()   },
+  { id: 'reload-logs',    label: 'Reload logs',                hint: '',   run: () => renderers.logs()   },
+  { id: 'reload-analytics', label: 'Reload analytics',         hint: '',   run: () => renderers.analytics() },
 ];
 
 const palette = {
@@ -781,9 +897,9 @@ function wireGlobalKeys() {
     if (e.key === 'Escape' && !$('#palette').classList.contains('hidden')) {
       palette.close(); return;
     }
-    if (mod && /^[1-7]$/.test(e.key)) {
+    if (mod && /^[1-9]$/.test(e.key)) {
       e.preventDefault();
-      const map = ['chat', 'sessions', 'tools', 'receipts', 'cron', 'health', 'settings'];
+      const map = ['chat', 'sessions', 'tools', 'receipts', 'cron', 'analytics', 'logs', 'profiles', 'health'];
       switchView(map[parseInt(e.key, 10) - 1]);
     }
   });
@@ -819,6 +935,9 @@ async function bootstrap() {
   wireReceiptsView();
   wireSkillPreview();
   wireCronView();
+  wireAnalyticsView();
+  wireLogsView();
+  wireProfilesView();
   setConnection('warn', 'connecting');
 
   try {

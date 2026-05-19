@@ -49,6 +49,18 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 7v5l3 3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
         Cron
       </button>
+      <button class="nav-item" role="tab" data-view="analytics" aria-selected="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V8M10 20V4M16 20v-7M22 20H2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+        Analytics
+      </button>
+      <button class="nav-item" role="tab" data-view="logs"      aria-selected="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 10h16M4 14h12M4 18h8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+        Logs
+      </button>
+      <button class="nav-item" role="tab" data-view="profiles"  aria-selected="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+        Profiles
+      </button>
       <button class="nav-item" role="tab" data-view="health"   aria-selected="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/></svg>
         Health
@@ -276,6 +288,83 @@ max_string_len = 65536'></textarea>
             <tr class="placeholder"><td colspan="8">Loading scheduled jobs…</td></tr>
           </tbody>
         </table>
+      </div>
+    </section>
+
+    <!-- ───────────── Analytics ───────────── -->
+    <section class="view" id="view-analytics">
+      <header class="view-head">
+        <h1>Analytics</h1>
+        <p class="muted">Aggregate usage across every session retained in the store. Hermes ships
+          <code>AnalyticsPage</code>; GaussClaw adds receipt-chain length as a first-class metric
+          (no Hermes equivalent — its session store ships no chain).</p>
+        <div class="view-head-actions">
+          <button class="chip" id="analytics-refresh">↻ Refresh</button>
+        </div>
+      </header>
+      <div class="stat-grid" id="analytics-grid">
+        <article class="card stat-card">
+          <div class="stat-label">Sessions</div>
+          <div class="stat-value" id="stat-sessions">—</div>
+        </article>
+        <article class="card stat-card">
+          <div class="stat-label">Turns</div>
+          <div class="stat-value" id="stat-turns">—</div>
+        </article>
+        <article class="card stat-card">
+          <div class="stat-label">Signed receipts</div>
+          <div class="stat-value" id="stat-receipts">—</div>
+        </article>
+        <article class="card stat-card">
+          <div class="stat-label">Distinct models</div>
+          <div class="stat-value" id="stat-models">—</div>
+        </article>
+        <article class="card stat-card">
+          <div class="stat-label">Avg turns / session</div>
+          <div class="stat-value" id="stat-avg-turns">—</div>
+        </article>
+        <article class="card stat-card stat-card-wide">
+          <div class="stat-label">Most recent session</div>
+          <code class="stat-value-mono" id="stat-recent-session">—</code>
+        </article>
+      </div>
+    </section>
+
+    <!-- ───────────── Logs ───────────── -->
+    <section class="view" id="view-logs">
+      <header class="view-head">
+        <h1>Logs</h1>
+        <p class="muted">Recent in-process log entries. Capped at <span id="logs-capacity">200</span>
+          most-recent entries; the buffer is a ring so older lines drop on overflow.</p>
+        <div class="view-head-actions">
+          <select id="logs-filter" class="chip">
+            <option value="all">all levels</option>
+            <option value="info">info</option>
+            <option value="warn">warn</option>
+            <option value="error">error</option>
+          </select>
+          <button class="chip" id="logs-refresh">↻ Refresh</button>
+        </div>
+      </header>
+      <ol class="log-list" id="logs-list">
+        <li class="card placeholder">Loading…</li>
+      </ol>
+    </section>
+
+    <!-- ───────────── Profiles ───────────── -->
+    <section class="view" id="view-profiles">
+      <header class="view-head">
+        <h1>Profiles</h1>
+        <p class="muted">Configuration profiles discovered in the active config directory. The
+          active profile is the one the binary loaded at start; switching requires an explicit
+          restart with a new <code>--config</code> path (Sprint 5 §10 surface; full multi-profile
+          persistence lands in §10.1).</p>
+        <div class="view-head-actions">
+          <button class="chip" id="profiles-refresh">↻ Refresh</button>
+        </div>
+      </header>
+      <div class="card-list" id="profiles-list">
+        <div class="card placeholder">Loading profiles…</div>
       </div>
     </section>
 
