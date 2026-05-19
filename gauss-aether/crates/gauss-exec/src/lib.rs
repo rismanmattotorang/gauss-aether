@@ -31,9 +31,9 @@
 //! - **Audit-aware.** Every exec returns a [`Receipt`] the caller
 //!   appends to the chain. Hermes ships no audit linkage.
 //!
-//! The shipping crate includes `LocalExecutor` only; Docker / SSH /
-//! Modal land as follow-on commits (each adds a new module + a new
-//! cap that's already reserved in `gauss-core::CapToken`).
+//! All four backends ship in this crate; the Modal real-HTTP impl
+//! is gated behind a "not configured" error until the Sprint 7
+//! follow-on lands its API client.
 
 #![allow(
     clippy::doc_markdown,
@@ -47,12 +47,18 @@
 )]
 #![allow(rustdoc::broken_intra_doc_links)]
 
+pub mod docker;
 pub mod local;
+pub mod modal;
 pub mod router;
+pub mod ssh;
 pub mod types;
 
+pub use docker::{build_docker_argv, DockerConfig, DockerExecutor};
 pub use local::LocalExecutor;
+pub use modal::{MockModalExecutor, ModalConfig, ModalExecutor};
 pub use router::{ExecRouter, ExecRouterError};
+pub use ssh::{build_ssh_argv, SshConfig, SshExecutor};
 pub use types::{
     Backend, ExecError, ExecOutput, ExecRequest, ExecResult, Receipt, SessionExecutor,
 };

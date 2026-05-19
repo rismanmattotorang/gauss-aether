@@ -583,15 +583,19 @@ Success criteria:
 
 Deliverables:
 
-1. 🟡 `gauss-exec` (new crate) — a `SessionExecutor` trait with leaf
-   impls: `LocalExecutor` (current behaviour), `DockerExecutor`,
-   `SSHExecutor`, `ModalExecutor`. Each is **cap-gated** by a new
-   `executor:<backend>` cap; the kernel admit gate refuses dispatch
-   into an executor whose cap isn't granted. *Sprint 6 §1.0:
-   `gauss-exec` crate shipping with `SessionExecutor` trait +
-   `LocalExecutor` reference impl + cap-gated `ExecRouter`. Docker
-   / SSH / Modal land as §1.1/§1.2/§1.3 follow-ons (caps already
-   reserved in `gauss-core::CapToken`).*
+1. ✅ `gauss-exec` (new crate) — `SessionExecutor` trait with four
+   leaf impls: `LocalExecutor`, `DockerExecutor`, `SshExecutor`,
+   `ModalExecutor`. Each is **cap-gated** by a distinct
+   `cap:executor:<backend>` so an operator can grant local-only
+   execution while denying container/remote/cloud spawning. **Docker
+   defaults to `--cap-drop=ALL --network=none --read-only`** + digest-
+   pinned image refs; **SSH defaults to `StrictHostKeyChecking=yes`**
+   + `ForwardAgent=no` + `ForwardX11=no` + `BatchMode=yes`; **Modal**
+   requires digest-pinned function refs and a per-call cost cap. The
+   `ExecRouter` re-checks the per-backend cap on every dispatch —
+   defence in depth above the kernel admit gate. Real Modal HTTP
+   client lands in a Sprint 7 follow-on; the crate ships
+   `MockModalExecutor` for the conformance suite.
 2. CLI / TOML knob: `terminal.backend = "docker"` selects the
    per-session executor.
 3. `delegate_tool` — spawn an isolated subagent inside the active

@@ -90,6 +90,15 @@ async fn read_capped<R: AsyncReadExt + Unpin + Send>(
     reader: Option<R>,
     cap: usize,
 ) -> ExecResult<(Vec<u8>, bool)> {
+    read_capped_pub(reader, cap).await
+}
+
+/// Same as `read_capped` but `pub(crate)` so sibling backends can
+/// share the implementation.
+pub(crate) async fn read_capped_pub<R: AsyncReadExt + Unpin + Send>(
+    reader: Option<R>,
+    cap: usize,
+) -> ExecResult<(Vec<u8>, bool)> {
     let Some(mut r) = reader else {
         return Ok((vec![], false));
     };
