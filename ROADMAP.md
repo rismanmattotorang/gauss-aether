@@ -614,9 +614,15 @@ Deliverables:
    parallel `tokio::spawn`'d sub-agents, aggregating via majority
    vote. Returns the aggregated answer plus the per-agent chain
    heads.*
-5. `code_execution_tool` — sandboxed Python via either `wasmi` +
-   `pyodide` (preferred — keeps the single-binary story) or a Docker
-   leaf (fallback).
+5. ✅ `code_execution_tool` — WASM-sandboxed code execution shipping
+   in `gaussclaw-tools::CodeExecutionTool`. Built on the existing
+   `gauss-sandbox::WasmSandbox` (wasmi 0.46) — fuel-metered
+   (default 1M instructions), no host imports, fresh instance per
+   call. **Single-binary story preserved**: no Docker required, no
+   Python interpreter required. Cap-gated by `cap:code:execute`. A
+   pyodide WASM bundle for first-class Python lands as a Sprint 7
+   follow-on; the contract surface is identical so swap is a
+   bytecode-payload change.
 6. ✅ `tirith_security` — pre-exec command scanner shipping in
    `gaussclaw-tools::security_scan`. 8 versioned rules (TIR-001..020):
    catastrophic `rm -rf /`, fork bombs, `mkfs`, `dd` to block devices,

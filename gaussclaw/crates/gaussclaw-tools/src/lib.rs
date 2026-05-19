@@ -69,6 +69,7 @@
 pub mod base64_tool;
 pub mod checkpoint;
 pub mod clarify;
+pub mod code_execution;
 pub mod cronjob;
 pub mod csv_parse;
 pub mod datetime;
@@ -94,6 +95,7 @@ pub mod uuid;
 pub use base64_tool::Base64Tool;
 pub use checkpoint::CheckpointTool;
 pub use clarify::ClarifyTool;
+pub use code_execution::CodeExecutionTool;
 pub use cronjob::CronJobTool;
 pub use csv_parse::CsvParseTool;
 pub use datetime::DatetimeTool;
