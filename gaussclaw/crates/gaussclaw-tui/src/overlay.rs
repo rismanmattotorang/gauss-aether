@@ -47,6 +47,109 @@ pub enum OverlayResult {
     Cancelled,
 }
 
+/// Kind of [`Overlay::Picker`] — drives the header label + which
+/// quickkeys are active. Sprint 5 §9.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PickerKind {
+    /// Pick an LLM model (provider + model name).
+    Model,
+    /// Pick a persisted session to resume.
+    Session,
+    /// Pick a sub-agent / delegate to dispatch to.
+    Agents,
+    /// Browse / preview a Skill Manifest without installing.
+    Skills,
+}
+
+impl PickerKind {
+    /// Display-friendly tag.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Model => "model",
+            Self::Session => "session",
+            Self::Agents => "agents",
+            Self::Skills => "skills",
+        }
+    }
+}
+
+/// One row in [`Overlay::Picker`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PickerRow {
+    /// Primary label rendered first (e.g. `anthropic/claude-3.5-sonnet`).
+    pub primary: String,
+    /// Secondary detail rendered dimmer below the primary (e.g.
+    /// `200k ctx · $3/Mtok · streaming`).
+    pub secondary: String,
+}
+
+impl PickerRow {
+    /// Build a row from two strings.
+    #[must_use]
+    pub fn new(primary: impl Into<String>, secondary: impl Into<String>) -> Self {
+        Self {
+            primary: primary.into(),
+            secondary: secondary.into(),
+        }
+    }
+}
+
+/// Lifecycle state of one [`TodoItem`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TodoStatus {
+    /// Not yet started.
+    Pending,
+    /// In progress.
+    InProgress,
+    /// Completed.
+    Done,
+}
+
+impl TodoStatus {
+    /// Cycle to the next state (Pending → InProgress → Done → Pending).
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Pending => Self::InProgress,
+            Self::InProgress => Self::Done,
+            Self::Done => Self::Pending,
+        }
+    }
+
+    /// Glyph for the rendered row.
+    #[must_use]
+    pub const fn glyph(self) -> &'static str {
+        match self {
+            Self::Pending => "○",
+            Self::InProgress => "◐",
+            Self::Done => "●",
+        }
+    }
+}
+
+/// One row in [`Overlay::Todo`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TodoItem {
+    /// Item text.
+    pub text: String,
+    /// Lifecycle status.
+    pub status: TodoStatus,
+}
+
+impl TodoItem {
+    /// Build a pending todo item.
+    #[must_use]
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            status: TodoStatus::Pending,
+        }
+    }
+}
+
 /// One overlay instance — typed by variant rather than by trait so a
 /// single field in the `App` covers every overlay shape.
 #[derive(Debug, Clone)]
@@ -76,6 +179,31 @@ pub enum Overlay {
         hint: Cow<'static, str>,
         /// Accumulated input buffer (rendered as bullets).
         buf: String,
+    },
+    /// Generic picker — model / session / agents / skills (Sprint 5 §9).
+    /// Each row carries a primary + secondary label so the host can
+    /// surface model id + cost line, session id + turn count, etc.
+    Picker {
+        /// Picker kind (drives the header label).
+        kind: PickerKind,
+        /// Prompt heading (`"Pick a model"`, `"Resume a session"`, …).
+        title: Cow<'static, str>,
+        /// Rows; unbounded but the renderer clips to the visible area.
+        rows: Vec<PickerRow>,
+        /// Currently focused row (0-based).
+        cursor: usize,
+        /// Topmost visible row index — adjusted on cursor move so the
+        /// focus row always stays on screen.
+        viewport_top: usize,
+    },
+    /// Todo panel — list of items with cycle-status keystrokes (Sprint 5 §9).
+    Todo {
+        /// Prompt heading.
+        title: Cow<'static, str>,
+        /// Items in render order.
+        items: Vec<TodoItem>,
+        /// Focused row.
+        cursor: usize,
     },
 }
 
@@ -109,6 +237,56 @@ impl Overlay {
             title: title.into(),
             hint: hint.into(),
             buf: String::new(),
+        }
+    }
+
+    /// Build a model picker.
+    #[must_use]
+    pub fn model_picker(rows: Vec<PickerRow>) -> Self {
+        Self::picker(PickerKind::Model, "Pick a model", rows)
+    }
+
+    /// Build a session picker.
+    #[must_use]
+    pub fn session_picker(rows: Vec<PickerRow>) -> Self {
+        Self::picker(PickerKind::Session, "Resume a session", rows)
+    }
+
+    /// Build an agents / delegate picker.
+    #[must_use]
+    pub fn agents_picker(rows: Vec<PickerRow>) -> Self {
+        Self::picker(PickerKind::Agents, "Pick a sub-agent", rows)
+    }
+
+    /// Build a skills-hub browser.
+    #[must_use]
+    pub fn skills_hub(rows: Vec<PickerRow>) -> Self {
+        Self::picker(PickerKind::Skills, "Skills", rows)
+    }
+
+    /// Generic picker constructor (used by the per-kind helpers).
+    #[must_use]
+    pub fn picker(
+        kind: PickerKind,
+        title: impl Into<Cow<'static, str>>,
+        rows: Vec<PickerRow>,
+    ) -> Self {
+        Self::Picker {
+            kind,
+            title: title.into(),
+            rows,
+            cursor: 0,
+            viewport_top: 0,
+        }
+    }
+
+    /// Build a todo panel.
+    #[must_use]
+    pub fn todo(title: impl Into<Cow<'static, str>>, items: Vec<TodoItem>) -> Self {
+        Self::Todo {
+            title: title.into(),
+            items,
+            cursor: 0,
         }
     }
 
@@ -177,13 +355,97 @@ impl Overlay {
                 KeyCode::Enter => OverlayResult::Password(std::mem::take(buf)),
                 _ => OverlayResult::Continue,
             },
+            Self::Picker {
+                rows,
+                cursor,
+                viewport_top,
+                ..
+            } => match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if *cursor > 0 {
+                        *cursor -= 1;
+                        if *cursor < *viewport_top {
+                            *viewport_top = *cursor;
+                        }
+                    }
+                    OverlayResult::Continue
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if *cursor + 1 < rows.len() {
+                        *cursor += 1;
+                        // Viewport scroll handled at render time
+                        // against the actual visible height.
+                    }
+                    OverlayResult::Continue
+                }
+                KeyCode::PageUp => {
+                    *cursor = cursor.saturating_sub(10);
+                    if *cursor < *viewport_top {
+                        *viewport_top = *cursor;
+                    }
+                    OverlayResult::Continue
+                }
+                KeyCode::PageDown => {
+                    *cursor = (*cursor + 10).min(rows.len().saturating_sub(1));
+                    OverlayResult::Continue
+                }
+                KeyCode::Home => {
+                    *cursor = 0;
+                    *viewport_top = 0;
+                    OverlayResult::Continue
+                }
+                KeyCode::End => {
+                    *cursor = rows.len().saturating_sub(1);
+                    OverlayResult::Continue
+                }
+                KeyCode::Enter => {
+                    if rows.is_empty() {
+                        OverlayResult::Cancelled
+                    } else {
+                        OverlayResult::Picked(*cursor)
+                    }
+                }
+                _ => OverlayResult::Continue,
+            },
+            Self::Todo { items, cursor, .. } => match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if *cursor > 0 {
+                        *cursor -= 1;
+                    }
+                    OverlayResult::Continue
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if *cursor + 1 < items.len() {
+                        *cursor += 1;
+                    }
+                    OverlayResult::Continue
+                }
+                KeyCode::Char(' ') | KeyCode::Char('x') => {
+                    // Toggle status of the focused item; the host
+                    // mirrors the change into its own state on the
+                    // next on_key tick. Empty list is a no-op.
+                    if let Some(item) = items.get_mut(*cursor) {
+                        item.status = item.status.next();
+                    }
+                    OverlayResult::Continue
+                }
+                KeyCode::Enter => {
+                    if items.is_empty() {
+                        OverlayResult::Cancelled
+                    } else {
+                        OverlayResult::Picked(*cursor)
+                    }
+                }
+                _ => OverlayResult::Continue,
+            },
         }
     }
 
     /// Render the overlay centred over `area`. Uses [`Clear`] first so
     /// the underlying pane is hidden behind a solid panel.
     pub fn render(&self, frame: &mut Frame<'_>, area: Rect) {
-        let panel = centre(area, 60, 14);
+        let (panel_w, panel_h) = self.panel_dimensions(area);
+        let panel = centre(area, panel_w, panel_h);
         frame.render_widget(Clear, panel);
 
         let block = Block::default()
@@ -283,6 +545,147 @@ impl Overlay {
                 lines.push(Line::raw("Enter submit · Backspace delete · Esc cancel"));
                 frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner_area);
             }
+            Self::Picker {
+                kind,
+                title,
+                rows,
+                cursor,
+                viewport_top,
+            } => {
+                let inner = block
+                    .clone()
+                    .title(format!(" {title} ({}) ", kind.as_str()));
+                let inner_area = inner.inner(panel);
+                frame.render_widget(inner, panel);
+
+                // Each row occupies two lines (primary + secondary).
+                // Reserve the last line for the help footer.
+                let row_lines: usize = 2;
+                let footer_lines: usize = 2;
+                let visible_rows = inner_area
+                    .height
+                    .saturating_sub(footer_lines as u16)
+                    .saturating_div(row_lines as u16) as usize;
+                let visible_rows = visible_rows.max(1);
+                // Adjust viewport_top to keep cursor visible. (Mut
+                // via interior shadow — render is &self, so we only
+                // adjust an on-stack copy.)
+                let mut top = *viewport_top;
+                if *cursor < top {
+                    top = *cursor;
+                } else if *cursor >= top + visible_rows {
+                    top = cursor.saturating_sub(visible_rows.saturating_sub(1));
+                }
+                let end = (top + visible_rows).min(rows.len());
+
+                let mut lines: Vec<Line<'_>> = Vec::new();
+                if rows.is_empty() {
+                    lines.push(Line::raw("(no entries)"));
+                } else {
+                    for (i, row) in rows[top..end].iter().enumerate() {
+                        let actual_idx = top + i;
+                        let focused = actual_idx == *cursor;
+                        let prefix = if focused { "› " } else { "  " };
+                        let primary_style = if focused {
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                        };
+                        lines.push(Line::from(vec![
+                            Span::raw(prefix),
+                            Span::styled(row.primary.clone(), primary_style),
+                        ]));
+                        if row.secondary.is_empty() {
+                            lines.push(Line::raw(""));
+                        } else {
+                            lines.push(Line::from(vec![
+                                Span::raw("    "),
+                                Span::styled(
+                                    row.secondary.clone(),
+                                    Style::default().fg(Color::DarkGray),
+                                ),
+                            ]));
+                        }
+                    }
+                }
+                lines.push(Line::raw(""));
+                let count_line = format!(
+                    "{} of {} · ↑/↓ navigate · Enter select · Esc cancel",
+                    cursor.saturating_add(1).min(rows.len()),
+                    rows.len()
+                );
+                lines.push(Line::styled(
+                    count_line,
+                    Style::default().fg(Color::DarkGray),
+                ));
+                frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner_area);
+            }
+            Self::Todo {
+                title,
+                items,
+                cursor,
+            } => {
+                let inner = block.clone().title(format!(" {title} (todo) "));
+                let inner_area = inner.inner(panel);
+                frame.render_widget(inner, panel);
+
+                let mut lines: Vec<Line<'_>> = Vec::new();
+                if items.is_empty() {
+                    lines.push(Line::raw("(no todo items)"));
+                } else {
+                    for (i, item) in items.iter().enumerate() {
+                        let focused = i == *cursor;
+                        let prefix = if focused { "› " } else { "  " };
+                        let glyph = item.status.glyph();
+                        let style = match item.status {
+                            TodoStatus::Done => Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::CROSSED_OUT),
+                            TodoStatus::InProgress => Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                            TodoStatus::Pending => Style::default(),
+                        };
+                        let focus_style = if focused {
+                            style.add_modifier(Modifier::REVERSED)
+                        } else {
+                            style
+                        };
+                        lines.push(Line::from(vec![
+                            Span::raw(prefix),
+                            Span::styled(format!("{glyph} "), focus_style),
+                            Span::styled(item.text.clone(), focus_style),
+                        ]));
+                    }
+                }
+                lines.push(Line::raw(""));
+                lines.push(Line::styled(
+                    "↑/↓ move · Space/x cycle status · Enter pick · Esc close",
+                    Style::default().fg(Color::DarkGray),
+                ));
+                frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner_area);
+            }
+        }
+    }
+
+    /// Pick a panel size based on overlay variant + outer area.
+    fn panel_dimensions(&self, area: Rect) -> (u16, u16) {
+        match self {
+            Self::Picker { rows, .. } => {
+                let w = area.width.saturating_mul(7).saturating_div(10).max(60);
+                let body_h = (rows.len() as u16).saturating_mul(2).clamp(6, 24);
+                let h = body_h.saturating_add(4); // borders + footer
+                (w.min(area.width), h.min(area.height))
+            }
+            Self::Todo { items, .. } => {
+                let w = area.width.saturating_mul(6).saturating_div(10).max(50);
+                let body_h = (items.len() as u16).clamp(4, 18);
+                let h = body_h.saturating_add(4);
+                (w.min(area.width), h.min(area.height))
+            }
+            _ => (60, 14),
         }
     }
 }
@@ -374,5 +777,122 @@ mod tests {
         } else {
             panic!("expected Password");
         }
+    }
+
+    // ─── Sprint 5 §9 — Picker / Todo ───────────────────────────────────
+
+    fn sample_rows(n: usize) -> Vec<PickerRow> {
+        (0..n)
+            .map(|i| PickerRow::new(format!("primary-{i}"), format!("secondary-{i}")))
+            .collect()
+    }
+
+    #[test]
+    fn model_picker_carries_model_kind() {
+        let p = Overlay::model_picker(sample_rows(3));
+        match p {
+            Overlay::Picker { kind, .. } => assert_eq!(kind, PickerKind::Model),
+            _ => panic!("expected Picker"),
+        }
+    }
+
+    #[test]
+    fn session_picker_arrows_then_enter() {
+        let mut p = Overlay::session_picker(sample_rows(5));
+        assert_eq!(p.on_key(keycode(KeyCode::Down)), OverlayResult::Continue);
+        assert_eq!(p.on_key(keycode(KeyCode::Down)), OverlayResult::Continue);
+        assert_eq!(p.on_key(keycode(KeyCode::Enter)), OverlayResult::Picked(2));
+    }
+
+    #[test]
+    fn agents_picker_pageup_pagedown() {
+        let mut p = Overlay::agents_picker(sample_rows(40));
+        // Start at 0; PageDown jumps +10.
+        assert_eq!(
+            p.on_key(keycode(KeyCode::PageDown)),
+            OverlayResult::Continue
+        );
+        if let Overlay::Picker { cursor, .. } = p {
+            assert_eq!(cursor, 10);
+        }
+    }
+
+    #[test]
+    fn picker_home_end_keys() {
+        let mut p = Overlay::skills_hub(sample_rows(20));
+        p.on_key(keycode(KeyCode::End));
+        if let Overlay::Picker { cursor, .. } = &p {
+            assert_eq!(*cursor, 19);
+        }
+        p.on_key(keycode(KeyCode::Home));
+        if let Overlay::Picker { cursor, .. } = p {
+            assert_eq!(cursor, 0);
+        }
+    }
+
+    #[test]
+    fn empty_picker_enter_cancels() {
+        let mut p = Overlay::model_picker(vec![]);
+        assert_eq!(p.on_key(keycode(KeyCode::Enter)), OverlayResult::Cancelled);
+    }
+
+    #[test]
+    fn picker_esc_cancels() {
+        let mut p = Overlay::model_picker(sample_rows(2));
+        assert_eq!(p.on_key(keycode(KeyCode::Esc)), OverlayResult::Cancelled);
+    }
+
+    #[test]
+    fn picker_down_at_last_stays_put() {
+        let mut p = Overlay::model_picker(sample_rows(3));
+        p.on_key(keycode(KeyCode::End));
+        p.on_key(keycode(KeyCode::Down));
+        if let Overlay::Picker { cursor, .. } = p {
+            assert_eq!(cursor, 2);
+        }
+    }
+
+    #[test]
+    fn todo_status_cycles_through_three_states() {
+        let mut t = Overlay::todo(
+            "Pending tasks",
+            vec![TodoItem::new("write tests"), TodoItem::new("ship feature")],
+        );
+        assert_eq!(t.on_key(key(' ')), OverlayResult::Continue);
+        if let Overlay::Todo { items, .. } = &t {
+            assert_eq!(items[0].status, TodoStatus::InProgress);
+        }
+        t.on_key(key('x'));
+        if let Overlay::Todo { items, .. } = &t {
+            assert_eq!(items[0].status, TodoStatus::Done);
+        }
+        t.on_key(key(' '));
+        if let Overlay::Todo { items, .. } = t {
+            assert_eq!(items[0].status, TodoStatus::Pending);
+        }
+    }
+
+    #[test]
+    fn todo_enter_returns_picked() {
+        let mut t = Overlay::todo(
+            "tasks",
+            vec![TodoItem::new("a"), TodoItem::new("b"), TodoItem::new("c")],
+        );
+        t.on_key(keycode(KeyCode::Down));
+        assert_eq!(t.on_key(keycode(KeyCode::Enter)), OverlayResult::Picked(1));
+    }
+
+    #[test]
+    fn todo_empty_enter_cancels() {
+        let mut t = Overlay::todo("tasks", vec![]);
+        assert_eq!(t.on_key(keycode(KeyCode::Enter)), OverlayResult::Cancelled);
+    }
+
+    #[test]
+    fn picker_kind_string_tag() {
+        assert_eq!(PickerKind::Model.as_str(), "model");
+        assert_eq!(PickerKind::Session.as_str(), "session");
+        assert_eq!(PickerKind::Agents.as_str(), "agents");
+        assert_eq!(PickerKind::Skills.as_str(), "skills");
     }
 }

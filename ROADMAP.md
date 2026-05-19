@@ -546,8 +546,12 @@ Deliverables:
    Cap-separated (`cap:checkpoint:write` vs `cap:checkpoint:rollback`).
    Surfaced as `CheckpointTool` and `gaussclaw snapshot` CLI subcommand
    with five verbs.*
-9. Five new TUI overlays: model picker, session picker, agents
-   overlay, skills hub, todo panel.
+9. ✅ Five new TUI overlays: model picker, session picker, agents
+   overlay, skills hub, todo panel. *Shipping as two variants
+   (`Overlay::Picker` covers model/session/agents/skills via a
+   `PickerKind` discriminant; `Overlay::Todo` is its own variant
+   with cycle-status keystrokes). 11 new tests; eight overlay
+   types now (3 original + Picker × 4 kinds + Todo).*
 10. ✅ Dashboard `LogsPage` + `ProfilesPage` + `AnalyticsPage`.
     *9 dashboard pages now (chat / sessions / tools / receipts /
     cron / analytics / logs / profiles / health + settings = 10

@@ -34,7 +34,10 @@
     clippy::question_mark,
     clippy::redundant_closure_for_method_calls,
     clippy::option_if_let_else,
-    clippy::assigning_clones
+    clippy::assigning_clones,
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation,
+    clippy::nonminimal_bool
 )]
 
 mod history;
