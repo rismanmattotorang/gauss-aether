@@ -83,6 +83,7 @@ pub mod json_set;
 pub mod math_eval;
 pub mod regex_match;
 pub mod registry;
+pub mod security_scan;
 pub mod session_search;
 pub mod shell;
 pub mod spawners;
@@ -110,6 +111,10 @@ pub use json_set::JsonSetTool;
 pub use math_eval::MathEvalTool;
 pub use regex_match::RegexMatchTool;
 pub use registry::{RegistryError, RegistryResult, ToolRegistry};
+pub use security_scan::{
+    scan_argv, scan_dependencies, Advisory, DependencyRef, OsvCheckTool, Rule, TirithSecurityTool,
+    Verdict, OSV_DATABASE, TIRITH_RULES,
+};
 pub use session_search::SessionSearchTool;
 pub use shell::ShellTool;
 pub use spawners::{composite_sandboxed, noop_sandboxed, unsandboxed};

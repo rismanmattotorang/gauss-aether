@@ -617,10 +617,21 @@ Deliverables:
 5. `code_execution_tool` — sandboxed Python via either `wasmi` +
    `pyodide` (preferred — keeps the single-binary story) or a Docker
    leaf (fallback).
-6. `tirith_security` — pre-exec command scanner (refuses obvious
-   destructive patterns); cap-gated to permit explicit override.
-7. `osv_check` — vulnerability scan over installed deps; runs as a
-   read-only tool.
+6. ✅ `tirith_security` — pre-exec command scanner shipping in
+   `gaussclaw-tools::security_scan`. 8 versioned rules (TIR-001..020):
+   catastrophic `rm -rf /`, fork bombs, `mkfs`, `dd` to block devices,
+   `curl|sh`, `sudo`, `chmod 777`, shutdown. Returns a graded
+   `Verdict { Allow, Warn, Refuse }` + the matched `rule_id` for the
+   audit chain. **Cap-gated `cap:security:scan`** — Hermes prints
+   warnings to stderr; we return typed verdicts with stable rule ids
+   so the chain can replay why a command was blocked.
+7. ✅ `osv_check` — vulnerability scanner shipping in
+   `gaussclaw-tools::security_scan::OsvCheckTool`. Walks an
+   operator-supplied dependency list against the in-source
+   `OSV_DATABASE` and returns matched advisories sorted by severity
+   (critical → low). Embedded advisory set is versioned in-source
+   for reproducibility; production deployments overlay the real
+   OSV.dev API as a Sprint 7 follow-on.
 8. ✅ **Worktree-isolated concurrent sessions** — `gauss-worktree`
    ships a `WorktreeManager` that allocates one `git worktree` per
    session under `<root>/.gaussclaw/worktrees/<session_id>/` on a

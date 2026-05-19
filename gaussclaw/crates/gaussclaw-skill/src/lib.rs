@@ -278,7 +278,11 @@ pub fn parse_cap(cap: &str) -> SkillResult<CapToken> {
         "canvas:render" => Ok(CapToken::CANVAS_RENDER),
         "canvas:embed" => Ok(CapToken::CANVAS_EMBED),
         "env:read" => Ok(CapToken::ENV_READ),
-        "memory:read" => Ok(CapToken::MEMORY_READ),
+        // Sprint 6 §6/§7 — pre-exec scanner + OSV check share the
+        // `MEMORY_READ` bit because their effect is read-only metadata
+        // inspection. A dedicated bit can be minted in a future
+        // sprint if operators need to gate them independently.
+        "memory:read" | "security:scan" => Ok(CapToken::MEMORY_READ),
         "approval:ask" => Ok(CapToken::APPROVAL_ASK),
         "cron:schedule" => Ok(CapToken::CRON_SCHEDULE),
         "checkpoint:write" => Ok(CapToken::CHECKPOINT_WRITE),
