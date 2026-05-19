@@ -73,6 +73,19 @@ impl CapToken {
     /// rollback is destructive of the live state — a tool granted
     /// `write` may still be denied `rollback` for safety.
     pub const CHECKPOINT_ROLLBACK: Self = Self(1 << 14);
+    /// Dispatch a session into the local executor (default, current
+    /// behaviour). Sprint 6 §1.
+    pub const EXECUTOR_LOCAL: Self = Self(1 << 15);
+    /// Dispatch a session into a Docker container (Sprint 6 §1
+    /// follow-on). Distinct cap so an operator can grant local
+    /// execution while denying container spawning.
+    pub const EXECUTOR_DOCKER: Self = Self(1 << 16);
+    /// Dispatch a session into a remote host over SSH (Sprint 6 §1
+    /// follow-on).
+    pub const EXECUTOR_SSH: Self = Self(1 << 17);
+    /// Dispatch a session into a Modal sandbox (Sprint 6 §1
+    /// follow-on).
+    pub const EXECUTOR_MODAL: Self = Self(1 << 18);
 
     /// Construct from a raw bitmask.
     #[inline]

@@ -583,11 +583,15 @@ Success criteria:
 
 Deliverables:
 
-1. `gauss-exec` (new crate) — a `SessionExecutor` trait with leaf
+1. 🟡 `gauss-exec` (new crate) — a `SessionExecutor` trait with leaf
    impls: `LocalExecutor` (current behaviour), `DockerExecutor`,
    `SSHExecutor`, `ModalExecutor`. Each is **cap-gated** by a new
    `executor:<backend>` cap; the kernel admit gate refuses dispatch
-   into an executor whose cap isn't granted.
+   into an executor whose cap isn't granted. *Sprint 6 §1.0:
+   `gauss-exec` crate shipping with `SessionExecutor` trait +
+   `LocalExecutor` reference impl + cap-gated `ExecRouter`. Docker
+   / SSH / Modal land as §1.1/§1.2/§1.3 follow-ons (caps already
+   reserved in `gauss-core::CapToken`).*
 2. CLI / TOML knob: `terminal.backend = "docker"` selects the
    per-session executor.
 3. `delegate_tool` — spawn an isolated subagent inside the active

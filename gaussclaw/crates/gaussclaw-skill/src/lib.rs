@@ -283,6 +283,10 @@ pub fn parse_cap(cap: &str) -> SkillResult<CapToken> {
         "cron:schedule" => Ok(CapToken::CRON_SCHEDULE),
         "checkpoint:write" => Ok(CapToken::CHECKPOINT_WRITE),
         "checkpoint:rollback" => Ok(CapToken::CHECKPOINT_ROLLBACK),
+        "executor:local" => Ok(CapToken::EXECUTOR_LOCAL),
+        "executor:docker" => Ok(CapToken::EXECUTOR_DOCKER),
+        "executor:ssh" => Ok(CapToken::EXECUTOR_SSH),
+        "executor:modal" => Ok(CapToken::EXECUTOR_MODAL),
         other => Err(SkillError::UnknownCap(other.into())),
     }
 }
