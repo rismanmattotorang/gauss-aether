@@ -532,13 +532,22 @@ Deliverables:
    ships the receipt-chain join.*
 4. ✅ `cronjob_tools` — a tool that lets the agent schedule its own
    future runs (cap-gated by `cron:schedule`).
-5. `gaussclaw-memory::CrossSession` — Honcho-equivalent: a per-user
-   memory map that survives session resets.
-6. `gaussclaw-curator` (new crate) — background skill consolidation
+5. ✅ `gaussclaw-memory::CrossSession` — Honcho-equivalent: a per-user
+   memory map that survives session resets. *Shipping as the
+   `cross_session` module of the new `gauss-curator` crate
+   (PeerId / Namespace / MemoryRecord + CrossSessionStore trait
+   + InMemoryStore reference impl).*
+6. ✅ `gaussclaw-curator` (new crate) — background skill consolidation
    running as a daemon-plane task: archives skills untouched for 30
    days, merges narrow skills into umbrellas via LLM summary.
-7. `gaussclaw-background-review` — fork a memory-only loop after
+   *Shipping `Curator::scan_stale` + `archive_stale` + plug-point
+   `SkillSummariser` trait for the LLM-driven consolidate step.
+   Deterministic — takes `now` rather than reading the wall clock.*
+7. ✅ `gaussclaw-background-review` — fork a memory-only loop after
    each turn to autosave skills + memories (Hermes parity).
+   *Shipping as the `review` module of `gauss-curator` —
+   `BackgroundReviewer::record_turn` writes one entry per turn into
+   the cross-session scratch namespace.*
 8. ✅ `checkpoint_manager` — `/snapshot` saves the live FS state of the
    working directory under a content-addressed key; `/rollback`
    restores. *Shipping `gauss-checkpoint` crate with content-addressed

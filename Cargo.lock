@@ -2567,6 +2567,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gauss-curator"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "gauss-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "gauss-dp"
 version = "0.0.1"
 dependencies = [

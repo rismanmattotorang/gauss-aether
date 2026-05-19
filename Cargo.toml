@@ -24,6 +24,7 @@ members = [
     "gauss-aether/crates/gauss-robust",
     "gauss-aether/crates/gauss-cron",
     "gauss-aether/crates/gauss-checkpoint",
+    "gauss-aether/crates/gauss-curator",
     "gauss-aether/crates/gauss-conformance",
 
     # ── GaussClaw — Hermes-to-Rust port (see gaussclaw/ROADMAP.md) ───────────
@@ -81,6 +82,7 @@ gauss-learnt    = { path = "gauss-aether/crates/gauss-learnt",    version = "0.0
 gauss-robust    = { path = "gauss-aether/crates/gauss-robust",    version = "0.0.1" }
 gauss-cron      = { path = "gauss-aether/crates/gauss-cron",      version = "0.0.1" }
 gauss-checkpoint = { path = "gauss-aether/crates/gauss-checkpoint", version = "0.0.1" }
+gauss-curator    = { path = "gauss-aether/crates/gauss-curator",    version = "0.0.1" }
 
 # GaussClaw internal crates (Hermes port; see gaussclaw/ROADMAP.md)
 gaussclaw-agent          = { path = "gaussclaw/crates/gaussclaw-agent",          version = "0.0.1" }
