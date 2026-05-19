@@ -518,15 +518,19 @@ Success criteria:
 
 Deliverables:
 
-1. `gauss-cron` (new crate) — 60-second tick scheduler with file
+1. ✅ `gauss-cron` (new crate) — 60-second tick scheduler with file
    locking, grammar parsing (`30m`, cron expr, ISO timestamps),
    parallel job execution. Jobs persisted in a new `cron_jobs` table
-   in the Trinity store.
-2. CLI: `gaussclaw cron {list, add, edit, pause, resume, run,
-   remove, status}`.
-3. Web view: a new `CronPage` (the 7th dashboard view) with a CRUD
-   table + per-job receipt links.
-4. `cronjob_tools` — a tool that lets the agent schedule its own
+   in the Trinity store. *Trinity-backed persistence is the §3
+   follow-on; the shipping crate runs against an in-memory store +
+   the pluggable `JobStore` trait.*
+2. ✅ CLI: `gaussclaw cron {list, add, edit, pause, resume, run,
+   remove, status}`. *Shipping with all eight verbs.*
+3. ✅ Web view: a new `CronPage` (the 7th dashboard view) with a CRUD
+   table + per-job receipt links. *Cap+taint badge + ⌘5 hotkey;
+   per-job receipt-id link lands once the Trinity-backed JobStore
+   ships the receipt-chain join.*
+4. ✅ `cronjob_tools` — a tool that lets the agent schedule its own
    future runs (cap-gated by `cron:schedule`).
 5. `gaussclaw-memory::CrossSession` — Honcho-equivalent: a per-user
    memory map that survives session resets.

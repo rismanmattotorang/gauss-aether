@@ -146,6 +146,28 @@ pub enum CronCmd {
         #[arg(value_name = "ID")]
         id: u64,
     },
+    /// Edit a job's label and/or schedule. Pass `--label` to rename, or
+    /// `--schedule` to change cadence. Changing the schedule recomputes
+    /// `next_fire_at` from the new grammar against the current clock.
+    Edit {
+        /// Job id (from `cron list`).
+        #[arg(value_name = "ID")]
+        id: u64,
+        /// New label.
+        #[arg(short = 'l', long = "label")]
+        label: Option<String>,
+        /// New schedule (same grammar as `cron add`).
+        #[arg(short = 's', long = "schedule")]
+        schedule: Option<String>,
+    },
+    /// Fire a job immediately, bypassing its scheduled time. The
+    /// cap-gate is still applied: a job whose `payload_caps` aren't in
+    /// the live kernel grant is refused (and marked `Failed`).
+    Run {
+        /// Job id (from `cron list`).
+        #[arg(value_name = "ID")]
+        id: u64,
+    },
 }
 
 // ─── web ────────────────────────────────────────────────────────────────────

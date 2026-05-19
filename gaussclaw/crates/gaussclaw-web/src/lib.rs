@@ -47,6 +47,7 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use axum::Router;
 use gauss_core::{CapToken, TaintLabel};
+use gauss_cron::{parse_schedule, FireOutcome, Job, JobId, Scheduler, SystemClock};
 use gaussclaw_agent::{AuditTrace, KernelHandle, SurfaceRequest};
 use gaussclaw_config::Config;
 use gaussclaw_export::{verify_envelope, Envelope, VerifyEnvelopeError};
@@ -56,6 +57,9 @@ use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
+
+/// Concrete scheduler type the dashboard owns.
+pub type CronScheduler = Scheduler<SystemClock>;
 
 // ─── frontend assets ────────────────────────────────────────────────────────
 
@@ -204,6 +208,7 @@ pub struct ServerState {
     kernel: KernelHandle,
     audit: AuditTrace,
     store: Option<Arc<SessionStore>>,
+    cron: Option<Arc<CronScheduler>>,
 }
 
 impl ServerState {
@@ -241,6 +246,7 @@ impl ServerState {
             kernel,
             audit,
             store: None,
+            cron: None,
         }
     }
 
@@ -250,6 +256,15 @@ impl ServerState {
     #[must_use]
     pub fn with_store(mut self, store: Arc<SessionStore>) -> Self {
         self.store = Some(store);
+        self
+    }
+
+    /// Attach a Sprint-5 cron scheduler. The dashboard's `/api/cron/*`
+    /// endpoints serve live job data when one is attached; without it
+    /// they return an empty list (and refuse mutations with `503`).
+    #[must_use]
+    pub fn with_cron(mut self, cron: Arc<CronScheduler>) -> Self {
+        self.cron = Some(cron);
         self
     }
 
@@ -271,6 +286,11 @@ impl ServerState {
     /// Borrow the session store (if attached).
     pub const fn store(&self) -> Option<&Arc<SessionStore>> {
         self.store.as_ref()
+    }
+
+    /// Borrow the cron scheduler (if attached).
+    pub const fn cron(&self) -> Option<&Arc<CronScheduler>> {
+        self.cron.as_ref()
     }
 }
 
@@ -653,6 +673,290 @@ async fn handle_skill_preview(
     }
 }
 
+// ─── Sprint-5 endpoints — cron scheduler CRUD ──────────────────────────────
+
+/// One row in `GET /api/cron`.
+#[derive(Debug, Serialize)]
+struct CronJobView {
+    id: u64,
+    label: String,
+    /// Human-readable schedule, e.g. `30m`, `*/15 * * * *`, `2026-05-20T14:30:00Z`.
+    schedule: String,
+    /// Lifecycle status (`armed`, `paused`, `completed`, `failed`).
+    status: String,
+    next_fire_at: Option<i64>,
+    last_fired_at: Option<i64>,
+    fire_count: u64,
+    last_receipt_id: Option<u64>,
+    /// Hex string of the payload-caps bitmap (for the dashboard "caps" badge).
+    payload_caps: String,
+}
+
+impl From<&Job> for CronJobView {
+    fn from(j: &Job) -> Self {
+        Self {
+            id: j.id.0,
+            label: j.label.clone(),
+            schedule: schedule_to_display(&j.schedule),
+            status: status_to_str(j.status).into(),
+            next_fire_at: j.next_fire_at,
+            last_fired_at: j.last_fired_at,
+            fire_count: j.fire_count,
+            last_receipt_id: j.last_receipt_id,
+            payload_caps: format!("0x{:016x}", j.payload_caps.bits()),
+        }
+    }
+}
+
+const fn status_to_str(s: gauss_cron::JobStatus) -> &'static str {
+    match s {
+        gauss_cron::JobStatus::Armed => "armed",
+        gauss_cron::JobStatus::Paused => "paused",
+        gauss_cron::JobStatus::Completed => "completed",
+        gauss_cron::JobStatus::Failed => "failed",
+        _ => "unknown",
+    }
+}
+
+fn schedule_to_display(s: &gauss_cron::Schedule) -> String {
+    match s {
+        gauss_cron::Schedule::Duration { seconds } => format!("{seconds}s"),
+        gauss_cron::Schedule::Cron { expr, .. } => expr.clone(),
+        gauss_cron::Schedule::At { unix_seconds } => format!("at:{unix_seconds}"),
+        _ => "(unknown)".into(),
+    }
+}
+
+/// `POST /api/cron` body.
+#[derive(Debug, Deserialize)]
+struct CreateCronBody {
+    /// Free-text label; defaults to `(unlabeled)`.
+    #[serde(default)]
+    label: Option<String>,
+    /// Schedule grammar (duration / cron / ISO 8601).
+    schedule: String,
+    /// Inline JSON payload the job receives at fire time.
+    #[serde(default)]
+    payload: Option<serde_json::Value>,
+}
+
+/// `POST /api/cron/{id}/edit` body.
+#[derive(Debug, Deserialize)]
+struct EditCronBody {
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    schedule: Option<String>,
+}
+
+#[axum::debug_handler]
+async fn handle_cron_list(State(state): State<ServerState>) -> Json<Ok<Vec<CronJobView>>> {
+    let Some(cron) = state.cron() else {
+        return Json(Ok::new(vec![]));
+    };
+    let jobs = cron.list().await.unwrap_or_default();
+    Json(Ok::new(jobs.iter().map(CronJobView::from).collect()))
+}
+
+#[axum::debug_handler]
+async fn handle_cron_add(
+    State(state): State<ServerState>,
+    Json(body): Json<CreateCronBody>,
+) -> Response {
+    let Some(cron) = state.cron() else {
+        return cron_unavailable();
+    };
+    let schedule = match parse_schedule(&body.schedule) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(Err::new("bad_request", format!("schedule grammar: {e}"))),
+            )
+                .into_response();
+        }
+    };
+    let job = Job::new(
+        JobId::new(0),
+        body.label.unwrap_or_else(|| "(unlabeled)".into()),
+        schedule,
+        CapToken::BOTTOM,
+        body.payload.unwrap_or(serde_json::Value::Null),
+        0,
+    );
+    match cron.add(job).await {
+        Result::Ok(added) => Json(Ok::new(CronJobView::from(&added))).into_response(),
+        Result::Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(Err::new("scheduler", format!("add: {e}"))),
+        )
+            .into_response(),
+    }
+}
+
+#[axum::debug_handler]
+async fn handle_cron_get(
+    State(state): State<ServerState>,
+    Path(id): Path<u64>,
+) -> Response {
+    let Some(cron) = state.cron() else {
+        return cron_unavailable();
+    };
+    match cron.get(JobId::new(id)).await {
+        Result::Ok(Some(job)) => Json(Ok::new(CronJobView::from(&job))).into_response(),
+        Result::Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(Err::new("not_found", format!("no such job: {id}"))),
+        )
+            .into_response(),
+        Result::Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(Err::new("scheduler", format!("get: {e}"))),
+        )
+            .into_response(),
+    }
+}
+
+#[axum::debug_handler]
+async fn handle_cron_pause(
+    State(state): State<ServerState>,
+    Path(id): Path<u64>,
+) -> Response {
+    let Some(cron) = state.cron() else {
+        return cron_unavailable();
+    };
+    match cron.pause(JobId::new(id)).await {
+        Result::Ok(()) => no_content_ok(),
+        Result::Err(e) => cron_error("pause", &e),
+    }
+}
+
+#[axum::debug_handler]
+async fn handle_cron_resume(
+    State(state): State<ServerState>,
+    Path(id): Path<u64>,
+) -> Response {
+    let Some(cron) = state.cron() else {
+        return cron_unavailable();
+    };
+    match cron.resume(JobId::new(id)).await {
+        Result::Ok(()) => no_content_ok(),
+        Result::Err(e) => cron_error("resume", &e),
+    }
+}
+
+#[axum::debug_handler]
+async fn handle_cron_remove(
+    State(state): State<ServerState>,
+    Path(id): Path<u64>,
+) -> Response {
+    let Some(cron) = state.cron() else {
+        return cron_unavailable();
+    };
+    match cron.cancel(JobId::new(id)).await {
+        Result::Ok(()) => no_content_ok(),
+        Result::Err(e) => cron_error("remove", &e),
+    }
+}
+
+#[axum::debug_handler]
+async fn handle_cron_run(
+    State(state): State<ServerState>,
+    Path(id): Path<u64>,
+) -> Response {
+    let Some(cron) = state.cron() else {
+        return cron_unavailable();
+    };
+    // Use TOP grant for the demo binary; production wires this to the
+    // live kernel grant once the per-session cron daemon lands.
+    match cron.run_now(JobId::new(id), CapToken::TOP, |_| None).await {
+        Result::Ok(outcome) => match outcome {
+            FireOutcome::Fired { id, receipt_id } => Json(Ok::new(serde_json::json!({
+                "fired": id.0,
+                "receipt_id": receipt_id,
+            })))
+            .into_response(),
+            FireOutcome::Refused { id, reason } => (
+                StatusCode::FORBIDDEN,
+                Json(Err::new(
+                    "denied",
+                    format!("job {} refused: {reason}", id.0),
+                )),
+            )
+                .into_response(),
+            _ => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(Err::new("scheduler", "unknown fire outcome")),
+            )
+                .into_response(),
+        },
+        Result::Err(e) => cron_error("run", &e),
+    }
+}
+
+#[axum::debug_handler]
+async fn handle_cron_edit(
+    State(state): State<ServerState>,
+    Path(id): Path<u64>,
+    Json(body): Json<EditCronBody>,
+) -> Response {
+    let Some(cron) = state.cron() else {
+        return cron_unavailable();
+    };
+    if body.label.is_none() && body.schedule.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(Err::new(
+                "bad_request",
+                "pass at least one of `label` or `schedule`",
+            )),
+        )
+            .into_response();
+    }
+    let schedule = match body.schedule {
+        Some(s) => match parse_schedule(&s) {
+            Result::Ok(parsed) => Some(parsed),
+            Result::Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(Err::new("bad_request", format!("schedule grammar: {e}"))),
+                )
+                    .into_response();
+            }
+        },
+        None => None,
+    };
+    match cron.edit(JobId::new(id), body.label, schedule).await {
+        Result::Ok(updated) => Json(Ok::new(CronJobView::from(&updated))).into_response(),
+        Result::Err(e) => cron_error("edit", &e),
+    }
+}
+
+fn cron_unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(Err::new(
+            "unavailable",
+            "no cron scheduler attached to this server",
+        )),
+    )
+        .into_response()
+}
+
+fn cron_error(op: &str, err: &gauss_cron::SchedulerError) -> Response {
+    let (status, code) = match err {
+        gauss_cron::SchedulerError::Store(gauss_cron::StoreError::Unknown(_)) => {
+            (StatusCode::NOT_FOUND, "not_found")
+        }
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, "scheduler"),
+    };
+    (status, Json(Err::new(code, format!("{op}: {err}")))).into_response()
+}
+
+fn no_content_ok() -> Response {
+    Json(Ok::new(serde_json::json!({ "ok": true }))).into_response()
+}
+
 /// Lower-case hex encode.
 fn hex_lower(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
@@ -752,6 +1056,22 @@ pub fn router(state: ServerState) -> Router {
             "/api/skills/preview",
             axum::routing::post(handle_skill_preview),
         )
+        // Sprint 5 §3 — cron CRUD
+        .route(
+            "/api/cron",
+            get(handle_cron_list).post(handle_cron_add),
+        )
+        .route(
+            "/api/cron/{id}",
+            get(handle_cron_get).delete(handle_cron_remove),
+        )
+        .route("/api/cron/{id}/edit", axum::routing::post(handle_cron_edit))
+        .route("/api/cron/{id}/pause", axum::routing::post(handle_cron_pause))
+        .route(
+            "/api/cron/{id}/resume",
+            axum::routing::post(handle_cron_resume),
+        )
+        .route("/api/cron/{id}/run", axum::routing::post(handle_cron_run))
         .route("/api/chat/ws", get(handle_chat_ws))
         // Frontend
         .route("/", get(handle_root))
@@ -1053,6 +1373,227 @@ taint = "trusted"
         assert_eq!(body["data"]["parsed"], false);
         assert!(body["data"]["error"].is_string());
         assert!(body["data"]["summary"].is_null());
+    }
+
+    // ─── Sprint-5 cron endpoints ───────────────────────────────────────
+
+    fn test_state_with_cron() -> ServerState {
+        let mut cfg = Config::default();
+        cfg.provider.name = "anthropic".into();
+        cfg.provider.model = "claude-3.5-sonnet".into();
+        let store: std::sync::Arc<dyn gauss_cron::JobStore> =
+            std::sync::Arc::new(gauss_cron::InMemoryJobStore::new());
+        let sched = std::sync::Arc::new(CronScheduler::new(store, SystemClock));
+        ServerState::new(cfg, Some("/tmp/gaussclaw.toml".into())).with_cron(sched)
+    }
+
+    async fn oneshot(state: ServerState, method: Method, uri: &str, body: Option<serde_json::Value>) -> (StatusCode, serde_json::Value) {
+        let app = router(state);
+        let mut req = Request::builder().method(method).uri(uri);
+        if body.is_some() {
+            req = req.header("content-type", "application/json");
+        }
+        let req = req.body(body.map_or_else(Body::empty, |v| Body::from(v.to_string()))).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::json!({}));
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn cron_list_empty_without_scheduler() {
+        let (status, body) = get_json("/api/cron").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["data"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cron_add_without_scheduler_returns_503() {
+        let (status, body) = post_json(
+            "/api/cron",
+            serde_json::json!({ "schedule": "1h", "label": "x" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["code"], "unavailable");
+    }
+
+    #[tokio::test]
+    async fn cron_add_then_list_round_trips() {
+        let st = test_state_with_cron();
+        let (status, body) = oneshot(
+            st.clone(),
+            Method::POST,
+            "/api/cron",
+            Some(serde_json::json!({ "schedule": "30m", "label": "ping-prod" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let id = body["data"]["id"].as_u64().expect("id");
+        assert_eq!(body["data"]["label"], "ping-prod");
+        assert_eq!(body["data"]["status"], "armed");
+
+        let (status, body) = oneshot(st, Method::GET, "/api/cron", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = body["data"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], id);
+    }
+
+    #[tokio::test]
+    async fn cron_add_with_bad_schedule_returns_400() {
+        let st = test_state_with_cron();
+        let (status, body) = oneshot(
+            st,
+            Method::POST,
+            "/api/cron",
+            Some(serde_json::json!({ "schedule": "@@bogus@@" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], "bad_request");
+    }
+
+    #[tokio::test]
+    async fn cron_pause_resume_round_trip() {
+        let st = test_state_with_cron();
+        let (_, body) = oneshot(
+            st.clone(),
+            Method::POST,
+            "/api/cron",
+            Some(serde_json::json!({ "schedule": "1h" })),
+        )
+        .await;
+        let id = body["data"]["id"].as_u64().unwrap();
+
+        let (status, _) = oneshot(
+            st.clone(),
+            Method::POST,
+            &format!("/api/cron/{id}/pause"),
+            Some(serde_json::json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, body) = oneshot(st.clone(), Method::GET, &format!("/api/cron/{id}"), None).await;
+        assert_eq!(body["data"]["status"], "paused");
+
+        let (status, _) = oneshot(
+            st.clone(),
+            Method::POST,
+            &format!("/api/cron/{id}/resume"),
+            Some(serde_json::json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, body) = oneshot(st, Method::GET, &format!("/api/cron/{id}"), None).await;
+        assert_eq!(body["data"]["status"], "armed");
+    }
+
+    #[tokio::test]
+    async fn cron_run_fires_a_duration_job_early() {
+        let st = test_state_with_cron();
+        let (_, body) = oneshot(
+            st.clone(),
+            Method::POST,
+            "/api/cron",
+            Some(serde_json::json!({ "schedule": "1h" })),
+        )
+        .await;
+        let id = body["data"]["id"].as_u64().unwrap();
+
+        let (status, body) = oneshot(
+            st.clone(),
+            Method::POST,
+            &format!("/api/cron/{id}/run"),
+            Some(serde_json::json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["fired"], id);
+
+        // After run: status is completed, fire_count = 1.
+        let (_, body) = oneshot(st, Method::GET, &format!("/api/cron/{id}"), None).await;
+        assert_eq!(body["data"]["status"], "completed");
+        assert_eq!(body["data"]["fire_count"], 1);
+    }
+
+    #[tokio::test]
+    async fn cron_edit_changes_label_and_schedule() {
+        let st = test_state_with_cron();
+        let (_, body) = oneshot(
+            st.clone(),
+            Method::POST,
+            "/api/cron",
+            Some(serde_json::json!({ "schedule": "1h", "label": "before" })),
+        )
+        .await;
+        let id = body["data"]["id"].as_u64().unwrap();
+
+        let (status, body) = oneshot(
+            st.clone(),
+            Method::POST,
+            &format!("/api/cron/{id}/edit"),
+            Some(serde_json::json!({ "label": "after", "schedule": "2h" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["label"], "after");
+    }
+
+    #[tokio::test]
+    async fn cron_edit_with_no_fields_returns_400() {
+        let st = test_state_with_cron();
+        let (_, body) = oneshot(
+            st.clone(),
+            Method::POST,
+            "/api/cron",
+            Some(serde_json::json!({ "schedule": "1h" })),
+        )
+        .await;
+        let id = body["data"]["id"].as_u64().unwrap();
+
+        let (status, _) = oneshot(
+            st,
+            Method::POST,
+            &format!("/api/cron/{id}/edit"),
+            Some(serde_json::json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn cron_remove_drops_job() {
+        let st = test_state_with_cron();
+        let (_, body) = oneshot(
+            st.clone(),
+            Method::POST,
+            "/api/cron",
+            Some(serde_json::json!({ "schedule": "1h" })),
+        )
+        .await;
+        let id = body["data"]["id"].as_u64().unwrap();
+
+        let (status, _) = oneshot(
+            st.clone(),
+            Method::DELETE,
+            &format!("/api/cron/{id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, _) = oneshot(st, Method::GET, &format!("/api/cron/{id}"), None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn cron_get_unknown_returns_404() {
+        let st = test_state_with_cron();
+        let (status, body) = oneshot(st, Method::GET, "/api/cron/999", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["code"], "not_found");
     }
 
     #[tokio::test]

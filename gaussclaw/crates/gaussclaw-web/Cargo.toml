@@ -13,6 +13,7 @@ workspace = true
 
 [dependencies]
 gauss-core       = { workspace = true }
+gauss-cron       = { workspace = true }
 gaussclaw-agent  = { workspace = true }
 gaussclaw-config = { workspace = true }
 gaussclaw-export = { workspace = true }

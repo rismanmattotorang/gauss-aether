@@ -75,7 +75,18 @@ fn run_web(
         // In-memory backend for the demo binary; production deployments
         // swap to a persistent SurrealMemory via SessionStore::with_memory.
         let store = std::sync::Arc::new(gaussclaw_store::SessionStore::open_in_memory().await?);
-        let state = gaussclaw_web::ServerState::new(cfg, source).with_store(store);
+        // Sprint 5 §3: one persistent in-memory cron scheduler per
+        // server lifecycle. Trinity-backed persistence wires in the
+        // Sprint 5 §3 follow-on.
+        let cron_store: std::sync::Arc<dyn gauss_cron::JobStore> =
+            std::sync::Arc::new(gauss_cron::InMemoryJobStore::new());
+        let cron = std::sync::Arc::new(gauss_cron::Scheduler::new(
+            cron_store,
+            gauss_cron::SystemClock,
+        ));
+        let state = gaussclaw_web::ServerState::new(cfg, source)
+            .with_store(store)
+            .with_cron(cron);
         gaussclaw_web::serve(addr, state).await
     })
 }
@@ -505,6 +516,7 @@ fn run_receipt_verify(envelope_path: std::path::PathBuf) -> anyhow::Result<()> {
 
 // ─── Sprint 5 §1: cron ──────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_lines)]
 fn run_cron(sub: CronCmd) -> anyhow::Result<()> {
     // The shipping binary builds a fresh in-memory scheduler per
     // invocation — the actual production wiring (one scheduler per
@@ -581,6 +593,52 @@ fn run_cron(sub: CronCmd) -> anyhow::Result<()> {
                     }
                     None => {
                         eprintln!("unknown job: {id}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            CronCmd::Edit { id, label, schedule } => {
+                if label.is_none() && schedule.is_none() {
+                    eprintln!("error: pass --label and/or --schedule");
+                    std::process::exit(1);
+                }
+                let parsed_schedule = match schedule {
+                    Some(s) => Some(
+                        gauss_cron::parse_schedule(&s)
+                            .map_err(|e| anyhow::anyhow!("schedule grammar: {e}"))?,
+                    ),
+                    None => None,
+                };
+                // The standalone CLI's in-memory store is fresh per
+                // invocation, so `edit` only succeeds against a job
+                // added in the same invocation. The web dashboard's
+                // `/api/cron/{id}` endpoint is the persistent edit
+                // path until the Trinity-backed store wires in
+                // (Sprint 5 §3 follow-on).
+                let edited = sched
+                    .edit(gauss_cron::JobId::new(id), label, parsed_schedule)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("scheduler edit: {e}"))?;
+                println!(
+                    "ok: cron job edited\n  id:           {}\n  label:        {}\n  schedule:     {}\n  next_fire_at: {:?}",
+                    edited.id.0, edited.label, edited.schedule, edited.next_fire_at
+                );
+            }
+            CronCmd::Run { id } => {
+                let outcome = sched
+                    .run_now(gauss_cron::JobId::new(id), gauss_core::CapToken::TOP, |_j| None)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("scheduler run_now: {e}"))?;
+                match outcome {
+                    gauss_cron::FireOutcome::Fired { id, receipt_id } => {
+                        println!("ok: fired job {} (receipt {:?})", id.0, receipt_id);
+                    }
+                    gauss_cron::FireOutcome::Refused { id, reason } => {
+                        eprintln!("refused: job {} ({reason})", id.0);
+                        std::process::exit(1);
+                    }
+                    _ => {
+                        eprintln!("error: unknown fire outcome");
                         std::process::exit(1);
                     }
                 }

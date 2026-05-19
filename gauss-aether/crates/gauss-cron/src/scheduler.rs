@@ -249,6 +249,109 @@ impl<C: Clock> Scheduler<C> {
         Ok(())
     }
 
+    /// Fetch one job by id. Mirrors [`JobStore::get`] for callers that
+    /// only hold a [`Scheduler`].
+    ///
+    /// # Errors
+    /// Returns [`SchedulerError::Store`] on backend failure.
+    pub async fn get(&self, id: JobId) -> Result<Option<Job>, SchedulerError> {
+        Ok(self.store.get(id).await?)
+    }
+
+    /// Edit a job in place. Pass `None` for any field to leave it
+    /// unchanged. Mutating `schedule` recomputes `next_fire_at` from the
+    /// new grammar against the current clock — so `cron edit ID --schedule "1h"`
+    /// behaves like a fresh `add` for cadence purposes.
+    ///
+    /// `Completed` and `Failed` jobs are not editable; the caller should
+    /// `cancel` and re-`add` instead.
+    ///
+    /// # Errors
+    /// Returns [`SchedulerError::Store`] on backend / unknown-id failure.
+    pub async fn edit(
+        &self,
+        id: JobId,
+        label: Option<String>,
+        schedule: Option<Schedule>,
+    ) -> Result<Job, SchedulerError> {
+        let mut job = self
+            .store
+            .get(id)
+            .await?
+            .ok_or(SchedulerError::Store(StoreError::Unknown(id)))?;
+        if let Some(l) = label {
+            job.label = l;
+        }
+        if let Some(s) = schedule {
+            let now = self.clock.now().unix_timestamp();
+            job.next_fire_at = Some(first_fire(&s, now));
+            job.schedule = s;
+        }
+        self.store.update(job.clone()).await?;
+        Ok(job)
+    }
+
+    /// Fire one job immediately, bypassing its scheduled time but
+    /// still honouring the cap-gate. The job's `fire_count` and
+    /// `last_fired_at` advance as if the tick fired naturally;
+    /// `next_fire_at` is recomputed (cron) or the job is marked
+    /// `Completed` (duration / at).
+    ///
+    /// Returns [`FireOutcome::Refused`] when the live `grant` doesn't
+    /// contain the job's `payload_caps`; the job's status becomes
+    /// `Failed` in that case (same semantics as a refused tick fire).
+    ///
+    /// # Errors
+    /// Returns [`SchedulerError::Store`] on backend / unknown-id failure.
+    pub async fn run_now<F>(
+        &self,
+        id: JobId,
+        grant: gauss_core::CapToken,
+        fire: F,
+    ) -> Result<FireOutcome, SchedulerError>
+    where
+        F: Fn(&Job) -> Option<u64>,
+    {
+        let mut job = self
+            .store
+            .get(id)
+            .await?
+            .ok_or(SchedulerError::Store(StoreError::Unknown(id)))?;
+        if !grant.contains(job.payload_caps) {
+            let reason = SchedulerError::AdmitRefused {
+                required: job.payload_caps.bits(),
+                grant: grant.bits(),
+            };
+            job.status = JobStatus::Failed;
+            self.store.update(job.clone()).await?;
+            return Ok(FireOutcome::Refused { id: job.id, reason });
+        }
+        let now = self.clock.now().unix_timestamp();
+        let receipt = fire(&job);
+        job.fire_count = job.fire_count.saturating_add(1);
+        job.last_fired_at = Some(now);
+        job.last_receipt_id = receipt;
+        match &job.schedule {
+            Schedule::Cron { .. } => {
+                job.next_fire_at = Some(next_cron_fire(&job.schedule, now));
+                // Force back to Armed if it was Paused/Failed — explicit
+                // `run` rearms a sleeping job.
+                if matches!(job.status, JobStatus::Failed | JobStatus::Paused) {
+                    job.status = JobStatus::Armed;
+                }
+            }
+            Schedule::Duration { .. } | Schedule::At { .. } => {
+                job.next_fire_at = None;
+                job.status = JobStatus::Completed;
+            }
+        }
+        self.store.update(job.clone()).await?;
+        Ok(FireOutcome::Fired {
+            id: job.id,
+            receipt_id: receipt,
+        })
+    }
+
     /// List every job in the store.
     ///
     /// # Errors
@@ -438,6 +541,83 @@ mod tests {
         // Completed.
         let all = s.list().await.unwrap();
         assert_eq!(all[0].status, JobStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn run_now_fires_a_duration_job_before_its_time() {
+        let clock = FixedClock::epoch();
+        let s = Scheduler::new(Arc::new(InMemoryJobStore::new()), clock);
+        let j = s.add(sample_duration_job(3600)).await.unwrap(); // 1 h from now
+        // Not yet due — a normal tick would do nothing.
+        let r = s.tick(CapToken::TOP, |_| None).await.unwrap();
+        assert_eq!(r.fired_count(), 0);
+        // run_now fires anyway.
+        let out = s.run_now(j.id, CapToken::TOP, |_| Some(7)).await.unwrap();
+        assert!(matches!(out, FireOutcome::Fired { receipt_id: Some(7), .. }));
+        let back = s.list().await.unwrap();
+        assert_eq!(back[0].status, JobStatus::Completed);
+        assert_eq!(back[0].fire_count, 1);
+        assert_eq!(back[0].last_receipt_id, Some(7));
+    }
+
+    #[tokio::test]
+    async fn run_now_refuses_when_grant_misses_payload_cap() {
+        let clock = FixedClock::epoch();
+        let s = Scheduler::new(Arc::new(InMemoryJobStore::new()), clock);
+        let mut j = sample_duration_job(60);
+        j.payload_caps = CapToken::NETWORK_GET;
+        let added = s.add(j).await.unwrap();
+        // Empty grant.
+        let out = s
+            .run_now(added.id, CapToken::BOTTOM, |_| Some(1))
+            .await
+            .unwrap();
+        assert!(matches!(out, FireOutcome::Refused { .. }));
+        let back = s.list().await.unwrap();
+        assert_eq!(back[0].status, JobStatus::Failed);
+        assert_eq!(back[0].fire_count, 0);
+    }
+
+    #[tokio::test]
+    async fn run_now_on_unknown_id_returns_store_error() {
+        let clock = FixedClock::epoch();
+        let s = Scheduler::new(Arc::new(InMemoryJobStore::new()), clock);
+        let err = s
+            .run_now(JobId::new(99), CapToken::TOP, |_| None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SchedulerError::Store(StoreError::Unknown(_))));
+    }
+
+    #[tokio::test]
+    async fn edit_label_only_preserves_schedule_and_next_fire_at() {
+        let clock = FixedClock::epoch();
+        let s = Scheduler::new(Arc::new(InMemoryJobStore::new()), clock);
+        let added = s.add(sample_duration_job(60)).await.unwrap();
+        let before_next = added.next_fire_at;
+        let after = s
+            .edit(added.id, Some("renamed".into()), None)
+            .await
+            .unwrap();
+        assert_eq!(after.label, "renamed");
+        assert_eq!(after.next_fire_at, before_next);
+    }
+
+    #[tokio::test]
+    async fn edit_schedule_recomputes_next_fire_at() {
+        let clock = FixedClock::epoch();
+        let s = Scheduler::new(Arc::new(InMemoryJobStore::new()), clock);
+        let added = s.add(sample_duration_job(60)).await.unwrap();
+        let before_next = added.next_fire_at.unwrap();
+        s.clock().advance(100);
+        let new_schedule = Schedule::Duration { seconds: 300 };
+        let after = s
+            .edit(added.id, None, Some(new_schedule))
+            .await
+            .unwrap();
+        // Now-time is 100, new duration is 300 → next_fire_at == 400.
+        assert_eq!(after.next_fire_at, Some(400));
+        assert_ne!(after.next_fire_at.unwrap(), before_next);
     }
 
     #[tokio::test]

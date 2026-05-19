@@ -98,6 +98,13 @@ const api = {
   receiptsRecent: (limit = 10) => api.get(`/api/receipts/recent?limit=${limit}`),
   envelopeVerify: body => api.post('/api/envelope/verify', body),
   skillPreview:   toml => api.post('/api/skills/preview', { toml }),
+  cronList:   () => api.get('/api/cron'),
+  cronAdd:    body => api.post('/api/cron', body),
+  cronPause:  id => api.post(`/api/cron/${id}/pause`, {}),
+  cronResume: id => api.post(`/api/cron/${id}/resume`, {}),
+  cronRun:    id => api.post(`/api/cron/${id}/run`, {}),
+  cronEdit:   (id, body) => api.post(`/api/cron/${id}/edit`, body),
+  cronRemove: id => api.del(`/api/cron/${id}`),
 };
 
 // Augment the API client with a generic POST helper.
@@ -107,8 +114,21 @@ api.post = async (path, body) => {
     headers: { 'content-type': 'application/json', accept: 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-  const j = await r.json();
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const msg = j?.error?.message ?? `${r.status} ${r.statusText}`;
+    throw new Error(msg);
+  }
+  return j.ok ? j.data : Promise.reject(new Error(j.error?.message ?? 'unknown error'));
+};
+
+api.del = async path => {
+  const r = await fetch(path, {
+    method: 'DELETE',
+    headers: { accept: 'application/json' },
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j?.error?.message ?? `${r.status} ${r.statusText}`);
   return j.ok ? j.data : Promise.reject(new Error(j.error?.message ?? 'unknown error'));
 };
 
@@ -513,6 +533,119 @@ function wireSkillPreview() {
   });
 }
 
+// ─── 7b. Cron view ──────────────────────────────────────────────────────────
+
+function fmtCronStatus(s) {
+  if (s === 'armed')     return el('span', { class: 'badge badge-ok' },   'armed');
+  if (s === 'paused')    return el('span', { class: 'badge badge-warn' }, 'paused');
+  if (s === 'completed') return el('span', { class: 'badge' },            'completed');
+  if (s === 'failed')    return el('span', { class: 'badge badge-err' },  'failed');
+  return el('span', { class: 'badge' }, String(s ?? '—'));
+}
+
+function fmtNextFire(t) {
+  if (t == null) return '—';
+  const date = new Date(t * 1000);
+  const diff = (t * 1000) - Date.now();
+  const minutes = Math.round(diff / 60000);
+  if (Number.isNaN(date.getTime())) return '—';
+  let rel = '';
+  if (Math.abs(minutes) < 60)        rel = ` (${minutes >= 0 ? 'in ' : ''}${minutes}m${minutes < 0 ? ' ago' : ''})`;
+  else if (Math.abs(minutes) < 1440) rel = ` (${minutes >= 0 ? 'in ' : ''}${Math.round(minutes/60)}h${minutes < 0 ? ' ago' : ''})`;
+  return date.toLocaleString() + rel;
+}
+
+renderers.cron = async () => {
+  const tbody = $('#cron-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  let rows = [];
+  try {
+    rows = await api.cronList();
+  } catch (e) {
+    tbody.append(el('tr', { class: 'placeholder' },
+      el('td', { colspan: '8' }, 'Could not load scheduled jobs.')));
+    return;
+  }
+  if (!rows.length) {
+    tbody.append(el('tr', { class: 'placeholder' },
+      el('td', { colspan: '8' },
+        'No scheduled jobs yet. Add one above — try ',
+        el('code', {}, '30m'), ' or ',
+        el('code', {}, '*/15 * * * *'), '.')));
+    return;
+  }
+  rows.forEach(j => {
+    const actions = el('td', { class: 'cron-actions' },
+      el('button', { class: 'chip', onclick: () => cronAction(j.id, 'run')    }, 'run'),
+      el('button', { class: 'chip', onclick: () => cronAction(j.id, j.status === 'paused' ? 'resume' : 'pause') },
+        j.status === 'paused' ? 'resume' : 'pause'),
+      el('button', { class: 'chip', onclick: () => cronEditPrompt(j) }, 'edit'),
+      el('button', { class: 'chip chip-danger', onclick: () => cronAction(j.id, 'remove') }, 'remove'),
+    );
+    tbody.append(
+      el('tr', {},
+        el('td', { class: 'mono' }, '#' + j.id),
+        el('td', {}, j.label || '(unlabeled)'),
+        el('td', { class: 'mono' }, j.schedule),
+        el('td', {}, fmtCronStatus(j.status)),
+        el('td', {}, fmtNextFire(j.next_fire_at)),
+        el('td', { class: 'mono' }, String(j.fire_count ?? 0)),
+        el('td', { class: 'mono' }, j.last_receipt_id != null ? '#' + j.last_receipt_id : '—'),
+        actions,
+      )
+    );
+  });
+};
+
+async function cronAction(id, op) {
+  try {
+    if (op === 'run')        await api.cronRun(id);
+    else if (op === 'pause') await api.cronPause(id);
+    else if (op === 'resume') await api.cronResume(id);
+    else if (op === 'remove') await api.cronRemove(id);
+    toast(`Job #${id} ${op === 'remove' ? 'removed' : op + (op.endsWith('e') ? 'd' : 'ed')}`);
+    await renderers.cron();
+  } catch (e) {
+    toast(`Failed to ${op}: ${e.message ?? e}`, 'err');
+  }
+}
+
+function cronEditPrompt(job) {
+  const label = window.prompt('New label (leave blank to keep):', job.label || '');
+  const schedule = window.prompt('New schedule (leave blank to keep):', job.schedule || '');
+  const body = {};
+  if (label && label !== job.label)       body.label = label;
+  if (schedule && schedule !== job.schedule) body.schedule = schedule;
+  if (!Object.keys(body).length) return;
+  api.cronEdit(job.id, body)
+    .then(() => { toast(`Job #${job.id} edited`); renderers.cron(); })
+    .catch(e => toast(`Edit failed: ${e.message ?? e}`, 'err'));
+}
+
+function wireCronView() {
+  const form = $('#cron-add-form');
+  if (form) {
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const schedule = $('#cron-schedule').value.trim();
+      const label    = $('#cron-label').value.trim() || undefined;
+      if (!schedule) return;
+      try {
+        await api.cronAdd({ schedule, label });
+        $('#cron-schedule').value = '';
+        $('#cron-label').value    = '';
+        toast('Job scheduled');
+        renderers.cron();
+      } catch (e) {
+        toast(`Add failed: ${e.message ?? e}`, 'err');
+      }
+    });
+  }
+  const refresh = $('#cron-refresh');
+  if (refresh) refresh.addEventListener('click', () => renderers.cron());
+}
+
 // ─── 8. Health view ─────────────────────────────────────────────────────────
 
 const defaultInvariants = [
@@ -581,12 +714,14 @@ const commands = [
   { id: 'view-sessions', label: 'Go to Sessions', hint: '⌘2', run: () => switchView('sessions') },
   { id: 'view-tools',    label: 'Go to Tools',    hint: '⌘3', run: () => switchView('tools')    },
   { id: 'view-receipts', label: 'Go to Receipts', hint: '⌘4', run: () => switchView('receipts') },
-  { id: 'view-health',   label: 'Go to Health',   hint: '⌘5', run: () => switchView('health')   },
-  { id: 'view-settings', label: 'Go to Settings', hint: '⌘6', run: () => switchView('settings') },
+  { id: 'view-cron',     label: 'Go to Cron',     hint: '⌘5', run: () => switchView('cron')     },
+  { id: 'view-health',   label: 'Go to Health',   hint: '⌘6', run: () => switchView('health')   },
+  { id: 'view-settings', label: 'Go to Settings', hint: '⌘7', run: () => switchView('settings') },
   { id: 'new-session',   label: 'Start a new chat session',   hint: '',   run: () => $('#chat-new').click() },
   { id: 'copy-receipt',  label: 'Copy chain head digest',     hint: '',   run: () => $('#receipt-copy')?.click() },
   { id: 'reload-health', label: 'Reload SDHE health report',  hint: '',   run: () => renderers.health() },
   { id: 'reload-tools',  label: 'Reload tool catalogue',      hint: '',   run: () => renderers.tools()  },
+  { id: 'reload-cron',   label: 'Reload scheduled jobs',      hint: '',   run: () => renderers.cron()   },
 ];
 
 const palette = {
@@ -646,9 +781,9 @@ function wireGlobalKeys() {
     if (e.key === 'Escape' && !$('#palette').classList.contains('hidden')) {
       palette.close(); return;
     }
-    if (mod && /^[1-6]$/.test(e.key)) {
+    if (mod && /^[1-7]$/.test(e.key)) {
       e.preventDefault();
-      const map = ['chat', 'sessions', 'tools', 'receipts', 'health', 'settings'];
+      const map = ['chat', 'sessions', 'tools', 'receipts', 'cron', 'health', 'settings'];
       switchView(map[parseInt(e.key, 10) - 1]);
     }
   });
@@ -683,6 +818,7 @@ async function bootstrap() {
   wireGlobalKeys();
   wireReceiptsView();
   wireSkillPreview();
+  wireCronView();
   setConnection('warn', 'connecting');
 
   try {

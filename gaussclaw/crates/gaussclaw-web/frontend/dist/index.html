@@ -45,6 +45,10 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h10l4 4v14H6z M9 12h6M9 16h6M9 8h3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
         Receipts
       </button>
+      <button class="nav-item" role="tab" data-view="cron"     aria-selected="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 7v5l3 3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+        Cron
+      </button>
       <button class="nav-item" role="tab" data-view="health"   aria-selected="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/></svg>
         Health
@@ -226,6 +230,52 @@ max_string_len = 65536'></textarea>
           </div>
           <div class="verify-report hidden" id="verify-report" aria-live="polite"></div>
         </section>
+      </div>
+    </section>
+
+    <!-- ───────────── Cron ───────────── -->
+    <section class="view" id="view-cron">
+      <header class="view-head">
+        <h1>Cron</h1>
+        <p class="muted">Scheduled jobs the agent can fire on duration, cron-expression, or absolute timestamp.
+          Every fire is cap-gated — a job whose <code>payload_caps</code> aren't in the live kernel grant
+          refuses closed. Hermes fires unconditionally.</p>
+        <div class="view-head-actions">
+          <button class="chip" id="cron-refresh">↻ Refresh</button>
+        </div>
+      </header>
+
+      <form class="cron-add" id="cron-add-form">
+        <label class="cron-field">
+          <span>Schedule</span>
+          <input id="cron-schedule" type="text" placeholder="30m · */15 * * * * · 2026-05-20T14:30:00Z"
+                 autocomplete="off" required />
+        </label>
+        <label class="cron-field">
+          <span>Label</span>
+          <input id="cron-label" type="text" placeholder="(unlabeled)" autocomplete="off" />
+        </label>
+        <button class="btn-primary" type="submit">+ Add job</button>
+      </form>
+
+      <div class="cron-table-wrap">
+        <table class="cron-table" id="cron-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Label</th>
+              <th>Schedule</th>
+              <th>Status</th>
+              <th>Next fire</th>
+              <th>Fires</th>
+              <th>Last receipt</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="cron-tbody">
+            <tr class="placeholder"><td colspan="8">Loading scheduled jobs…</td></tr>
+          </tbody>
+        </table>
       </div>
     </section>
 

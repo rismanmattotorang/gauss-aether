@@ -3062,6 +3062,7 @@ dependencies = [
  "axum",
  "futures-util",
  "gauss-core",
+ "gauss-cron",
  "gaussclaw-agent",
  "gaussclaw-config",
  "gaussclaw-export",
