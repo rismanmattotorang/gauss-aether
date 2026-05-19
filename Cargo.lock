@@ -2851,6 +2851,7 @@ dependencies = [
  "gaussclaw-config",
  "gaussclaw-export",
  "gaussclaw-migrate",
+ "gaussclaw-plugins",
  "gaussclaw-store",
  "gaussclaw-tools",
  "gaussclaw-tui",
@@ -2996,6 +2997,24 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "toml 0.8.2",
+]
+
+[[package]]
+name = "gaussclaw-plugins"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "directories",
+ "gauss-core",
+ "gaussclaw-skill",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.8.2",
+ "tracing",
 ]
 
 [[package]]

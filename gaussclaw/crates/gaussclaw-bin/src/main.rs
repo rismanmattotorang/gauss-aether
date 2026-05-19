@@ -18,7 +18,7 @@
 use clap::Parser;
 use gaussclaw_cli::{
     ChatArgs, Cli, Command, ConfigCmd, CronCmd, DoctorArgs, GatewayCmd, ImportArgs, ModelCmd,
-    ReceiptCmd, SnapshotCmd, ToolsCmd, WebArgs,
+    PluginsCmd, ReceiptCmd, SnapshotCmd, ToolsCmd, WebArgs,
 };
 use gaussclaw_tui::StatusInfo;
 
@@ -154,6 +154,7 @@ fn dispatch(
         },
         Command::Cron(sub) => run_cron(sub),
         Command::Snapshot(sub) => run_snapshot(sub),
+        Command::Plugins(sub) => run_plugins(sub),
         Command::Web(_) => unreachable!("`web` is dispatched above in main()"),
     }
 }
@@ -731,6 +732,143 @@ fn run_snapshot(sub: SnapshotCmd) -> anyhow::Result<()> {
                     .await
                     .map_err(|e| anyhow::anyhow!("remove: {e}"))?;
                 println!("ok: removed {id}");
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+}
+
+// ─── Sprint 7 §2: plugins ──────────────────────────────────────────────────
+
+#[allow(clippy::too_many_lines)]
+fn run_plugins(sub: PluginsCmd) -> anyhow::Result<()> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async move {
+        use std::path::PathBuf;
+        fn parse_kind(s: &str) -> anyhow::Result<gaussclaw_plugins::PluginKind> {
+            match s {
+                "standalone" => Ok(gaussclaw_plugins::PluginKind::Standalone),
+                "backend" => Ok(gaussclaw_plugins::PluginKind::Backend),
+                "exclusive" => Ok(gaussclaw_plugins::PluginKind::Exclusive),
+                "platform" => Ok(gaussclaw_plugins::PluginKind::Platform),
+                "model_provider" | "model-provider" => {
+                    Ok(gaussclaw_plugins::PluginKind::ModelProvider)
+                }
+                other => Err(anyhow::anyhow!(
+                    "unknown plugin kind {other:?} (try standalone/backend/exclusive/platform/model_provider)"
+                )),
+            }
+        }
+        async fn discover_all(roots: &[String]) -> anyhow::Result<Vec<gaussclaw_plugins::LoadedPlugin>> {
+            let mut all: Vec<gaussclaw_plugins::LoadedPlugin> = Vec::new();
+            let mut failures: Vec<(PathBuf, String)> = Vec::new();
+            let roots_iter: Vec<PathBuf> = if roots.is_empty() {
+                gaussclaw_plugins::default_discovery_roots()
+            } else {
+                roots.iter().map(PathBuf::from).collect()
+            };
+            for r in &roots_iter {
+                let report = gaussclaw_plugins::PluginLoader::discover_in(r)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("discover {}: {e}", r.display()))?;
+                all.extend(report.found);
+                failures.extend(report.failures);
+            }
+            for (path, reason) in &failures {
+                eprintln!("warn: skipped {} ({reason})", path.display());
+            }
+            Ok(all)
+        }
+        match sub {
+            PluginsCmd::List { root } => {
+                let all = discover_all(&root).await?;
+                if all.is_empty() {
+                    println!("(no plugins discovered)");
+                } else {
+                    println!(
+                        "{:<14}  {:<24}  {:<10}  {:<7}",
+                        "kind", "name", "version", "enabled"
+                    );
+                    for p in &all {
+                        println!(
+                            "{:<14}  {:<24}  {:<10}  {:<7}",
+                            p.manifest.kind.as_str(),
+                            p.manifest.name,
+                            p.manifest.version,
+                            p.enabled
+                        );
+                    }
+                }
+            }
+            PluginsCmd::Inspect { kind, name, root } => {
+                let want = parse_kind(&kind)?;
+                let all = discover_all(&root).await?;
+                match all
+                    .into_iter()
+                    .find(|p| p.manifest.kind == want && p.manifest.name == name)
+                {
+                    Some(p) => {
+                        println!(
+                            "name:        {}\nkind:        {}\nversion:     {}\ndescription: {}\nentry:       {}\ncaps:        {:?}\ntags:        {:?}\nprovenance:  {}\nmanifest:    {}",
+                            p.manifest.name,
+                            p.manifest.kind.as_str(),
+                            p.manifest.version,
+                            p.manifest.description,
+                            p.manifest.entry,
+                            p.manifest.caps,
+                            p.manifest.tags,
+                            p.provenance,
+                            p.manifest_path
+                                .as_ref()
+                                .map_or_else(String::new, |x| x.display().to_string()),
+                        );
+                    }
+                    None => {
+                        eprintln!("unknown plugin: {kind}/{name}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            PluginsCmd::Enable { kind, name } => {
+                let _ = parse_kind(&kind)?;
+                eprintln!(
+                    "note: plugin enable/disable persistence lands in Sprint 7 §3 (the dashboard PluginsPage). For now the CLI just acknowledges the intent ({kind}/{name})."
+                );
+            }
+            PluginsCmd::Disable { kind, name } => {
+                let _ = parse_kind(&kind)?;
+                eprintln!(
+                    "note: plugin enable/disable persistence lands in Sprint 7 §3 (the dashboard PluginsPage). For now the CLI just acknowledges the intent ({kind}/{name})."
+                );
+            }
+            PluginsCmd::Install { path } => {
+                let path = PathBuf::from(path);
+                let manifest_path = if path.is_dir() {
+                    path.join("plugin.toml")
+                } else {
+                    path
+                };
+                let toml_src = tokio::fs::read_to_string(&manifest_path)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("read {}: {e}", manifest_path.display()))?;
+                let manifest = gaussclaw_plugins::PluginManifest::from_toml(&toml_src)
+                    .map_err(|e| anyhow::anyhow!("parse manifest: {e}"))?;
+                let provenance = manifest
+                    .provenance_digest()
+                    .unwrap_or_default();
+                println!(
+                    "ok: plugin manifest validated\n  name:       {}\n  kind:       {}\n  version:    {}\n  caps:       {:?}\n  provenance: {}",
+                    manifest.name,
+                    manifest.kind.as_str(),
+                    manifest.version,
+                    manifest.caps,
+                    provenance,
+                );
+                eprintln!(
+                    "note: install-to-user-root persistence lands in Sprint 7 §7 (skill installer). For now `install` only validates the manifest."
+                );
             }
         }
         Ok::<(), anyhow::Error>(())

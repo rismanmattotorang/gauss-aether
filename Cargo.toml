@@ -47,6 +47,7 @@ members = [
     "gaussclaw/crates/gaussclaw-fed",
     "gaussclaw/crates/gaussclaw-config",
     "gaussclaw/crates/gaussclaw-migrate",
+    "gaussclaw/crates/gaussclaw-plugins",
     "gaussclaw/crates/gaussclaw-conformance",
     "gaussclaw/crates/gaussclaw-bin",
 ]
@@ -106,6 +107,7 @@ gaussclaw-export         = { path = "gaussclaw/crates/gaussclaw-export",        
 gaussclaw-fed            = { path = "gaussclaw/crates/gaussclaw-fed",            version = "0.0.1" }
 gaussclaw-config         = { path = "gaussclaw/crates/gaussclaw-config",         version = "0.0.1" }
 gaussclaw-migrate        = { path = "gaussclaw/crates/gaussclaw-migrate",        version = "0.0.1" }
+gaussclaw-plugins        = { path = "gaussclaw/crates/gaussclaw-plugins",        version = "0.0.1" }
 gaussclaw-conformance    = { path = "gaussclaw/crates/gaussclaw-conformance",    version = "0.0.1" }
 
 # Async

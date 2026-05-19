@@ -1,0 +1,20 @@
+---
+source: gaussclaw/crates/gaussclaw-conformance/src/cli_parity.rs
+expression: body
+---
+Manage plugins (Sprint 7 §2)
+
+Usage: plugins <COMMAND>
+
+Commands:
+  list     List every discovered plugin (name, kind, version, enabled)
+  inspect  Inspect a single plugin manifest by `(kind, name)`
+  enable   Enable a plugin (persisted enabled-state lands in §3 follow-on)
+  disable  Disable a plugin
+  install  Install a plugin from a manifest file. Copies the plugin directory into the user
+           discovery root and prompts for the declared cap grant
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help
+          Print help

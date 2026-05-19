@@ -98,6 +98,10 @@ pub enum Command {
     #[command(subcommand)]
     Snapshot(SnapshotCmd),
 
+    /// Manage plugins (Sprint 7 §2).
+    #[command(subcommand)]
+    Plugins(PluginsCmd),
+
     /// Launch the web dashboard (Axum + retained React frontend) (GaussClaw extension).
     Web(WebArgs),
 }
@@ -218,6 +222,62 @@ pub enum SnapshotCmd {
         /// Snapshot id (from `snapshot list`).
         #[arg(value_name = "ID")]
         id: String,
+    },
+}
+
+// ─── plugins ────────────────────────────────────────────────────────────────
+
+/// `plugins` subcommand — Sprint 7 §2.
+///
+/// Operates over the discovery roots in
+/// `gaussclaw_plugins::default_discovery_roots()` plus any
+/// `--root PATH` overrides.
+#[derive(Debug, clap::Subcommand)]
+pub enum PluginsCmd {
+    /// List every discovered plugin (name, kind, version, enabled).
+    List {
+        /// Override discovery root. Repeatable.
+        #[arg(long = "root", value_name = "DIR")]
+        root: Vec<String>,
+    },
+    /// Inspect a single plugin manifest by `(kind, name)`.
+    Inspect {
+        /// Plugin kind (`standalone` | `backend` | `exclusive` |
+        /// `platform` | `model_provider`).
+        #[arg(value_name = "KIND")]
+        kind: String,
+        /// Plugin name.
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// Override discovery root. Repeatable.
+        #[arg(long = "root", value_name = "DIR")]
+        root: Vec<String>,
+    },
+    /// Enable a plugin (persisted enabled-state lands in §3 follow-on).
+    Enable {
+        /// Plugin kind.
+        #[arg(value_name = "KIND")]
+        kind: String,
+        /// Plugin name.
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+    /// Disable a plugin.
+    Disable {
+        /// Plugin kind.
+        #[arg(value_name = "KIND")]
+        kind: String,
+        /// Plugin name.
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+    /// Install a plugin from a manifest file. Copies the plugin
+    /// directory into the user discovery root and prompts for the
+    /// declared cap grant.
+    Install {
+        /// Path to a `plugin.toml` (or its containing directory).
+        #[arg(value_name = "PATH")]
+        path: String,
     },
 }
 
@@ -416,6 +476,7 @@ pub const fn dispatch_id(cmd: &Command) -> &'static str {
         Command::Receipt(_) => "receipt",
         Command::Cron(_) => "cron",
         Command::Snapshot(_) => "snapshot",
+        Command::Plugins(_) => "plugins",
         Command::Web(_) => "web",
     }
 }
@@ -436,6 +497,7 @@ pub const SUBCOMMANDS: &[(&str, bool)] = &[
     ("receipt", false),
     ("cron", true),
     ("snapshot", false),
+    ("plugins", false),
     ("web", false),
 ];
 
@@ -465,6 +527,7 @@ mod tests {
             ("receipt", &["gaussclaw", "receipt", "head"]),
             ("cron", &["gaussclaw", "cron", "list"]),
             ("snapshot", &["gaussclaw", "snapshot", "list"]),
+            ("plugins", &["gaussclaw", "plugins", "list"]),
             ("web", &["gaussclaw", "web"]),
         ];
         for (id, argv) in leaf {

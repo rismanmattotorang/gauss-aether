@@ -668,14 +668,18 @@ on tools, channels, and the plugin model.
 
 Deliverables:
 
-1. `gaussclaw-plugins` (new crate) — Hermes's 5-kind plugin loader
-   re-implemented over a typed Rust trait surface. Discovery roots:
-   bundled / user (`$XDG_DATA_HOME/gaussclaw/plugins`) / project
-   (`./.gaussclaw/plugins`, opt-in) / cargo workspace member. **Each
-   plugin's `plugin.toml` declares its cap set; the kernel admit gate
-   restricts a plugin to its declared caps.**
-2. CLI: `gaussclaw plugins {list, install, enable, disable,
-   inspect}`.
+1. ✅ `gaussclaw-plugins` (new crate) — Hermes's 5-kind plugin loader
+   re-implemented over a typed Rust trait surface. **Each plugin's
+   `plugin.toml` declares its `caps`; `PluginRegistry::register`
+   refuses load if the live grant doesn't satisfy the declared
+   set.** Discovery walks the user data dir + opt-in project root;
+   manifests live behind a path-traversal guard and a stable
+   BLAKE3 provenance digest. Shipping with 17 unit tests.
+2. ✅ CLI: `gaussclaw plugins {list, install, enable, disable,
+   inspect}`. Discovery via the default roots or `--root` override.
+   `install` validates the manifest + prints the provenance digest
+   so an operator can audit before persisting (full install-to-disk
+   lands with Sprint 7 §7).
 3. Web view: a new `PluginsPage` mirroring Hermes.
 4. **15 new tools** for inventory parity:
    `terminal` (real PTY), `code_execution`, `web_fetch`,
