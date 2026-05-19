@@ -2784,6 +2784,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gauss-worktree"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "gauss-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "gauss-zk"
 version = "0.0.1"
 dependencies = [

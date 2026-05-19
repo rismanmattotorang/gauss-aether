@@ -610,8 +610,15 @@ Deliverables:
    destructive patterns); cap-gated to permit explicit override.
 7. `osv_check` — vulnerability scan over installed deps; runs as a
    read-only tool.
-8. **Worktree-isolated concurrent sessions** — `gaussclaw-worktree`
-   spawns a fresh git worktree per session.
+8. ✅ **Worktree-isolated concurrent sessions** — `gauss-worktree`
+   ships a `WorktreeManager` that allocates one `git worktree` per
+   session under `<root>/.gaussclaw/worktrees/<session_id>/` on a
+   dedicated `gaussclaw/sessions/<session_id>` branch. Cap-gated by
+   `cap:worktree:write`; every create / destroy returns a signed
+   receipt for the chain. Handle drop cleans up the worktree
+   automatically (operators that want to keep it call
+   `WorktreeHandle::keep()`). `SessionId` slug guard refuses path
+   traversal (`..`, `/`, etc.) at construction time.
 
 Success criteria:
 

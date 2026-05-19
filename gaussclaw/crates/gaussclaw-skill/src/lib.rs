@@ -287,6 +287,7 @@ pub fn parse_cap(cap: &str) -> SkillResult<CapToken> {
         "executor:docker" => Ok(CapToken::EXECUTOR_DOCKER),
         "executor:ssh" => Ok(CapToken::EXECUTOR_SSH),
         "executor:modal" => Ok(CapToken::EXECUTOR_MODAL),
+        "worktree:write" => Ok(CapToken::WORKTREE_WRITE),
         other => Err(SkillError::UnknownCap(other.into())),
     }
 }

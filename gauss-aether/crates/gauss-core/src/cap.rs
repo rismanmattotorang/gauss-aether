@@ -86,6 +86,12 @@ impl CapToken {
     /// Dispatch a session into a Modal sandbox (Sprint 6 §1
     /// follow-on).
     pub const EXECUTOR_MODAL: Self = Self(1 << 18);
+    /// Create / destroy a git worktree for session isolation
+    /// (Sprint 6 §8). Distinct from `FILESYSTEM_WRITE` because a
+    /// worktree mutation is a metadata-level operation (touching
+    /// `.git/worktrees` and a branch ref) the operator may want to
+    /// grant independently of generic write access.
+    pub const WORKTREE_WRITE: Self = Self(1 << 19);
 
     /// Construct from a raw bitmask.
     #[inline]
