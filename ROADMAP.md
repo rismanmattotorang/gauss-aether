@@ -598,11 +598,22 @@ Deliverables:
    `MockModalExecutor` for the conformance suite.
 2. CLI / TOML knob: `terminal.backend = "docker"` selects the
    per-session executor.
-3. `delegate_tool` — spawn an isolated subagent inside the active
+3. ✅ `delegate_tool` — spawn an isolated subagent inside the active
    executor; receipt-chains stay separate so a compromised subagent
-   can't forge the parent's chain.
-4. `mixture_of_agents_tool` — parallel subagent dispatch with
-   aggregated voting.
+   can't forge the parent's chain. *Shipping as
+   `gaussclaw-tools::DelegateTool` over a pluggable
+   `SubAgentDispatcher` trait. Every dispatch carries a
+   `grant_subset` that's lattice-meet'd with the parent's grant — a
+   sub-agent cannot acquire a cap the parent didn't have. The result
+   carries `chain_head` + `chain_length` rather than the sub-agent's
+   raw output, so the parent's chain records only the verifiable
+   digest.*
+4. ✅ `mixture_of_agents_tool` — parallel subagent dispatch with
+   aggregated voting. *Shipping as
+   `gaussclaw-tools::MixtureOfAgentsTool` running N (1..=16)
+   parallel `tokio::spawn`'d sub-agents, aggregating via majority
+   vote. Returns the aggregated answer plus the per-agent chain
+   heads.*
 5. `code_execution_tool` — sandboxed Python via either `wasmi` +
    `pyodide` (preferred — keeps the single-binary story) or a Docker
    leaf (fallback).

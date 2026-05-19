@@ -86,6 +86,7 @@ pub mod registry;
 pub mod session_search;
 pub mod shell;
 pub mod spawners;
+pub mod subagent;
 pub mod upper;
 pub mod uuid;
 
@@ -112,6 +113,10 @@ pub use registry::{RegistryError, RegistryResult, ToolRegistry};
 pub use session_search::SessionSearchTool;
 pub use shell::ShellTool;
 pub use spawners::{composite_sandboxed, noop_sandboxed, unsandboxed};
+pub use subagent::{
+    DelegateTool, MixtureOfAgentsTool, MockDispatcher, SubAgentDispatcher, SubAgentRequest,
+    SubAgentResult,
+};
 pub use upper::UpperTool;
 pub use uuid::UuidTool;
 
