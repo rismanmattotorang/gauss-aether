@@ -88,6 +88,59 @@ pub struct Config {
 
     /// Desktop / Tauri shell options (Phase 1 / 5).
     pub desktop: Option<DesktopConfig>,
+
+    /// Per-session terminal / executor selection (Sprint 6 §2).
+    /// Defaults to `local`.
+    #[serde(default)]
+    pub terminal: TerminalConfig,
+}
+
+/// `[terminal]` section — Sprint 6 §2.
+///
+/// Selects which `gauss-exec` backend the session dispatches into.
+/// The kernel admit gate refuses dispatch into an executor whose
+/// `cap:executor:<backend>` isn't in the session grant — this knob
+/// is operator intent, not a privilege grant.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+#[non_exhaustive]
+pub struct TerminalConfig {
+    /// Backend tag: `local` | `docker` | `ssh` | `modal`. Defaults to `local`.
+    pub backend: TerminalBackend,
+}
+
+/// `terminal.backend` value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum TerminalBackend {
+    /// In-process execution (default).
+    Local,
+    /// Docker container.
+    Docker,
+    /// Remote host over SSH.
+    Ssh,
+    /// Modal sandbox.
+    Modal,
+}
+
+impl Default for TerminalBackend {
+    fn default() -> Self {
+        Self::Local
+    }
+}
+
+impl TerminalBackend {
+    /// Stable string tag — `local` / `docker` / `ssh` / `modal`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Docker => "docker",
+            Self::Ssh => "ssh",
+            Self::Modal => "modal",
+        }
+    }
 }
 
 /// Provider plane root.
@@ -420,6 +473,42 @@ autostart     = false
         assert_eq!(cfg.taint.as_ref().unwrap().default_declass, "strict");
         assert_eq!(cfg.export.as_ref().unwrap().filter_mode, "strict");
         assert!(cfg.desktop.as_ref().unwrap().global_hotkey);
+    }
+
+    #[test]
+    fn terminal_backend_defaults_to_local() {
+        let cfg = Config::default();
+        assert_eq!(cfg.terminal.backend, TerminalBackend::Local);
+        assert_eq!(cfg.terminal.backend.as_str(), "local");
+    }
+
+    #[test]
+    fn terminal_backend_round_trips_through_toml() {
+        for (literal, expected) in [
+            ("local", TerminalBackend::Local),
+            ("docker", TerminalBackend::Docker),
+            ("ssh", TerminalBackend::Ssh),
+            ("modal", TerminalBackend::Modal),
+        ] {
+            let toml_str =
+                format!("[provider]\nname=\"x\"\nmodel=\"y\"\n[terminal]\nbackend=\"{literal}\"\n");
+            let cfg: Config = toml::from_str(&toml_str).expect("parse");
+            assert_eq!(cfg.terminal.backend, expected);
+        }
+    }
+
+    #[test]
+    fn terminal_backend_rejects_unknown_string() {
+        let toml_str = r#"
+[provider]
+name  = "anthropic"
+model = "claude-3.5-sonnet"
+
+[terminal]
+backend = "wat"
+"#;
+        let r: Result<Config, _> = toml::from_str(toml_str);
+        assert!(r.is_err());
     }
 
     #[test]

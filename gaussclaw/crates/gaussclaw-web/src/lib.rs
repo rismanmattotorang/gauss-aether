@@ -143,6 +143,9 @@ pub struct StatusPayload {
     pub model: String,
     /// Number of active sessions (zero until the store lands in Phase 2).
     pub active_sessions: u32,
+    /// Active executor backend (Sprint 6 §2) — `local` / `docker` /
+    /// `ssh` / `modal`.
+    pub terminal_backend: String,
 }
 
 /// `/api/health` payload — shaped to match the seven SDHE invariants
@@ -414,6 +417,7 @@ async fn handle_status(State(state): State<ServerState>) -> Json<Ok<StatusPayloa
         provider: state.config.provider.name.clone(),
         model: state.config.provider.model.clone(),
         active_sessions: 0,
+        terminal_backend: state.config.terminal.backend.as_str().into(),
     }))
 }
 

@@ -596,8 +596,13 @@ Deliverables:
    defence in depth above the kernel admit gate. Real Modal HTTP
    client lands in a Sprint 7 follow-on; the crate ships
    `MockModalExecutor` for the conformance suite.
-2. CLI / TOML knob: `terminal.backend = "docker"` selects the
-   per-session executor.
+2. ✅ CLI / TOML knob: `terminal.backend = "docker"` selects the
+   per-session executor. *`gaussclaw-config` ships `TerminalConfig`
+   + `TerminalBackend { Local, Docker, Ssh, Modal }`; defaults to
+   `local`. Surfaced on `/api/status` so the dashboard shows the
+   active backend. **The knob is operator intent, not a privilege
+   grant** — the kernel admit gate independently refuses dispatch
+   if `cap:executor:<backend>` isn't in the session's grant.*
 3. ✅ `delegate_tool` — spawn an isolated subagent inside the active
    executor; receipt-chains stay separate so a compromised subagent
    can't forge the parent's chain. *Shipping as
