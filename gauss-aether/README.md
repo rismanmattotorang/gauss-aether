@@ -97,6 +97,7 @@ organised in seven layers:
 | [`gauss-gateway`](./crates/gauss-gateway/) | REST · WebSocket · SSE wire types and OpenAI-compatible proxy schema. |
 | [`gauss-attest`](./crates/gauss-attest/) | TEE attestation trait + Ed25519 software simulator (T10 §L4). |
 | [`gauss-chaos`](./crates/gauss-chaos/) | Deterministic kill / partition / clock-skew injectors. |
+| [`gauss-hooks`](./crates/gauss-hooks/) | PreToolUse / PostToolUse lifecycle hook bus (OpenHarness-inspired). Capability-gated: hooks can `Warn` or `Deny` but never widen caps. |
 
 ### Research vehicles (additive, behind stable trait contracts)
 
