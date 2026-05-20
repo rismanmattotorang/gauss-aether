@@ -20,11 +20,14 @@
 
 pub mod agent_loop;
 pub mod audit;
+pub mod compaction;
 
 pub use agent_loop::{
     parse_inline_tool_calls, AgentLoop, LoopEvent, LoopOutcome, LoopSink, MemorySink, NoopSink,
     ToolCall, DEFAULT_MAX_ITERATIONS,
 };
+
+pub use compaction::{Compactor, CompactionRecord, WindowedCompactor, SUMMARY_PREFIX};
 
 pub use audit::{
     blake3_hex, AuditEntry, AuditTrace, InboundRecord, OutboundRecord, PlaneLabel,

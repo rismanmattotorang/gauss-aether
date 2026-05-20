@@ -68,6 +68,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    compaction::{CompactionRecord, Compactor},
     Completion, Message, Prompt, ProviderError, ProviderHandle, TurnError, TurnPolicy, TurnResult,
 };
 use gauss_core::TaintLabel;
@@ -209,6 +210,16 @@ pub enum LoopEvent {
         to_provider: String,
         reason: String,
     },
+    /// Auto-Compaction fired between iterations. The loop summarised
+    /// older messages and continues running. (OpenHarness-inspired
+    /// Auto-Compaction surface.)
+    Compacted {
+        collapsed: usize,
+        retained: usize,
+        before_chars: usize,
+        after_chars: usize,
+        turn: u32,
+    },
     /// The loop is done. Carries the stop reason and the final
     /// iteration count.
     Done {
@@ -320,6 +331,14 @@ pub struct AgentLoop {
     /// OpenHarness-inspired: PreToolUse/PostToolUse lifecycle events
     /// give plugins a hook point without touching the registry.
     pub hooks: Option<HookBus>,
+    /// Optional [`Compactor`] consulted between iterations. When the
+    /// strategy fires, the loop replaces the running message stack
+    /// with a summarised one and emits a [`LoopEvent::Compacted`]
+    /// event. `None` disables auto-compaction.
+    ///
+    /// OpenHarness-inspired: Auto-Compaction preserves task state
+    /// across context-window pressure without dropping tool results.
+    pub compactor: Option<Arc<dyn Compactor>>,
 }
 
 impl AgentLoop {
@@ -331,6 +350,7 @@ impl AgentLoop {
             max_iterations: DEFAULT_MAX_ITERATIONS,
             fallback: Vec::new(),
             hooks: None,
+            compactor: None,
         }
     }
 
@@ -339,6 +359,15 @@ impl AgentLoop {
     #[must_use]
     pub fn with_hooks(mut self, hooks: HookBus) -> Self {
         self.hooks = Some(hooks);
+        self
+    }
+
+    /// Attach a [`Compactor`]. The loop will consult it before every
+    /// provider invocation; on a fire it rewrites the message stack
+    /// and emits a [`LoopEvent::Compacted`].
+    #[must_use]
+    pub fn with_compactor(mut self, compactor: Arc<dyn Compactor>) -> Self {
+        self.compactor = Some(compactor);
         self
     }
 
@@ -421,6 +450,30 @@ impl AgentLoop {
                     iterations,
                     stop_reason: stop,
                 });
+            }
+
+            // Auto-Compaction: consult the compactor before every
+            // provider invocation. The strategy is responsible for
+            // its own idempotence — calling it on an already-compacted
+            // stack is a no-op.
+            if let Some(c) = self.compactor.as_ref() {
+                if let Some(rec) = c.maybe_compact(&mut messages) {
+                    let CompactionRecord {
+                        collapsed,
+                        retained,
+                        before_chars,
+                        after_chars,
+                        ..
+                    } = rec;
+                    sink.emit(LoopEvent::Compacted {
+                        collapsed,
+                        retained,
+                        before_chars,
+                        after_chars,
+                        turn: iterations,
+                    })
+                    .await;
+                }
             }
 
             // Build the iteration's prompt from the running stack.
@@ -1014,6 +1067,64 @@ mod tests {
         assert!(events.iter().any(
             |e| matches!(e, LoopEvent::ToolComplete { name, ok, .. } if name == "echo" && *ok)
         ));
+    }
+
+    /// Auto-Compaction fires between iterations when the running
+    /// stack exceeds the budget; the loop emits a `Compacted` event
+    /// and the next provider call sees a smaller stack.
+    #[tokio::test]
+    async fn auto_compaction_fires_between_iterations() {
+        use crate::compaction::WindowedCompactor;
+        use std::sync::Arc;
+
+        // Tight budget so a single big assistant message triggers compaction.
+        let compactor: Arc<dyn crate::Compactor> = Arc::new(
+            WindowedCompactor::defaults()
+                .with_budget_chars(200)
+                .with_keep_tail(1),
+        );
+
+        // Script: turn 1 produces a big assistant message (no tool),
+        // turn 2 stops.
+        let big = "x".repeat(2_000);
+        let provider = Arc::new(ScriptProvider::new(
+            "scripted",
+            vec![
+                Completion::new(
+                    format!("<tool name=\"echo\">{{\"text\":\"{big}\"}}</tool>"),
+                    "scripted",
+                    "tool",
+                    TokenCount::new(1, 1),
+                ),
+                Completion::new("done", "scripted", "stop", TokenCount::new(1, 1)),
+            ],
+        ));
+        let loop_ = AgentLoop::new(loop_policy(provider)).with_compactor(compactor);
+        let sink = MemorySink::new();
+        let outcome = loop_
+            .run(
+                Prompt::new(
+                    "scripted",
+                    vec![
+                        Message::new("system", "sys"),
+                        // Seed prior history so there's something to collapse.
+                        Message::new("user", "x".repeat(500)),
+                        Message::new("assistant", "y".repeat(500)),
+                        Message::new("user", "go"),
+                    ],
+                ),
+                TaintLabel::User,
+                None,
+                &sink,
+            )
+            .await
+            .expect("ok");
+        assert_eq!(outcome.stop_reason, "stop");
+        let events = sink.events().await;
+        let fired = events
+            .iter()
+            .any(|e| matches!(e, LoopEvent::Compacted { collapsed, .. } if *collapsed > 0));
+        assert!(fired, "Compacted event should fire");
     }
 
     /// `PostToolHook` observes every completed dispatch — exercised
