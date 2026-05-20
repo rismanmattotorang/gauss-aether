@@ -403,6 +403,15 @@ pub struct AgentLoop {
     /// Setting this without `hooks` does nothing; setting hooks
     /// without this skips the audit append but still fires the hook.
     pub audit: Option<AuditTrace>,
+    /// Ordered list of [`PromptEnricher`]s consulted once per run.
+    /// Their concatenated output lands as a leading system message
+    /// before the first provider call. Empty by default; the loop
+    /// runs unchanged when no enrichers are attached.
+    ///
+    /// OpenHarness-inspired: ambient context injection (CLAUDE.md,
+    /// markdown skills, plugin operating instructions) without
+    /// hard-coding the discovery into the agent crate.
+    pub enrichers: Vec<Arc<dyn crate::enrich::PromptEnricher>>,
 }
 
 impl AgentLoop {
@@ -416,6 +425,7 @@ impl AgentLoop {
             hooks: None,
             compactor: None,
             audit: None,
+            enrichers: Vec::new(),
         }
     }
 
@@ -424,6 +434,16 @@ impl AgentLoop {
     #[must_use]
     pub fn with_audit(mut self, audit: AuditTrace) -> Self {
         self.audit = Some(audit);
+        self
+    }
+
+    /// Append a [`PromptEnricher`]. The loop concatenates every
+    /// enricher's output and prepends the result as one leading
+    /// `system`-role message before the first provider call.
+    /// Enrichers fire in registration order.
+    #[must_use]
+    pub fn with_enricher(mut self, enricher: Arc<dyn crate::enrich::PromptEnricher>) -> Self {
+        self.enrichers.push(enricher);
         self
     }
 
@@ -494,6 +514,16 @@ impl AgentLoop {
         let model = prompt.model.clone();
         let max_tokens = prompt.max_tokens;
         let temperature = prompt.temperature;
+
+        // PromptEnricher fan-out. Runs once per loop. The combined
+        // output lands as the very first system message so the
+        // WindowedCompactor (which preserves the leading system
+        // message verbatim) never collapses it.
+        if !self.enrichers.is_empty() {
+            if let Some(enrichment) = crate::enrich::collect_enrichments(&self.enrichers).await {
+                messages.insert(0, enrichment);
+            }
+        }
 
         let mut assistants: Vec<Completion> = Vec::new();
         let mut iterations: u32 = 0;
@@ -1515,6 +1545,179 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, LoopEvent::ToolDenied { .. })));
+    }
+
+    // ── OpenHarness-inspired PromptEnricher integration tests ─────────────
+
+    /// A [`PromptEnricher`] prepends one leading system message
+    /// before the first provider call. The provider sees the
+    /// enrichment in its prompt input.
+    #[tokio::test]
+    async fn enricher_prepends_leading_system_message() {
+        use crate::enrich::PromptEnricher;
+        use async_trait::async_trait;
+        use std::sync::Mutex;
+
+        struct Capture {
+            seen: Mutex<Vec<Prompt>>,
+        }
+        #[async_trait::async_trait]
+        impl ProviderHandle for Capture {
+            fn name(&self) -> &str {
+                "capture"
+            }
+            async fn complete(&self, p: &Prompt) -> Result<Completion, ProviderError> {
+                self.seen.lock().unwrap().push(p.clone());
+                Ok(Completion::new("ok", "capture", "stop", TokenCount::new(1, 1)))
+            }
+        }
+        let capture = Arc::new(Capture {
+            seen: Mutex::new(Vec::new()),
+        });
+
+        struct CtxEnricher;
+        #[async_trait]
+        impl PromptEnricher for CtxEnricher {
+            fn name(&self) -> &str {
+                "ctx-test"
+            }
+            async fn enrich(&self) -> Option<String> {
+                Some("USE PROJECT NORMS".into())
+            }
+        }
+
+        let loop_ = AgentLoop::new(loop_policy(capture.clone() as Arc<dyn ProviderHandle>))
+            .with_enricher(Arc::new(CtxEnricher));
+        let sink = MemorySink::new();
+        loop_
+            .run(
+                Prompt::new("capture", vec![Message::new("user", "hi")]),
+                TaintLabel::User,
+                None,
+                &sink,
+            )
+            .await
+            .expect("ok");
+
+        let seen = capture.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        let first_msg = &seen[0].messages[0];
+        assert_eq!(first_msg.role, "system");
+        assert!(first_msg.content.contains("USE PROJECT NORMS"));
+        assert!(first_msg.content.contains("<!-- prompt-enricher: ctx-test -->"));
+    }
+
+    /// Two enrichers concatenate in registration order with a
+    /// divider, still as one leading system block.
+    #[tokio::test]
+    async fn multiple_enrichers_compose() {
+        use crate::enrich::PromptEnricher;
+        use std::sync::Mutex;
+
+        struct Capture {
+            seen: Mutex<Vec<Prompt>>,
+        }
+        #[async_trait::async_trait]
+        impl ProviderHandle for Capture {
+            fn name(&self) -> &str {
+                "capture"
+            }
+            async fn complete(&self, p: &Prompt) -> Result<Completion, ProviderError> {
+                self.seen.lock().unwrap().push(p.clone());
+                Ok(Completion::new("ok", "capture", "stop", TokenCount::new(1, 1)))
+            }
+        }
+        let capture = Arc::new(Capture {
+            seen: Mutex::new(Vec::new()),
+        });
+
+        struct E(&'static str, &'static str);
+        #[async_trait]
+        impl PromptEnricher for E {
+            fn name(&self) -> &str {
+                self.0
+            }
+            async fn enrich(&self) -> Option<String> {
+                Some(self.1.into())
+            }
+        }
+
+        let loop_ = AgentLoop::new(loop_policy(capture.clone() as Arc<dyn ProviderHandle>))
+            .with_enricher(Arc::new(E("first", "AAA")))
+            .with_enricher(Arc::new(E("second", "BBB")));
+        let sink = MemorySink::new();
+        loop_
+            .run(
+                Prompt::new("capture", vec![Message::new("user", "hi")]),
+                TaintLabel::User,
+                None,
+                &sink,
+            )
+            .await
+            .expect("ok");
+
+        let seen = capture.seen.lock().unwrap();
+        let body = &seen[0].messages[0].content;
+        let pos_aaa = body.find("AAA").unwrap();
+        let pos_bbb = body.find("BBB").unwrap();
+        assert!(pos_aaa < pos_bbb);
+        assert!(body.contains("<!-- prompt-enricher: first -->"));
+        assert!(body.contains("<!-- prompt-enricher: second -->"));
+    }
+
+    /// An enricher that returns `None` is silently skipped — the
+    /// loop runs as if no enrichers were attached.
+    #[tokio::test]
+    async fn opt_out_enricher_does_not_insert_anything() {
+        use crate::enrich::PromptEnricher;
+        use std::sync::Mutex;
+
+        struct Capture {
+            seen: Mutex<Vec<Prompt>>,
+        }
+        #[async_trait::async_trait]
+        impl ProviderHandle for Capture {
+            fn name(&self) -> &str {
+                "capture"
+            }
+            async fn complete(&self, p: &Prompt) -> Result<Completion, ProviderError> {
+                self.seen.lock().unwrap().push(p.clone());
+                Ok(Completion::new("ok", "capture", "stop", TokenCount::new(1, 1)))
+            }
+        }
+        let capture = Arc::new(Capture {
+            seen: Mutex::new(Vec::new()),
+        });
+
+        struct Silent;
+        #[async_trait]
+        impl PromptEnricher for Silent {
+            fn name(&self) -> &str {
+                "silent"
+            }
+            async fn enrich(&self) -> Option<String> {
+                None
+            }
+        }
+
+        let loop_ = AgentLoop::new(loop_policy(capture.clone() as Arc<dyn ProviderHandle>))
+            .with_enricher(Arc::new(Silent));
+        let sink = MemorySink::new();
+        loop_
+            .run(
+                Prompt::new("capture", vec![Message::new("user", "hi")]),
+                TaintLabel::User,
+                None,
+                &sink,
+            )
+            .await
+            .expect("ok");
+
+        let seen = capture.seen.lock().unwrap();
+        // The original prompt had exactly one user message; no
+        // enrichment was injected.
+        assert_eq!(seen[0].messages.len(), 1);
+        assert_eq!(seen[0].messages[0].role, "user");
     }
 
     /// Auto-Compaction fires between iterations when the running
