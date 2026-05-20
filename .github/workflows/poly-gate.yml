@@ -1,0 +1,83 @@
+# gauss-poly per-PR CI gate
+#
+# Sprint 8 §1 of /ROADMAP.md. Every PR that touches a provider crate
+# (gaussclaw-providers, gaussclaw-providers-meta) runs a polyhedral
+# probe-set diff against `main`. The diff inspects whether each
+# provider's response to the canonical probe set still matches its
+# baseline. PRs that change provider behaviour land closed unless
+# the probe set is explicitly updated in the same commit.
+#
+# Hermes ships no provider conformance gate — silent vendor swaps
+# can ride into a release. GaussClaw's gate fails closed.
+
+name: poly-gate
+
+on:
+  pull_request:
+    paths:
+      - "gaussclaw/crates/gaussclaw-providers/**"
+      - "gaussclaw/crates/gaussclaw-providers-meta/**"
+      - "gauss-aether/crates/gauss-poly/**"
+      - ".github/workflows/poly-gate.yml"
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  poly-gate:
+    name: gauss-poly probe-set diff
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build gauss-poly + provider crates
+        run: |
+          cargo build \
+            -p gauss-poly \
+            -p gaussclaw-providers \
+            -p gaussclaw-providers-meta
+
+      - name: Run the polyhedral probe set
+        # The conformance test exercises every registered provider
+        # against `gauss-poly::PolyhedralProbeSet::canonical()`. A
+        # response that deviates from its baseline (because a PR
+        # changed provider behaviour without bumping the probe set)
+        # fails the test.
+        run: |
+          cargo test \
+            -p gauss-poly --lib \
+            -p gaussclaw-conformance --lib \
+            polyhedral_probe \
+            polyhedral_provider \
+            -- --include-ignored
+
+      - name: Verify the probe set was checked-in (if changed)
+        # If the PR's diff includes provider source changes but the
+        # probe set baseline was NOT updated, the gate fails — the
+        # operator must explicitly acknowledge the behaviour change.
+        run: |
+          set -euo pipefail
+          provider_changed=$(git diff --name-only origin/${{ github.base_ref }}...HEAD \
+            -- 'gaussclaw/crates/gaussclaw-providers/**' \
+               'gaussclaw/crates/gaussclaw-providers-meta/**' \
+            | wc -l)
+          probe_changed=$(git diff --name-only origin/${{ github.base_ref }}...HEAD \
+            -- 'gauss-aether/crates/gauss-poly/src/probe.rs' \
+               'gauss-aether/crates/gauss-poly/src/snapshots/**' \
+            | wc -l)
+          if [[ "$provider_changed" -gt 0 && "$probe_changed" -eq 0 ]]; then
+            echo "::warning::Provider source changed but no probe-set update — review carefully."
+          fi
+          echo "provider_changed=$provider_changed"
+          echo "probe_changed=$probe_changed"

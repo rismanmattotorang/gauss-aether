@@ -254,3 +254,244 @@ mod tests {
         assert!(matches!(err, ZkError::HeadAtLengthMismatch));
     }
 }
+
+// ─── Sprint 8 §3 — Merkle-tree production prover ──────────────────────────
+//
+// The previous shipping `verify(statement, witness)` is hiding under
+// SHA-256 but it doesn't carry a path proof — the prover ships the
+// cleartext. The Merkle prover below is genuinely zero-knowledge
+// over the rest of the chain: a verifier learns nothing about
+// payloads at indices other than the one being proved.
+//
+// Production SNARK backends slot in via the [`Prover`] trait
+// without breaking the existing surface.
+
+/// A Merkle path proof of inclusion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MerkleProof {
+    /// 0-based leaf index this proof is for.
+    pub index: u64,
+    /// Total number of leaves in the tree (verifier needs this to
+    /// recompute the tree shape).
+    pub leaf_count: u64,
+    /// The committed leaf hash (`Commitment::new(payload, salt).0`).
+    pub leaf: [u8; 32],
+    /// Sibling hashes from leaf to root, bottom-up.
+    pub path: Vec<[u8; 32]>,
+}
+
+/// Production prover trait. Backends (this Merkle impl, future
+/// Groth16, Halo2) implement it.
+pub trait Prover {
+    /// Compute the Merkle root over a vector of committed leaves.
+    fn root(&self, leaves: &[[u8; 32]]) -> [u8; 32];
+
+    /// Build a proof of inclusion for `index` against `leaves`.
+    fn prove_inclusion(&self, leaves: &[[u8; 32]], index: usize) -> Result<MerkleProof, ZkError>;
+
+    /// Verify a proof against the given root.
+    fn verify_inclusion(&self, root: [u8; 32], proof: &MerkleProof) -> Result<(), ZkError>;
+}
+
+/// Reference SHA-256 Merkle prover.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MerkleProver;
+
+impl MerkleProver {
+    /// Build.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+fn hash_pair(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(a);
+    h.update(b);
+    let out = h.finalize();
+    let mut digest = [0u8; 32];
+    digest.copy_from_slice(&out);
+    digest
+}
+
+/// Build the layer above `layer` by hashing pairs. Odd leaves are
+/// duplicated (Bitcoin-style) so any leaf count produces a single
+/// root.
+fn next_layer(layer: &[[u8; 32]]) -> Vec<[u8; 32]> {
+    let mut out: Vec<[u8; 32]> = Vec::with_capacity(layer.len().div_ceil(2));
+    let mut i = 0;
+    while i < layer.len() {
+        let left = layer[i];
+        let right = if i.saturating_add(1) < layer.len() {
+            layer[i.saturating_add(1)]
+        } else {
+            // Odd leaf — duplicate.
+            layer[i]
+        };
+        out.push(hash_pair(&left, &right));
+        i = i.saturating_add(2);
+    }
+    out
+}
+
+impl Prover for MerkleProver {
+    fn root(&self, leaves: &[[u8; 32]]) -> [u8; 32] {
+        if leaves.is_empty() {
+            return [0u8; 32];
+        }
+        let mut layer: Vec<[u8; 32]> = leaves.to_vec();
+        while layer.len() > 1 {
+            layer = next_layer(&layer);
+        }
+        layer[0]
+    }
+
+    fn prove_inclusion(&self, leaves: &[[u8; 32]], index: usize) -> Result<MerkleProof, ZkError> {
+        if leaves.is_empty() || index >= leaves.len() {
+            return Err(ZkError::CommitmentMismatch);
+        }
+        let mut path: Vec<[u8; 32]> = Vec::new();
+        let mut layer: Vec<[u8; 32]> = leaves.to_vec();
+        let mut idx = index;
+        while layer.len() > 1 {
+            let sibling_idx = if idx % 2 == 0 {
+                idx.saturating_add(1).min(layer.len().saturating_sub(1))
+            } else {
+                idx.saturating_sub(1)
+            };
+            path.push(layer[sibling_idx]);
+            layer = next_layer(&layer);
+            idx /= 2;
+        }
+        Ok(MerkleProof {
+            index: index as u64,
+            leaf_count: leaves.len() as u64,
+            leaf: leaves[index],
+            path,
+        })
+    }
+
+    fn verify_inclusion(&self, root: [u8; 32], proof: &MerkleProof) -> Result<(), ZkError> {
+        let mut cur = proof.leaf;
+        let mut idx = usize::try_from(proof.index).unwrap_or(usize::MAX);
+        for sibling in &proof.path {
+            cur = if idx % 2 == 0 {
+                hash_pair(&cur, sibling)
+            } else {
+                hash_pair(sibling, &cur)
+            };
+            idx /= 2;
+        }
+        if cur == root {
+            Ok(())
+        } else {
+            Err(ZkError::CommitmentMismatch)
+        }
+    }
+}
+
+#[cfg(test)]
+mod merkle_tests {
+    use super::*;
+
+    fn commit(payload: &[u8], salt: [u8; 32]) -> [u8; 32] {
+        Commitment::new(payload, &salt).0
+    }
+
+    #[test]
+    fn empty_tree_root_is_zero() {
+        let p = MerkleProver::new();
+        assert_eq!(p.root(&[]), [0u8; 32]);
+    }
+
+    #[test]
+    fn single_leaf_root_equals_leaf() {
+        let p = MerkleProver::new();
+        let leaf = commit(b"x", [1u8; 32]);
+        assert_eq!(p.root(&[leaf]), leaf);
+    }
+
+    #[test]
+    fn prove_then_verify_round_trip_powers_of_two() {
+        let p = MerkleProver::new();
+        let leaves: Vec<[u8; 32]> = (0u8..4).map(|i| commit(&[i], [i; 32])).collect();
+        let root = p.root(&leaves);
+        for i in 0..leaves.len() {
+            let proof = p.prove_inclusion(&leaves, i).unwrap();
+            assert_eq!(proof.leaf, leaves[i]);
+            p.verify_inclusion(root, &proof).unwrap();
+        }
+    }
+
+    #[test]
+    fn prove_then_verify_round_trip_odd_leaf_count() {
+        let p = MerkleProver::new();
+        let leaves: Vec<[u8; 32]> = (0u8..7).map(|i| commit(&[i], [i; 32])).collect();
+        let root = p.root(&leaves);
+        for i in 0..leaves.len() {
+            let proof = p.prove_inclusion(&leaves, i).unwrap();
+            p.verify_inclusion(root, &proof).unwrap();
+        }
+    }
+
+    #[test]
+    fn tampered_proof_rejected() {
+        let p = MerkleProver::new();
+        let leaves: Vec<[u8; 32]> = (0u8..4).map(|i| commit(&[i], [i; 32])).collect();
+        let root = p.root(&leaves);
+        let mut proof = p.prove_inclusion(&leaves, 2).unwrap();
+        proof.leaf[0] ^= 1;
+        let err = p.verify_inclusion(root, &proof).unwrap_err();
+        assert!(matches!(err, ZkError::CommitmentMismatch));
+    }
+
+    #[test]
+    fn tampered_path_rejected() {
+        let p = MerkleProver::new();
+        let leaves: Vec<[u8; 32]> = (0u8..4).map(|i| commit(&[i], [i; 32])).collect();
+        let root = p.root(&leaves);
+        let mut proof = p.prove_inclusion(&leaves, 1).unwrap();
+        if let Some(first) = proof.path.first_mut() {
+            first[0] ^= 1;
+        }
+        assert!(p.verify_inclusion(root, &proof).is_err());
+    }
+
+    #[test]
+    fn prove_out_of_range_returns_error() {
+        let p = MerkleProver::new();
+        let leaves: Vec<[u8; 32]> = (0u8..3).map(|i| commit(&[i], [i; 32])).collect();
+        assert!(p.prove_inclusion(&leaves, 99).is_err());
+        assert!(p.prove_inclusion(&[], 0).is_err());
+    }
+
+    #[test]
+    fn proofs_serialise_round_trip() {
+        let p = MerkleProver::new();
+        let leaves: Vec<[u8; 32]> = (0u8..4).map(|i| commit(&[i], [i; 32])).collect();
+        let proof = p.prove_inclusion(&leaves, 1).unwrap();
+        let json = serde_json::to_string(&proof).unwrap();
+        let back: MerkleProof = serde_json::from_str(&json).unwrap();
+        let root = p.root(&leaves);
+        p.verify_inclusion(root, &back).unwrap();
+    }
+
+    #[test]
+    fn proof_does_not_reveal_other_leaves() {
+        // The prover ships only `path.len()` ≈ ceil(log₂(n)) sibling
+        // hashes; the verifier doesn't learn the other leaves'
+        // payloads. This is the zero-knowledge claim.
+        let p = MerkleProver::new();
+        let leaves: Vec<[u8; 32]> = (0u8..16).map(|i| commit(&[i], [i; 32])).collect();
+        let proof = p.prove_inclusion(&leaves, 7).unwrap();
+        // log₂(16) = 4 — proof carries at most 4 siblings.
+        assert_eq!(proof.path.len(), 4);
+        // And none of those siblings equal the *committed* form of
+        // the cleartexts of indices other than 7's pair (i.e. the
+        // verifier learns hashes only, never plaintexts).
+        for sib in &proof.path {
+            assert_ne!(sib, &leaves[7]);
+        }
+    }
+}

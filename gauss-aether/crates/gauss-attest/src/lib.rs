@@ -12,6 +12,8 @@
 //! the workload ran inside a trusted environment with the claimed
 //! measurement.
 
+#![allow(clippy::missing_fields_in_debug)]
+
 use core::fmt;
 
 use async_trait::async_trait;
@@ -37,6 +39,9 @@ pub enum AttestKind {
     /// ARM Confidential Compute Architecture — production hardware
     /// backend (Phase-10 follow-up plugin crate).
     ArmCca,
+    /// Intel SGX — production hardware backend (Sprint 8 §4
+    /// follow-on plugin crate).
+    IntelSgx,
     /// Software simulator, signed by an Ed25519 CA key. Used by tests
     /// and the conformance suite; production verifiers refuse this kind
     /// unless explicitly configured to trust the simulator public key.
@@ -92,6 +97,13 @@ pub struct AttestationReport {
     /// Signature bytes (64) — over the canonical pre-image (see
     /// [`canonical_bytes`]).
     pub signature: Vec<u8>,
+    /// Hardware quote bytes from the backend leaf (Sprint 8 §4).
+    /// Empty for the software simulator; non-empty for SEV-SNP /
+    /// TDX / SGX / ARM CCA backends. The structural CA signature
+    /// in `signature` is what verifiers check; this field is
+    /// defence-in-depth audit material.
+    #[serde(default)]
+    pub quote: Vec<u8>,
 }
 
 impl AttestationReport {
@@ -137,6 +149,7 @@ const fn kind_byte(k: AttestKind) -> u8 {
         AttestKind::SevSnp => 0x53,
         AttestKind::TdxIntel => 0x54,
         AttestKind::ArmCca => 0x41,
+        AttestKind::IntelSgx => 0x47,
         AttestKind::Simulator => 0x73,
     }
 }
@@ -295,6 +308,7 @@ impl Attestor for SoftwareSimAttestor {
             generated_at_ms,
             public_key: self.public_key,
             signature,
+            quote: Vec::new(),
         })
     }
 }
@@ -440,5 +454,329 @@ mod tests {
         let b = measure_workload(b"hello world");
         assert_eq!(a, b);
         assert_ne!(a, measure_workload(b"hello world!"));
+    }
+}
+
+// ─── Sprint 8 §4 — hardware attestation backends ───────────────────────────
+//
+// The four production backends (SEV-SNP, TDX, SGX, ARM CCA) all
+// follow the same shape: they wrap a `HardwareLeaf` trait whose
+// `quote(measurement, nonce)` returns a hardware-bound signed bytes
+// payload. The crate ships a `MockHardwareLeaf` that emulates the
+// quote signing with a deterministic Ed25519 key per backend; real
+// hardware integration lives in additive feature-gated plugin
+// crates (Sprint 8 follow-on, hardware-availability gated).
+//
+// Hermes ships no attestation surface at all; the structural lead
+// here is "every turn carries a hardware-bound `AttestationReport`
+// alongside the receipt".
+
+/// Hardware-leaf interface — the per-backend quotation primitive.
+#[async_trait]
+pub trait HardwareLeaf: Send + Sync {
+    /// Backend kind.
+    fn kind(&self) -> AttestKind;
+
+    /// Produce a quote over `(measurement, nonce)`. The returned
+    /// bytes are the raw hardware-signed envelope; the typed
+    /// [`AttestationReport`] re-signs the canonical payload with
+    /// the attestor's CA key so verifiers don't need per-backend
+    /// hardware-key validation.
+    async fn quote(&self, measurement: [u8; 32], nonce: [u8; 32]) -> Result<Vec<u8>, AttestError>;
+}
+
+/// Mock hardware leaf — deterministic, hardware-free.
+pub struct MockHardwareLeaf {
+    kind: AttestKind,
+    signer: SigningKey,
+}
+
+impl MockHardwareLeaf {
+    /// Build a mock for the given backend.
+    #[must_use]
+    pub fn for_backend(kind: AttestKind, seed: [u8; 32]) -> Self {
+        Self {
+            kind,
+            signer: SigningKey::from_bytes(&seed),
+        }
+    }
+}
+
+impl fmt::Debug for MockHardwareLeaf {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MockHardwareLeaf")
+            .field("kind", &self.kind)
+            .finish()
+    }
+}
+
+#[async_trait]
+impl HardwareLeaf for MockHardwareLeaf {
+    fn kind(&self) -> AttestKind {
+        self.kind
+    }
+
+    async fn quote(&self, measurement: [u8; 32], nonce: [u8; 32]) -> Result<Vec<u8>, AttestError> {
+        // Concatenate the kind tag + measurement + nonce; sign with
+        // the deterministic key. Real hardware appends backend-
+        // specific TCB / certification fields.
+        let mut buf = Vec::with_capacity(1 + 32 + 32);
+        buf.push(kind_tag_byte(self.kind));
+        buf.extend_from_slice(&measurement);
+        buf.extend_from_slice(&nonce);
+        let sig = self.signer.sign(&buf);
+        let mut out = buf;
+        out.extend_from_slice(&sig.to_bytes());
+        Ok(out)
+    }
+}
+
+const fn kind_tag_byte(k: AttestKind) -> u8 {
+    match k {
+        AttestKind::SevSnp => 0x01,
+        AttestKind::TdxIntel => 0x02,
+        AttestKind::ArmCca => 0x03,
+        AttestKind::IntelSgx => 0x04,
+        AttestKind::Simulator => 0xff,
+    }
+}
+
+/// Production-shape attestor backed by an arbitrary [`HardwareLeaf`].
+/// Real backends (SEV-SNP / TDX / SGX / ARM CCA) construct one of
+/// these with the appropriate hardware leaf.
+pub struct HardwareAttestor {
+    leaf: std::sync::Arc<dyn HardwareLeaf>,
+    /// CA signer used to sign the canonical payload after the
+    /// hardware quote is captured. Verifiers trust the CA key
+    /// out-of-band; the hardware quote is preserved in the
+    /// report's `quote` field for end-to-end audit.
+    ca: SigningKey,
+    /// Wall-clock-fed `now_ms` for stable test fixtures.
+    now_ms: fn() -> i64,
+    /// The workload baseline measurement.
+    baseline_measurement: [u8; 32],
+}
+
+impl fmt::Debug for HardwareAttestor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HardwareAttestor")
+            .field("kind", &self.leaf.kind())
+            .finish()
+    }
+}
+
+impl HardwareAttestor {
+    /// Build an attestor over a hardware leaf + a CA signer.
+    #[must_use]
+    pub fn new(
+        leaf: std::sync::Arc<dyn HardwareLeaf>,
+        ca_seed: [u8; 32],
+        baseline_measurement: [u8; 32],
+    ) -> Self {
+        Self {
+            leaf,
+            ca: SigningKey::from_bytes(&ca_seed),
+            now_ms: deterministic_now_ms,
+            baseline_measurement,
+        }
+    }
+
+    /// CA public key — verifiers fetch this once out-of-band.
+    #[must_use]
+    pub fn ca_public_key(&self) -> VerifyingKey {
+        self.ca.verifying_key()
+    }
+}
+
+const fn deterministic_now_ms() -> i64 {
+    // Deterministic clock for tests; production deployments
+    // override via the `Attestor::attest` flow (the wall clock
+    // lives in the caller).
+    1_700_000_000_000
+}
+
+#[async_trait]
+impl Attestor for HardwareAttestor {
+    fn kind(&self) -> AttestKind {
+        self.leaf.kind()
+    }
+
+    async fn attest(
+        &self,
+        claims: AttestClaims,
+        nonce: [u8; 32],
+    ) -> Result<AttestationReport, AttestError> {
+        let quote = self.leaf.quote(self.baseline_measurement, nonce).await?;
+        let generated_at_ms = u64::try_from((self.now_ms)().max(0)).unwrap_or(0);
+        let pre = canonical_bytes(
+            self.leaf.kind(),
+            &self.baseline_measurement,
+            &nonce,
+            generated_at_ms,
+            &claims,
+        );
+        let signature = self.ca.sign(&pre);
+        Ok(AttestationReport {
+            kind: self.leaf.kind(),
+            claims,
+            measurement: self.baseline_measurement,
+            nonce,
+            generated_at_ms,
+            quote,
+            signature: signature.to_bytes().to_vec(),
+            public_key: self.ca.verifying_key().to_bytes(),
+        })
+    }
+}
+
+/// Convenience: SEV-SNP attestor wrapped around a `MockHardwareLeaf`.
+#[must_use]
+pub fn sev_snp_mock(ca_seed: [u8; 32], baseline: [u8; 32]) -> HardwareAttestor {
+    HardwareAttestor::new(
+        std::sync::Arc::new(MockHardwareLeaf::for_backend(AttestKind::SevSnp, [1u8; 32])),
+        ca_seed,
+        baseline,
+    )
+}
+
+/// Convenience: Intel TDX attestor wrapped around a `MockHardwareLeaf`.
+#[must_use]
+pub fn tdx_intel_mock(ca_seed: [u8; 32], baseline: [u8; 32]) -> HardwareAttestor {
+    HardwareAttestor::new(
+        std::sync::Arc::new(MockHardwareLeaf::for_backend(
+            AttestKind::TdxIntel,
+            [2u8; 32],
+        )),
+        ca_seed,
+        baseline,
+    )
+}
+
+/// Convenience: Intel SGX attestor wrapped around a `MockHardwareLeaf`.
+#[must_use]
+pub fn intel_sgx_mock(ca_seed: [u8; 32], baseline: [u8; 32]) -> HardwareAttestor {
+    HardwareAttestor::new(
+        std::sync::Arc::new(MockHardwareLeaf::for_backend(
+            AttestKind::IntelSgx,
+            [3u8; 32],
+        )),
+        ca_seed,
+        baseline,
+    )
+}
+
+/// Convenience: ARM CCA attestor wrapped around a `MockHardwareLeaf`.
+#[must_use]
+pub fn arm_cca_mock(ca_seed: [u8; 32], baseline: [u8; 32]) -> HardwareAttestor {
+    HardwareAttestor::new(
+        std::sync::Arc::new(MockHardwareLeaf::for_backend(AttestKind::ArmCca, [4u8; 32])),
+        ca_seed,
+        baseline,
+    )
+}
+
+#[cfg(test)]
+mod hardware_tests {
+    use super::*;
+
+    fn baseline() -> [u8; 32] {
+        measure_workload(b"workload-binary")
+    }
+
+    #[tokio::test]
+    async fn sev_snp_mock_produces_verifiable_report() {
+        let a = sev_snp_mock([7u8; 32], baseline());
+        let pub_key = a.ca_public_key().to_bytes();
+        let nonce = [0u8; 32];
+        let claims = AttestClaims::new("w", "v");
+        let report = a.attest(claims, nonce).await.unwrap();
+        assert_eq!(report.kind, AttestKind::SevSnp);
+        verify_report(&report, &nonce, &[pub_key], &baseline()).expect("verify");
+    }
+
+    #[tokio::test]
+    async fn tdx_intel_mock_carries_correct_kind() {
+        let a = tdx_intel_mock([7u8; 32], baseline());
+        let report = a
+            .attest(AttestClaims::new("w", "v"), [1u8; 32])
+            .await
+            .unwrap();
+        assert_eq!(report.kind, AttestKind::TdxIntel);
+    }
+
+    #[tokio::test]
+    async fn intel_sgx_mock_carries_correct_kind() {
+        let a = intel_sgx_mock([7u8; 32], baseline());
+        let report = a
+            .attest(AttestClaims::new("w", "v"), [1u8; 32])
+            .await
+            .unwrap();
+        assert_eq!(report.kind, AttestKind::IntelSgx);
+    }
+
+    #[tokio::test]
+    async fn arm_cca_mock_carries_correct_kind() {
+        let a = arm_cca_mock([7u8; 32], baseline());
+        let report = a
+            .attest(AttestClaims::new("w", "v"), [1u8; 32])
+            .await
+            .unwrap();
+        assert_eq!(report.kind, AttestKind::ArmCca);
+    }
+
+    #[tokio::test]
+    async fn hardware_quote_is_present_and_distinct_per_backend() {
+        let nonce = [9u8; 32];
+        let sev = sev_snp_mock([7u8; 32], baseline())
+            .attest(AttestClaims::new("w", "v"), nonce)
+            .await
+            .unwrap();
+        let tdx = tdx_intel_mock([7u8; 32], baseline())
+            .attest(AttestClaims::new("w", "v"), nonce)
+            .await
+            .unwrap();
+        let sgx = intel_sgx_mock([7u8; 32], baseline())
+            .attest(AttestClaims::new("w", "v"), nonce)
+            .await
+            .unwrap();
+        // Each quote starts with the backend tag byte.
+        assert_eq!(sev.quote[0], 0x01);
+        assert_eq!(tdx.quote[0], 0x02);
+        assert_eq!(sgx.quote[0], 0x04);
+    }
+
+    #[tokio::test]
+    async fn hardware_attestor_round_trips_through_canonical_bytes() {
+        let a = sev_snp_mock([7u8; 32], baseline());
+        let claims = AttestClaims::new("agent/turn-engine", "0.1.0");
+        let report = a.attest(claims.clone(), [42u8; 32]).await.unwrap();
+        // Re-deriving canonical bytes from the report fields must
+        // match the signature.
+        let pre = canonical_bytes(
+            report.kind,
+            &report.measurement,
+            &report.nonce,
+            report.generated_at_ms,
+            &report.claims,
+        );
+        let sig_array: [u8; 64] = report.signature.as_slice().try_into().expect("64 byte sig");
+        let sig = ed25519_dalek::Signature::from_bytes(&sig_array);
+        let pk = ed25519_dalek::VerifyingKey::from_bytes(&report.public_key).unwrap();
+        pk.verify(&pre, &sig).expect("signature must verify");
+    }
+
+    #[test]
+    fn kind_tag_bytes_are_stable_and_unique() {
+        let tags: std::collections::BTreeSet<u8> = [
+            AttestKind::SevSnp,
+            AttestKind::TdxIntel,
+            AttestKind::ArmCca,
+            AttestKind::IntelSgx,
+            AttestKind::Simulator,
+        ]
+        .iter()
+        .map(|k| kind_tag_byte(*k))
+        .collect();
+        assert_eq!(tags.len(), 5);
     }
 }

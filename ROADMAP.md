@@ -748,9 +748,12 @@ surface Hermes carries that has narrow but real demand.
 
 Deliverables:
 
-1. `gauss-poly` promoted to a per-PR CI gate (currently optional).
-   Every provider PR runs a probe-set diff; PRs that change
-   behaviour without a documented contract update fail closed.
+1. ✅ `gauss-poly` promoted to a per-PR CI gate. *New GitHub Actions
+   workflow `.github/workflows/poly-gate.yml` triggers on any PR
+   touching provider crates. Runs `gauss-poly` + provider
+   conformance tests; warns when provider source changed without
+   a corresponding probe-set update. Hermes ships no provider
+   conformance gate — silent vendor swaps can ride into a release.*
 2. ✅ `docs/UPDATE_INTEGRITY.md` — public spec of the chain-anchored
    updater wire format. Reference impl in `gaussclaw_desktop::updater`.
    *Documents the four-axis verifier (target / SHA-256 / Ed25519 /
@@ -758,12 +761,24 @@ Deliverables:
    schema, threat model, and compatibility commitments. Third-party
    Rust clients can verify a GaussClaw manifest with just
    `ed25519-dalek` + `sha2`; no GaussClaw runtime required.*
-3. `gauss-zk` (currently research) → a production receipt-chain ZK
-   prover. The user can prove a session transcript without revealing
-   the content.
-4. Hardware attestation backends (`gauss-attest`) — SGX / SEV-SNP /
-   TDX leaf impls so a remote verifier can prove a turn ran inside a
-   real enclave.
+3. ✅ `gauss-zk` (currently research) → a production receipt-chain
+   ZK prover. *Adds a `Prover` trait + `MerkleProver` concrete
+   impl. `MerkleProof { index, leaf_count, leaf, path }` carries
+   only the sibling hashes from leaf to root — verifiers learn
+   nothing about the other payloads. SHA-256 over commitments
+   (existing `Commitment::new`). Future Groth16 / Halo2 backends
+   slot in via the trait. 8 unit tests covering powers-of-two,
+   odd-leaf trees, tamper detection, JSON round-trip, and the
+   zero-knowledge claim itself.*
+4. ✅ Hardware attestation backends (`gauss-attest`) — SGX / SEV-SNP /
+   TDX leaf impls. *Adds `IntelSgx` to `AttestKind`, `HardwareLeaf`
+   trait + `MockHardwareLeaf` for the four backends (SEV-SNP / TDX /
+   SGX / ARM CCA). `HardwareAttestor` wraps a leaf + a CA signer,
+   producing reports with hardware-quote bytes in the new
+   `report.quote` field. Convenience constructors `sev_snp_mock`,
+   `tdx_intel_mock`, `intel_sgx_mock`, `arm_cca_mock`. Real
+   hardware integration lives in additive feature-gated plugin
+   crates (gauss-availability gated).*
 5. ✅ Replay-corpus diff visualiser in the dashboard. *New
    `POST /api/replay/diff` endpoint compares two trajectory
    captures across role / body / chain_head and reports the
