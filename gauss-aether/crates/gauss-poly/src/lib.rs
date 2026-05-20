@@ -22,8 +22,10 @@
 //! field orderings will diverge, and that's intentional — the canonical
 //! serde form is the contract.
 
+pub mod canonical;
 pub mod probe;
 pub mod provider;
 
+pub use canonical::{canonical, SNAPSHOT_BYTES};
 pub use probe::{PolyhedralProbeSet, Probe};
 pub use provider::{verify_provider_equivalence, ProviderEquivalenceReport, SwapEquivalenceError};

@@ -858,8 +858,12 @@ Deliverables:
    string literals); zero-dep fallback when no PDF lib is
    configured. Lands as
    `gaussclaw-tools::sprint9_tools::PdfExtractTool`.
-8. **`gauss-poly` probe-set baseline** (Sprint 8 §1 follow-on).
-   Real committed snapshots that the CI gate compares against.
+8. **`gauss-poly` probe-set baseline** (Sprint 8 §1 follow-on). ✅
+   Canonical probe set (6 probes covering every
+   `ObservationSource` variant) committed at
+   `src/snapshots/canonical.json`. The `canonical()` builder is
+   tied to the file via a byte-equality test — drift between the
+   Rust builder and the snapshot fails the gate closed.
 9. **Trinity-backed cron JobStore** (Sprint 5 §1 follow-on). ✅
    Persist cron jobs across restarts. First slice lands as
    `gauss-cron::FileBackedJobStore` — append-only JSONL log with
