@@ -13,6 +13,7 @@ workspace = true
 
 [dependencies]
 gauss-core       = { workspace = true }
+gauss-hooks      = { workspace = true }
 gaussclaw-skill  = { workspace = true }
 async-trait      = { workspace = true }
 serde            = { workspace = true }

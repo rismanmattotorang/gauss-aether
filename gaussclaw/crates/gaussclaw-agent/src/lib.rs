@@ -32,7 +32,7 @@ pub use agent_loop::{
 pub use compaction::{CompactionRecord, Compactor, WindowedCompactor, SUMMARY_PREFIX};
 
 pub use enrich::{collect_enrichments, wrap_enrichment, PromptEnricher};
-pub use enrich_impls::{ContextFileEnricher, MarkdownSkillEnricher};
+pub use enrich_impls::{ContextFileEnricher, MarkdownSkillEnricher, MemoryFileEnricher};
 
 pub use audit::{
     blake3_hex, AuditEntry, AuditTrace, HookDenyRecord, HookWarnRecord, InboundRecord,

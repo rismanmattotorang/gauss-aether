@@ -32,7 +32,7 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use gaussclaw_skill::{
-    join_context, ContextFileFinder, MarkdownSkill,
+    join_context, ContextFileFinder, MarkdownSkill, MemoryFile,
 };
 
 use crate::enrich::PromptEnricher;
@@ -170,6 +170,72 @@ impl PromptEnricher for MarkdownSkillEnricher {
             out.push('\n');
         }
         Some(out)
+    }
+}
+
+// ─── MemoryFileEnricher ───────────────────────────────────────────────────
+
+/// Loads a [`MemoryFile`] (typically `~/.gaussclaw/MEMORY.md`) on each
+/// `enrich()` call and renders the section list as a `## Persistent
+/// memory` block.
+///
+/// The enricher trusts the [`MemoryFile`] discipline — `load_or_default`
+/// returns an empty file when the path is missing, so a deployment
+/// that hasn't yet curated any memory simply opts out. When the file
+/// exists, every section in declaration order is rendered (no
+/// allowlist filtering — the agent owns its own memory and is the
+/// authority on what's worth keeping).
+///
+/// Combined with [`ContextFileEnricher`] and [`MarkdownSkillEnricher`],
+/// the agent gets three layers of ambient context per turn:
+///
+/// 1. Project — `CLAUDE.md` walked from the working directory.
+/// 2. Skills  — `SKILL.md` bodies discovered under the skills root.
+/// 3. Memory  — `MEMORY.md` agent-curated cross-session knowledge.
+pub struct MemoryFileEnricher {
+    /// Path to `MEMORY.md` (or whatever name the operator chose).
+    pub path: PathBuf,
+    /// Enricher label (default `"memory-file"`).
+    pub label: String,
+}
+
+impl MemoryFileEnricher {
+    /// Wrap a `MEMORY.md` path.
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            label: "memory-file".to_owned(),
+        }
+    }
+
+    /// Builder: replace the label (default `"memory-file"`).
+    #[must_use]
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = label.into();
+        self
+    }
+}
+
+#[async_trait]
+impl PromptEnricher for MemoryFileEnricher {
+    fn name(&self) -> &str {
+        &self.label
+    }
+
+    async fn enrich(&self) -> Option<String> {
+        let mem = MemoryFile::load_or_default(&self.path).ok()?;
+        if mem.is_empty() {
+            return None;
+        }
+        // Render the file body inline. We don't double-wrap in
+        // headings — `MemoryFile::render` already emits `## …` blocks
+        // and a preamble, so the model sees the same structure the
+        // operator sees on disk.
+        let body = mem.render();
+        if body.trim().is_empty() {
+            return None;
+        }
+        Some(format!("# Persistent memory\n\n{body}"))
     }
 }
 
@@ -335,5 +401,78 @@ mod tests {
         // The italic-wrapped description block should NOT appear.
         assert!(!body.contains("__"));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── MemoryFileEnricher ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn memory_enricher_returns_none_when_file_missing() {
+        let dir = tmpdir("mem-missing");
+        let path = dir.join("MEMORY.md");
+        let e = MemoryFileEnricher::new(path);
+        assert!(e.enrich().await.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn memory_enricher_renders_sections() {
+        use gaussclaw_skill::MemoryFile;
+        let dir = tmpdir("mem-render");
+        let path = dir.join("MEMORY.md");
+        let mut m = MemoryFile::new();
+        m.upsert_section("User", "Alice prefers concise replies.");
+        m.upsert_section("Project", "Rust workspace; cargo + insta snapshots.");
+        m.save_to(&path).unwrap();
+
+        let body = MemoryFileEnricher::new(path).enrich().await.unwrap();
+        assert!(body.starts_with("# Persistent memory"));
+        assert!(body.contains("## User"));
+        assert!(body.contains("Alice prefers"));
+        assert!(body.contains("## Project"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn memory_enricher_returns_none_for_empty_file() {
+        let dir = tmpdir("mem-empty");
+        let path = dir.join("MEMORY.md");
+        std::fs::File::create(&path).unwrap(); // zero-byte file
+        let e = MemoryFileEnricher::new(path);
+        assert!(e.enrich().await.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn memory_enricher_label_is_customisable() {
+        let dir = tmpdir("mem-label");
+        let path = dir.join("MEMORY.md");
+        let e = MemoryFileEnricher::new(path).with_label("durable");
+        assert_eq!(e.name(), "durable");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn memory_enricher_uses_default_label() {
+        let e = MemoryFileEnricher::new(PathBuf::from("/tmp/nope.md"));
+        assert_eq!(e.name(), "memory-file");
+    }
+
+    /// The agent loop expects deterministic output: identical disk
+    /// state ⇒ identical enrichment bytes (so audit replay stays
+    /// stable).
+    #[tokio::test]
+    async fn memory_enricher_is_deterministic() {
+        use gaussclaw_skill::MemoryFile;
+        let dir = tmpdir("mem-det");
+        let path = dir.join("MEMORY.md");
+        let mut m = MemoryFile::new();
+        m.upsert_section("A", "one");
+        m.upsert_section("B", "two");
+        m.save_to(&path).unwrap();
+        let e = MemoryFileEnricher::new(path);
+        let a = e.enrich().await.unwrap();
+        let b = e.enrich().await.unwrap();
+        assert_eq!(a, b);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
