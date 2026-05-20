@@ -953,10 +953,14 @@ Deliverables:
    regardless of vendor. Vendor selection is operator config.
 
 5. **`ChannelMessageSink` — Sprint 9 §4 trait wired through
-   `gaussclaw-channels`.** No new crate; the wiring lands in
-   `gaussclaw-channels` itself. Resolves `channel: "slack"` (or
-   `"discord"`/`"telegram"`) to the right `ChannelTrait::send` and
-   returns a typed error for unknown channels.
+   `gaussclaw-channels`.** ✅ The adapter lives at
+   `gaussclaw-channels::sink_adapter::ChannelMessageSink`. Wraps
+   an `Arc<ChannelRegistry>`; `dispatch(channel, recipient, body)`
+   forwards to `registry.send(channel, OutboundMessage::new(..))`.
+   Unknown channel ids surface as a typed error string the
+   `SendMessageTool` maps to `GaussError::Internal("send: …")`. An
+   end-to-end test drives the real `SendMessageTool` through the
+   bridge into a recording `ChannelTrait` impl.
 
 6. **Native streaming overrides for Anthropic + OpenAI + Ollama.**
    Three `complete_streaming` overrides in `gaussclaw-providers`.
