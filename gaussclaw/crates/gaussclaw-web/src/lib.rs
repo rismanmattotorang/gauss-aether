@@ -151,6 +151,12 @@ pub struct StatusPayload {
     /// Active executor backend (Sprint 6 §2) — `local` / `docker` /
     /// `ssh` / `modal`.
     pub terminal_backend: String,
+    /// `true` when `/api/chat/ws` dispatches through a real
+    /// [`gaussclaw_agent::AgentLoop`]; `false` if the WebSocket is
+    /// still in stub-echo mode. Used by the dashboard banner and by
+    /// the bin-level smoke test that validates `serve` is properly
+    /// wired.
+    pub agent_attached: bool,
 }
 
 /// `/api/health` payload — shaped to match the seven SDHE invariants
@@ -460,6 +466,7 @@ async fn handle_status(State(state): State<ServerState>) -> Json<Ok<StatusPayloa
         model: state.config.provider.model.clone(),
         active_sessions: 0,
         terminal_backend: state.config.terminal.backend.as_str().into(),
+        agent_attached: state.agent.is_some(),
     }))
 }
 
@@ -1679,6 +1686,47 @@ mod tests {
         assert_eq!(body["data"]["provider"], "anthropic");
         assert_eq!(body["data"]["model"], "claude-3.5-sonnet");
         assert_eq!(body["data"]["active_sessions"], 0);
+        // Sprint 12 §1: the default test_state() ctor doesn't attach
+        // an agent — `gaussclaw serve` does. The flag distinguishes
+        // wired and stub modes.
+        assert_eq!(body["data"]["agent_attached"], false);
+    }
+
+    /// Sprint 12 §1: when ServerState::with_agent is called (as
+    /// `gaussclaw serve` does at startup), /api/status reports
+    /// `agent_attached: true`. This is the smoke test that detects
+    /// "looks complete in code, not actually reachable from the bin"
+    /// regressions.
+    #[tokio::test]
+    async fn status_endpoint_reports_agent_attached_when_wired() {
+        use gaussclaw_agent::{AgentLoop, EchoProvider, KernelHandle, TurnPolicy};
+        use std::sync::Arc;
+
+        let mut cfg = Config::default();
+        cfg.provider.name = "anthropic".into();
+        cfg.provider.model = "claude-3.5-sonnet".into();
+        let provider: Arc<dyn gaussclaw_agent::ProviderHandle> =
+            Arc::new(EchoProvider::default());
+        let policy = TurnPolicy::new(KernelHandle::permissive(), provider);
+        let agent = Arc::new(AgentLoop::new(policy));
+        let state = ServerState::new(cfg, Some("/tmp/gaussclaw.toml".into()))
+            .with_agent(agent);
+
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["data"]["agent_attached"], true);
     }
 
     #[tokio::test]

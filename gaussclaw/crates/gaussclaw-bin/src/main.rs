@@ -84,10 +84,30 @@ fn run_web(
             cron_store,
             gauss_cron::SystemClock,
         ));
+        // Build the AgentLoop that drives /api/chat/ws (Sprint 11).
+        // The EchoProvider is the Phase 1 placeholder until vendor
+        // drivers from `gaussclaw-providers` land at the bin level.
+        // Auto-Compaction is on by default at the production budget.
+        let kernel = gaussclaw_agent::KernelHandle::permissive();
+        let provider: std::sync::Arc<dyn gaussclaw_agent::ProviderHandle> =
+            std::sync::Arc::new(gaussclaw_agent::EchoProvider::default());
+        let audit = gaussclaw_agent::AuditTrace::new();
+        let policy = gaussclaw_agent::TurnPolicy::new(kernel.clone(), provider)
+            .with_audit(audit.clone());
+        let compactor: std::sync::Arc<dyn gaussclaw_agent::Compactor> = std::sync::Arc::new(
+            gaussclaw_agent::WindowedCompactor::defaults(),
+        );
+        let agent = std::sync::Arc::new(
+            gaussclaw_agent::AgentLoop::new(policy)
+                .with_compactor(compactor)
+                .with_audit(audit.clone()),
+        );
+
         let state = gaussclaw_web::ServerState::new(cfg, source)
             .with_store(store)
             .with_cron(cron)
-            .with_plugin_roots(gaussclaw_plugins::default_discovery_roots());
+            .with_plugin_roots(gaussclaw_plugins::default_discovery_roots())
+            .with_agent(agent);
         gaussclaw_web::serve(addr, state).await
     })
 }
