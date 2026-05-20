@@ -980,11 +980,14 @@ Deliverables:
    When idle, `Ctrl+C` keeps its legacy quit semantics so demos
    and no-runtime usages stay unchanged.
 
-8. **Dashboard WS-close → `CancelHandle` hookup.** In
-   `gaussclaw-web`, when the WebSocket closes the connection's
-   `CancelHandle` flips. The live `AgentLoop::run` returns
-   `cancelled` at the next boundary with the partial transcript
-   intact.
+8. **Dashboard WS-close → `CancelHandle` hookup.** ✅
+   `WireLoopSink::with_cancel_handle` accepts a shared
+   `CancelHandle`; `chat_socket` runs the agent loop inside
+   `tokio::select!` so an inbound WebSocket `Close` (or transport
+   error) flips the handle mid-turn. The loop returns `cancelled`
+   at the next iteration boundary with the partial transcript
+   intact; pings/pongs/extra messages during an in-flight turn are
+   dropped to avoid wire-frame interleaving.
 
 9. **`StdioMcpClient` — production MCP transport.** ✅ Spawns a
    configured MCP server as a child process and speaks JSON-RPC

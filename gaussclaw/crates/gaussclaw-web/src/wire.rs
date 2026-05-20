@@ -24,14 +24,16 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use gaussclaw_agent::{LoopEvent, LoopSink};
+use gaussclaw_agent::{CancelHandle, LoopEvent, LoopSink};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 /// Translate one [`LoopEvent`] into the JSON envelope the dashboard
-/// chat pane expects. Returns `None` for variants that have no
-/// dashboard rendering (silently dropped — the dashboard ignores
-/// what it doesn't recognise).
+/// chat pane expects.
+///
+/// Returns `None` for variants that have no dashboard rendering
+/// (silently dropped — the dashboard ignores what it doesn't
+/// recognise).
 #[must_use]
 pub fn loop_event_to_wire(event: &LoopEvent) -> Option<Value> {
     match event {
@@ -134,9 +136,10 @@ pub trait WireOutbox: Send + Sync {
 }
 
 /// `LoopSink` that translates every `LoopEvent` via
-/// [`loop_event_to_wire`] and ships the JSON envelope through a
-/// [`WireOutbox`]. Used by `chat_socket` to stream loop activity to
-/// the dashboard; used by tests with an in-memory outbox.
+/// [`loop_event_to_wire`] and ships it through a [`WireOutbox`].
+///
+/// Used by `chat_socket` to stream loop activity to the dashboard;
+/// used by tests with an in-memory outbox.
 pub struct WireLoopSink {
     outbox: Arc<dyn WireOutbox>,
     /// Set to `true` the moment the outbox reports a failed send;
@@ -144,6 +147,12 @@ pub struct WireLoopSink {
     /// `LoopOutcome::Cancelled` so we never run a turn against a
     /// closed socket.
     closed: AtomicBool,
+    /// Optional external cancel surface — flipped by the
+    /// `chat_socket` task when the WebSocket emits a `Close` frame
+    /// mid-turn (Sprint 10 §8). When set, `should_cancel()` returns
+    /// `true` even before the next outbound send fails. `None` keeps
+    /// the legacy "cancel on failed send only" semantics.
+    cancel: Option<CancelHandle>,
 }
 
 impl WireLoopSink {
@@ -153,14 +162,25 @@ impl WireLoopSink {
         Self {
             outbox,
             closed: AtomicBool::new(false),
+            cancel: None,
         }
+    }
+
+    /// Attach an external [`CancelHandle`]. Sprint 10 §8 — the
+    /// `chat_socket` task clones a handle into its `tokio::select!`
+    /// arm so that an inbound WebSocket `Close` flips this flag and
+    /// the in-flight agent loop winds down at the next boundary.
+    #[must_use]
+    pub fn with_cancel_handle(mut self, handle: CancelHandle) -> Self {
+        self.cancel = Some(handle);
+        self
     }
 }
 
 #[async_trait::async_trait]
 impl LoopSink for WireLoopSink {
     async fn emit(&self, event: LoopEvent) {
-        if self.closed.load(Ordering::SeqCst) {
+        if self.should_cancel() {
             return;
         }
         if let Some(frame) = loop_event_to_wire(&event) {
@@ -176,6 +196,7 @@ impl LoopSink for WireLoopSink {
 
     fn should_cancel(&self) -> bool {
         self.closed.load(Ordering::SeqCst)
+            || self.cancel.as_ref().is_some_and(CancelHandle::is_cancelled)
     }
 }
 
@@ -332,5 +353,82 @@ mod tests {
         .expect("some");
         assert_eq!(frame["type"], "user");
         assert_eq!(frame["text"], "hi");
+    }
+
+    // ── Sprint 10 §8: WireLoopSink cancel-handle wiring ─────────────────
+
+    #[tokio::test]
+    async fn sink_without_cancel_handle_only_cancels_on_failed_send() {
+        // Legacy behaviour preserved: a sink with no external cancel
+        // handle still cancels when the outbox fails, but stays
+        // running as long as sends succeed.
+        let outbox: Arc<dyn WireOutbox> = Arc::new(CaptureOutbox::default());
+        let sink = WireLoopSink::new(outbox);
+        assert!(!sink.should_cancel());
+        sink.emit(LoopEvent::Token {
+            text: "hi".into(),
+            turn: 0,
+        })
+        .await;
+        assert!(!sink.should_cancel());
+    }
+
+    #[tokio::test]
+    async fn external_cancel_handle_flips_should_cancel() {
+        // Sprint 10 §8 — the `chat_socket` task clones the cancel
+        // handle into its `tokio::select!`. Flipping it must be
+        // observable through the sink without needing a failed send.
+        let outbox: Arc<dyn WireOutbox> = Arc::new(CaptureOutbox::default());
+        let handle = CancelHandle::new();
+        let sink = WireLoopSink::new(outbox).with_cancel_handle(handle.clone());
+        assert!(!sink.should_cancel());
+        handle.request_cancel();
+        assert!(sink.should_cancel());
+    }
+
+    #[tokio::test]
+    async fn cancelled_sink_drops_subsequent_emits() {
+        let outbox = Arc::new(CaptureOutbox::default());
+        let outbox_dyn: Arc<dyn WireOutbox> = outbox.clone();
+        let handle = CancelHandle::new();
+        let sink = WireLoopSink::new(outbox_dyn).with_cancel_handle(handle.clone());
+        sink.emit(LoopEvent::Token {
+            text: "first".into(),
+            turn: 0,
+        })
+        .await;
+        handle.request_cancel();
+        sink.emit(LoopEvent::Token {
+            text: "second".into(),
+            turn: 1,
+        })
+        .await;
+        // Only the first token made it through.
+        let frames = outbox.frames().await;
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0]["text"], "first");
+    }
+
+    #[tokio::test]
+    async fn failed_outbox_send_still_sets_closed_flag() {
+        // A separate failure path from the external handle: when the
+        // outbox itself reports a failed send, the sink's internal
+        // `closed` flag flips. Both paths must work independently.
+        struct AlwaysFail;
+        #[async_trait::async_trait]
+        impl WireOutbox for AlwaysFail {
+            async fn send(&self, _: Value) -> bool {
+                false
+            }
+        }
+        let outbox: Arc<dyn WireOutbox> = Arc::new(AlwaysFail);
+        let sink = WireLoopSink::new(outbox);
+        assert!(!sink.should_cancel());
+        sink.emit(LoopEvent::Token {
+            text: "x".into(),
+            turn: 0,
+        })
+        .await;
+        assert!(sink.should_cancel());
     }
 }

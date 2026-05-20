@@ -51,8 +51,8 @@ use axum::Router;
 use gauss_core::{CapToken, TaintLabel};
 use gauss_cron::{parse_schedule, FireOutcome, Job, JobId, Scheduler, SystemClock};
 use gaussclaw_agent::{
-    AgentLoop, AuditTrace, KernelHandle, Message as AgentMessage, Prompt as AgentPrompt,
-    SurfaceRequest,
+    AgentLoop, AuditTrace, CancelHandle, KernelHandle, Message as AgentMessage,
+    Prompt as AgentPrompt, SurfaceRequest,
 };
 use gaussclaw_config::Config;
 use gaussclaw_export::{verify_envelope, Envelope, VerifyEnvelopeError};
@@ -649,7 +649,11 @@ async fn chat_socket(socket: WebSocket, agent: Option<Arc<AgentLoop>>) {
     };
 
     // Agent path. Each inbound user message → one AgentLoop run.
-    while let Some(msg) = receiver.next().await {
+    //
+    // Sprint 10 §8 — the loop is driven via `tokio::select!` so that
+    // inbound `Message::Close` (or stream-end) flips a `CancelHandle`
+    // mid-turn rather than waiting for the next outbound failure.
+    'outer: while let Some(msg) = receiver.next().await {
         let Ok(msg) = msg else { return };
         let user_text = match &msg {
             Message::Text(t) => t.as_str().to_string(),
@@ -662,10 +666,45 @@ async fn chat_socket(socket: WebSocket, agent: Option<Arc<AgentLoop>>) {
             "default",
             vec![AgentMessage::new("user", user_text.clone())],
         );
-        let sink = wire::WireLoopSink::new(outbox.clone());
-        match agent.run(prompt, TaintLabel::User, None, &sink).await {
-            Ok(_outcome) => {
-                // Done frame is already emitted by the loop sink.
+        let cancel = CancelHandle::new();
+        let sink = wire::WireLoopSink::new(outbox.clone()).with_cancel_handle(cancel.clone());
+
+        // Race the agent run against further receiver activity. A
+        // `Close` (or a transport error) during the turn flips the
+        // cancel handle; subsequent select arms keep waiting for the
+        // loop to wind down so we never leak the in-flight task.
+        let run = agent.run(prompt, TaintLabel::User, None, &sink);
+        tokio::pin!(run);
+        let outcome = loop {
+            tokio::select! {
+                result = &mut run => break result,
+                next = receiver.next() => match next {
+                    Some(Ok(Message::Close(_))) | None => {
+                        cancel.request_cancel();
+                        // After requesting cancel we keep selecting so
+                        // the agent future runs to its next boundary
+                        // and emits `Done{cancelled}` cleanly.
+                    }
+                    Some(Err(_)) => {
+                        cancel.request_cancel();
+                    }
+                    Some(Ok(_)) => {
+                        // Pings, second messages, binary frames during
+                        // an in-flight turn are dropped silently —
+                        // they'd interleave with the loop's outbound
+                        // stream otherwise.
+                    }
+                },
+            }
+        };
+        match outcome {
+            Ok(_) => {
+                // Done frame is already emitted by the loop sink. If
+                // the turn was cancelled mid-flight the connection has
+                // closed; exit the dispatch loop cleanly.
+                if cancel.is_cancelled() {
+                    break 'outer;
+                }
             }
             Err(e) => {
                 let err_frame = serde_json::json!({
@@ -1704,12 +1743,10 @@ mod tests {
         let mut cfg = Config::default();
         cfg.provider.name = "anthropic".into();
         cfg.provider.model = "claude-3.5-sonnet".into();
-        let provider: Arc<dyn gaussclaw_agent::ProviderHandle> =
-            Arc::new(EchoProvider::default());
+        let provider: Arc<dyn gaussclaw_agent::ProviderHandle> = Arc::new(EchoProvider::default());
         let policy = TurnPolicy::new(KernelHandle::permissive(), provider);
         let agent = Arc::new(AgentLoop::new(policy));
-        let state = ServerState::new(cfg, Some("/tmp/gaussclaw.toml".into()))
-            .with_agent(agent);
+        let state = ServerState::new(cfg, Some("/tmp/gaussclaw.toml".into())).with_agent(agent);
 
         let app = router(state);
         let resp = app
@@ -2585,7 +2622,7 @@ taint = "trusted"
         }
         #[async_trait]
         impl ProviderHandle for ScriptedProvider {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "scripted"
             }
             async fn complete(&self, _p: &Prompt) -> ProviderResult<Completion> {
@@ -2612,7 +2649,7 @@ taint = "trusted"
         struct DenyEcho;
         #[async_trait]
         impl PreToolHook for DenyEcho {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "deny-echo"
             }
             async fn on_pre_tool(&self, e: &PreToolEvent) -> HookOutcome {
