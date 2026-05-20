@@ -317,6 +317,21 @@ pub enum ProviderError {
 /// Result alias for [`ProviderHandle`].
 pub type ProviderResult<T> = Result<T, ProviderError>;
 
+/// Per-token sink consumed by [`ProviderHandle::complete_streaming`].
+///
+/// Sprint 9 §1 — vendor drivers that natively stream (Anthropic SSE,
+/// OpenAI `chat.completions/stream`, Ollama line-delimited JSON) call
+/// `on_token` once per token; drivers that don't stream call it once
+/// with the full completion text. The agent loop forwards each token
+/// into [`LoopEvent::Token`] so dashboards render token-by-token.
+#[async_trait]
+pub trait TokenSink: Send + Sync {
+    /// Emit one token. `text` is the *delta* — the token slice that
+    /// the model just produced. Concatenating every `text` in order
+    /// reconstructs the final completion body.
+    async fn on_token(&self, text: &str);
+}
+
 /// Async provider trait. Phase 4 lands the real vendor drivers
 /// (`gaussclaw-providers::anthropic` etc.); Phase 1 only needs the trait
 /// surface plus the [`EchoProvider`] for end-to-end testing.
@@ -327,6 +342,21 @@ pub trait ProviderHandle: Send + Sync {
 
     /// Run a prompt and return a single completion.
     async fn complete(&self, prompt: &Prompt) -> ProviderResult<Completion>;
+
+    /// Streaming variant. The default implementation calls
+    /// [`Self::complete`] and emits the full text as a single token —
+    /// every non-streaming driver gets at least one `LoopEvent::Token`
+    /// per turn for free. Real streaming drivers override this to emit
+    /// per-token deltas as they arrive on the wire.
+    async fn complete_streaming(
+        &self,
+        prompt: &Prompt,
+        sink: &dyn TokenSink,
+    ) -> ProviderResult<Completion> {
+        let completion = self.complete(prompt).await?;
+        sink.on_token(&completion.text).await;
+        Ok(completion)
+    }
 }
 
 /// Deterministic echo provider used by tests and the Phase 1 demo binary.
@@ -648,6 +678,21 @@ impl TurnPolicy {
         self.run_in_session(prompt, taint, None).await
     }
 
+    /// Same as [`Self::run_in_session`] but routes the provider call
+    /// through [`ProviderHandle::complete_streaming`] so the caller's
+    /// [`TokenSink`] receives every token as it arrives. All other
+    /// disciplines (WAL, admit, store-persist, audit) are identical.
+    pub async fn run_streaming_in_session(
+        &self,
+        prompt: Prompt,
+        taint: TaintLabel,
+        session_id: Option<&str>,
+        token_sink: &dyn TokenSink,
+    ) -> TurnResult<Completion> {
+        self.run_in_session_inner(prompt, taint, session_id, Some(token_sink))
+            .await
+    }
+
     /// Same as [`Self::run`] but persists the turn into `session_id`'s
     /// stream. Returns the assistant completion plus the assigned turn
     /// id pair when a store is attached.
@@ -656,6 +701,17 @@ impl TurnPolicy {
         prompt: Prompt,
         taint: TaintLabel,
         session_id: Option<&str>,
+    ) -> TurnResult<Completion> {
+        self.run_in_session_inner(prompt, taint, session_id, None)
+            .await
+    }
+
+    async fn run_in_session_inner(
+        &self,
+        prompt: Prompt,
+        taint: TaintLabel,
+        session_id: Option<&str>,
+        token_sink: Option<&dyn TokenSink>,
     ) -> TurnResult<Completion> {
         if prompt.messages.is_empty() {
             return Err(TurnError::Invalid("prompt has no messages".into()));
@@ -693,7 +749,11 @@ impl TurnPolicy {
         }
 
         self.kernel.admit(self.effective_required_cap(), taint)?;
-        let completion = self.provider.complete(&prompt).await?;
+        let completion = if let Some(ts) = token_sink {
+            self.provider.complete_streaming(&prompt, ts).await?
+        } else {
+            self.provider.complete(&prompt).await?
+        };
 
         if let (Some(store), Some(sid)) = (&self.store, session_id) {
             let (_assistant_turn, _head) = store

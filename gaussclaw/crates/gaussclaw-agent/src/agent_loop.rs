@@ -541,7 +541,7 @@ impl AgentLoop {
 
             // Call provider with fallback chain.
             let completion = match self
-                .run_with_fallback(&iter_prompt, taint, session_id, sink)
+                .run_with_fallback(&iter_prompt, taint, session_id, sink, iterations)
                 .await
             {
                 Ok(c) => c,
@@ -692,10 +692,19 @@ impl AgentLoop {
         taint: TaintLabel,
         session_id: Option<&str>,
         sink: &dyn LoopSink,
+        iterations: u32,
     ) -> TurnResult<Completion> {
+        // Sprint 9 §1 — token-streaming bridge. The provider calls
+        // `on_token` once per delta (or once with the full text for
+        // non-streaming drivers); we forward each into
+        // `LoopEvent::Token` so the dashboard renders token-by-token.
+        let token_sink = LoopTokenBridge {
+            sink,
+            turn: iterations,
+        };
         match self
             .policy
-            .run_in_session(prompt.clone(), taint, session_id)
+            .run_streaming_in_session(prompt.clone(), taint, session_id, &token_sink)
             .await
         {
             Ok(c) => Ok(c),
@@ -708,7 +717,7 @@ impl AgentLoop {
                         reason: format!("{last_err:?}"),
                     })
                     .await;
-                    match fb.complete(prompt).await {
+                    match fb.complete_streaming(prompt, &token_sink).await {
                         Ok(c) => return Ok(c),
                         Err(e) => last_err = e,
                     }
@@ -717,6 +726,26 @@ impl AgentLoop {
             }
             Err(e) => Err(e),
         }
+    }
+}
+
+/// Bridge between the [`crate::TokenSink`] trait and a
+/// [`LoopSink::emit(LoopEvent::Token)`] dispatch. Constructed for
+/// the duration of one provider call so the `turn` index is stable.
+struct LoopTokenBridge<'a> {
+    sink: &'a dyn LoopSink,
+    turn: u32,
+}
+
+#[async_trait]
+impl crate::TokenSink for LoopTokenBridge<'_> {
+    async fn on_token(&self, text: &str) {
+        self.sink
+            .emit(LoopEvent::Token {
+                text: text.to_owned(),
+                turn: self.turn,
+            })
+            .await;
     }
 }
 
@@ -1029,6 +1058,111 @@ mod tests {
         b.request_cancel();
         assert!(a.is_cancelled());
         assert!(b.is_cancelled());
+    }
+
+    // ── Sprint 9 §1: token-level streaming through LoopSink::Token ────────
+
+    #[tokio::test]
+    async fn non_streaming_provider_still_emits_one_token_event_per_turn() {
+        // The default `complete_streaming` impl on `ProviderHandle`
+        // emits the full text as one token. The dashboard at least
+        // sees `LoopEvent::Token` for every turn — strict superset
+        // of the previous "just `Assistant`" behaviour.
+        let provider = stub_provider("hello world");
+        let loop_ = AgentLoop::new(loop_policy(provider));
+        let sink = MemorySink::new();
+        loop_
+            .run(
+                Prompt::new("any", vec![Message::new("user", "hi")]),
+                TaintLabel::User,
+                None,
+                &sink,
+            )
+            .await
+            .expect("ok");
+        let events = sink.events().await;
+        let token_count = events
+            .iter()
+            .filter(|e| matches!(e, LoopEvent::Token { .. }))
+            .count();
+        assert_eq!(token_count, 1, "expected exactly one Token per turn");
+        // The Token event must carry the same body the Assistant event
+        // contains — concatenating tokens reconstructs the assistant text.
+        let token_text: String = events
+            .iter()
+            .filter_map(|e| match e {
+                LoopEvent::Token { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        let assistant_text: String = events
+            .iter()
+            .filter_map(|e| match e {
+                LoopEvent::Assistant { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(token_text, assistant_text);
+    }
+
+    #[tokio::test]
+    async fn streaming_provider_emits_one_token_event_per_delta() {
+        // A provider that overrides `complete_streaming` to emit
+        // multiple tokens drives the dashboard's per-token render
+        // pipeline. The agent loop forwards each delta untouched.
+        use crate::TokenSink as ATokenSink;
+
+        struct ChunkedProvider;
+        #[async_trait::async_trait]
+        impl ProviderHandle for ChunkedProvider {
+            fn name(&self) -> &'static str {
+                "chunked"
+            }
+            async fn complete(&self, _p: &Prompt) -> Result<Completion, ProviderError> {
+                Ok(Completion::new(
+                    "hello world",
+                    "chunked",
+                    "stop",
+                    TokenCount::new(1, 1),
+                ))
+            }
+            async fn complete_streaming(
+                &self,
+                _p: &Prompt,
+                sink: &dyn ATokenSink,
+            ) -> Result<Completion, ProviderError> {
+                sink.on_token("hello ").await;
+                sink.on_token("world").await;
+                Ok(Completion::new(
+                    "hello world",
+                    "chunked",
+                    "stop",
+                    TokenCount::new(1, 1),
+                ))
+            }
+        }
+
+        let provider = Arc::new(ChunkedProvider);
+        let loop_ = AgentLoop::new(loop_policy(provider));
+        let sink = MemorySink::new();
+        loop_
+            .run(
+                Prompt::new("any", vec![Message::new("user", "hi")]),
+                TaintLabel::User,
+                None,
+                &sink,
+            )
+            .await
+            .expect("ok");
+        let events = sink.events().await;
+        let tokens: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                LoopEvent::Token { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tokens, vec!["hello ".to_owned(), "world".to_owned()]);
     }
 
     #[tokio::test]

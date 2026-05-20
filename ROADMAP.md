@@ -827,12 +827,15 @@ work the structural commits punted on.
 
 Deliverables:
 
-1. **Token-level WebSocket streaming** (Sprint 4 §2 follow-on).
-   Wire the `LoopSink::Token` event end-to-end through
-   `/api/chat/ws` so the dashboard renders token-by-token, not
-   turn-by-turn. Hermes streams via `chat_completions.py`;
-   GaussClaw's WebSocket frame format is ready — just needs the
-   loop driver wiring.
+1. **Token-level WebSocket streaming** (Sprint 4 §2 follow-on). ✅
+   The `ProviderHandle::complete_streaming` method ships as the
+   trait-level hook; the agent loop drives it via a `LoopTokenBridge`
+   that forwards every delta to `LoopEvent::Token`. Non-streaming
+   drivers get a free "one token = full text" event so every dashboard
+   surface sees at least one Token per turn; real streaming drivers
+   override `complete_streaming` to push per-token deltas as they
+   arrive on the wire (Anthropic SSE, OpenAI `chat/completions/stream`,
+   Ollama line-delimited JSON).
 2. **Mid-turn Ctrl-C / WS-close cancellation** (Sprint 4 §4
    follow-on). ✅ The new `CancelHandle` type decouples the cancel
    flag from `MemorySink` — front-end runtimes (TUI Ctrl+C, WS
