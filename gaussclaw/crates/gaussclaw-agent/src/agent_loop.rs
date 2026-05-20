@@ -675,12 +675,7 @@ impl AgentLoop {
                         .await;
                         if let Some(audit) = self.audit.as_ref() {
                             audit
-                                .record_hook_warn(
-                                    tc.name.clone(),
-                                    w.clone(),
-                                    &args_bytes,
-                                    taint,
-                                )
+                                .record_hook_warn(tc.name.clone(), w.clone(), &args_bytes, taint)
                                 .await;
                         }
                     }
@@ -1568,7 +1563,12 @@ mod tests {
             }
             async fn complete(&self, p: &Prompt) -> Result<Completion, ProviderError> {
                 self.seen.lock().unwrap().push(p.clone());
-                Ok(Completion::new("ok", "capture", "stop", TokenCount::new(1, 1)))
+                Ok(Completion::new(
+                    "ok",
+                    "capture",
+                    "stop",
+                    TokenCount::new(1, 1),
+                ))
             }
         }
         let capture = Arc::new(Capture {
@@ -1604,7 +1604,9 @@ mod tests {
         let first_msg = &seen[0].messages[0];
         assert_eq!(first_msg.role, "system");
         assert!(first_msg.content.contains("USE PROJECT NORMS"));
-        assert!(first_msg.content.contains("<!-- prompt-enricher: ctx-test -->"));
+        assert!(first_msg
+            .content
+            .contains("<!-- prompt-enricher: ctx-test -->"));
     }
 
     /// Two enrichers concatenate in registration order with a
@@ -1624,7 +1626,12 @@ mod tests {
             }
             async fn complete(&self, p: &Prompt) -> Result<Completion, ProviderError> {
                 self.seen.lock().unwrap().push(p.clone());
-                Ok(Completion::new("ok", "capture", "stop", TokenCount::new(1, 1)))
+                Ok(Completion::new(
+                    "ok",
+                    "capture",
+                    "stop",
+                    TokenCount::new(1, 1),
+                ))
             }
         }
         let capture = Arc::new(Capture {
@@ -1682,7 +1689,12 @@ mod tests {
             }
             async fn complete(&self, p: &Prompt) -> Result<Completion, ProviderError> {
                 self.seen.lock().unwrap().push(p.clone());
-                Ok(Completion::new("ok", "capture", "stop", TokenCount::new(1, 1)))
+                Ok(Completion::new(
+                    "ok",
+                    "capture",
+                    "stop",
+                    TokenCount::new(1, 1),
+                ))
             }
         }
         let capture = Arc::new(Capture {

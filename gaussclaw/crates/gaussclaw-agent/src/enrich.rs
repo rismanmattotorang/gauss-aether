@@ -83,7 +83,9 @@ pub fn wrap_enrichment(name: &str, body: &str) -> String {
 /// with a divider so the result reads as one coherent system block.
 ///
 /// Returns `None` if every enricher opted out.
-pub async fn collect_enrichments(enrichers: &[std::sync::Arc<dyn PromptEnricher>]) -> Option<Message> {
+pub async fn collect_enrichments(
+    enrichers: &[std::sync::Arc<dyn PromptEnricher>],
+) -> Option<Message> {
     let mut bodies: Vec<String> = Vec::new();
     for e in enrichers {
         if let Some(b) = e.enrich().await {

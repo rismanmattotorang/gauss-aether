@@ -259,9 +259,8 @@ impl PluginManifest {
     /// — an empty list matches every tool.
     #[must_use]
     pub fn applies_to_tool(&self, lifecycle: HookLifecycle, tool: &str) -> bool {
-        self.hooks_for(lifecycle).any(|h| {
-            h.target_tools.is_empty() || h.target_tools.iter().any(|t| t == tool)
-        })
+        self.hooks_for(lifecycle)
+            .any(|h| h.target_tools.is_empty() || h.target_tools.iter().any(|t| t == tool))
     }
 }
 

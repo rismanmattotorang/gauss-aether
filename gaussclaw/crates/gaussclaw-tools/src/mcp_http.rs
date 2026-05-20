@@ -130,10 +130,7 @@ impl McpClient for HttpMcpClient {
                 .get("name")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| McpError::Protocol("tool descriptor missing `name`".into()))?;
-            let description = t
-                .get("description")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let description = t.get("description").and_then(|v| v.as_str()).unwrap_or("");
             let input_schema = t
                 .get("inputSchema")
                 .or_else(|| t.get("input_schema"))
@@ -215,9 +212,7 @@ fn map_http_err(e: HttpClientError) -> McpError {
             McpError::Server(format!("HTTP {status}: {body}"))
         }
         HttpClientError::PolicyDenied(s) => McpError::Transport(format!("policy: {s}")),
-        HttpClientError::NotConfigured => {
-            McpError::Transport("HttpClient not configured".into())
-        }
+        HttpClientError::NotConfigured => McpError::Transport("HttpClient not configured".into()),
     }
 }
 
@@ -383,8 +378,7 @@ mod tests {
         let seen = scripted.seen();
         assert!(seen
             .first()
-            .map(|r| r.headers.values().any(|v| v.contains("Bearer xyz")))
-            .unwrap_or(false));
+            .is_some_and(|r| r.headers.values().any(|v| v.contains("Bearer xyz"))));
     }
 
     /// Without the header allowlist, the default policy strips
@@ -403,8 +397,7 @@ mod tests {
         // No header survived the default-policy filter.
         assert!(seen
             .first()
-            .map(|r| !r.headers.values().any(|v| v.contains("Bearer xyz")))
-            .unwrap_or(false));
+            .is_some_and(|r| !r.headers.values().any(|v| v.contains("Bearer xyz"))));
     }
 
     /// End-to-end: HTTP-backed MCP client + bridge → real `ToolTrait`
