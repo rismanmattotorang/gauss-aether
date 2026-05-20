@@ -195,28 +195,53 @@ are not in OpenHarness upstream:
 
 ---
 
+## Vendor codec wiring (Sprint 13)
+
+| | |
+|---|---|
+| **Bin selection** | [`gaussclaw_providers::pick_provider`](../gaussclaw/crates/gaussclaw-providers/src/select.rs) reads `cfg.provider.name`; `gaussclaw-bin::run_web` calls it with the env-sourced API key |
+| **Transport fallback** | [`UnconfiguredBackend`](../gaussclaw/crates/gaussclaw-providers/src/select.rs) — every send returns a clean `HttpError::Network("...not configured...")` until a real backend is plumbed |
+| **End-to-end test** | `e2e_anthropic::anthropic_provider_drives_full_loop_one_turn` exercises `AnthropicProvider → MockHttpBackend → TurnPolicy → AgentLoop::run` with a canned Anthropic-shape response |
+| **Status** | `ready` (config-driven selection + UnconfiguredBackend fallback + 6 e2e tests against AnthropicProvider + audit-chain integration verified) |
+
+The bin now selects the vendor codec from config:
+`anthropic` → `AnthropicProvider`, `openai` → `OpenAIProvider`,
+empty / unknown → `EchoProvider` fallback. API key sourced from
+`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`. Without a real HTTP backend
+in the workspace, the chosen codec is wrapped around
+`UnconfiguredBackend`; the dashboard surfaces that as an `error`
+frame rather than silently returning a stub echo.
+
 ## Known gaps
 
-These are honest known gaps as of sprint 12. Each is a candidate for
+These are honest known gaps as of sprint 13. Each is a candidate for
 the next sprint or a future one.
 
-1. **No real LLM provider in any end-to-end test.** Every integration
-   test uses `EchoProvider` or `ScriptedProvider`. Real provider
-   plumbing (vendor codecs, streaming, fallback chain) is exercised
-   only via unit tests inside `gaussclaw-providers`.
-2. **Plugin-registered slash commands surface in `/commands` but
+1. **No real HTTP backend ships in the workspace.** Vendor codecs are
+   reachable through `pick_provider` and demonstrated end-to-end
+   against `MockHttpBackend`, but until a `reqwest` (or similar)
+   backed `HttpBackend` lands, `gaussclaw serve` against
+   `api.anthropic.com` fails at the transport layer. Plumbing one
+   means: add `reqwest` to a new `gaussclaw-providers-http`
+   crate (or behind a feature flag), implement `HttpBackend` over
+   it, pass it through `ProviderChoice::with_backend`.
+2. **No live-network smoke test.** End-to-end coverage is against
+   `MockHttpBackend` only. A live-network test against the real
+   Anthropic Messages API needs `ANTHROPIC_API_KEY` and a CI
+   environment that allows outbound HTTPS; out of scope for
+   `cargo test` today. The recipe is: set the env var, build the
+   binary, run `gaussclaw serve`, open the dashboard, watch the
+   loop streaming via WebSocket.
+3. **Plugin-registered slash commands surface in `/commands` but
    dispatch through a placeholder message.** Real wiring requires
    plumbing the plugin's command handler into the TUI's
    `dispatch_slash` match.
-3. **MCP HTTP transport untested against a real MCP server.** Works
+4. **MCP HTTP transport untested against a real MCP server.** Works
    against `ScriptedHttp` end-to-end; no `cargo test` exercises an
    actual remote server.
-4. **Multi-agent Coordinator stays one-shot.** OpenHarness's team
+5. **Multi-agent Coordinator stays one-shot.** OpenHarness's team
    registry + persistent agent identities + headless worker
    subprocesses are not built.
-5. **`gaussclaw serve` wires a placeholder `EchoProvider`.** Real
-   vendor drivers (`gaussclaw-providers::anthropic` etc.) plug in at
-   the bin level in a follow-on.
 
 ---
 
