@@ -3065,6 +3065,7 @@ dependencies = [
  "blake3",
  "directories",
  "gauss-core",
+ "gauss-hooks",
  "gaussclaw-skill",
  "serde",
  "serde_json",

@@ -45,6 +45,10 @@
 )]
 #![allow(rustdoc::broken_intra_doc_links)]
 
+pub mod hook_factory;
+
+pub use hook_factory::{BuiltHook, HookFactory, HookRegistrationReport, TargetFilterPostHook, TargetFilterPreHook};
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
