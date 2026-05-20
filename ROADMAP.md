@@ -993,12 +993,16 @@ Deliverables:
    calls serialise on the inner mutex; id-mismatch and missing-
    `result|error` failures surface as `McpError::Protocol`.
 
-10. **Chain-protected Trinity cron store.** A `TrinityCronJobStore`
-    in `gaussclaw-store` that wraps Sprint 9 §9's
-    `FileBackedJobStore` and ALSO writes every `LogRecord` into
-    the `SurrealMemory` chain log. Implements `JobStore` so
-    consumers see one type; cron-job mutations get the same
-    Merkle integrity surface every session turn has.
+10. **Chain-protected Trinity cron store.** ✅ A
+    `TrinityCronJobStore` in `gaussclaw-store::cron_store` that
+    wraps Sprint 9 §9's `FileBackedJobStore` (canonical state +
+    replay-on-open) and mirrors every mutation into a
+    `SurrealMemory` chain log (SHA-256 Merkle tamper-evidence).
+    Implements `gauss_cron::JobStore` so callers see one trait;
+    cron-job mutations get the same integrity surface every
+    session turn has. Read methods (`get`, `list`) don't advance
+    the chain; rejected mutations (duplicate insert, unknown
+    remove) don't either.
 
 ### Sprint 10 — wrap-up: production-ready, deployable
 

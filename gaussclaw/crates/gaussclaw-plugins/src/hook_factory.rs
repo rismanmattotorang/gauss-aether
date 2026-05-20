@@ -32,9 +32,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use gauss_hooks::{
-    HookBus, HookOutcome, PostToolEvent, PostToolHook, PreToolEvent, PreToolHook,
-};
+use gauss_hooks::{HookBus, HookOutcome, PostToolEvent, PostToolHook, PreToolEvent, PreToolHook};
 
 use crate::{HookDeclaration, HookLifecycle, PluginError, PluginRegistry, PluginResult};
 

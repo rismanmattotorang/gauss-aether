@@ -47,7 +47,9 @@
 
 pub mod hook_factory;
 
-pub use hook_factory::{BuiltHook, HookFactory, HookRegistrationReport, TargetFilterPostHook, TargetFilterPreHook};
+pub use hook_factory::{
+    BuiltHook, HookFactory, HookRegistrationReport, TargetFilterPostHook, TargetFilterPreHook,
+};
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
