@@ -48,7 +48,8 @@
 pub mod hook_factory;
 
 pub use hook_factory::{
-    BuiltHook, HookFactory, HookRegistrationReport, TargetFilterPostHook, TargetFilterPreHook,
+    BuiltHook, ChainedHookFactory, DefaultHookFactory, HookFactory, HookRegistrationReport,
+    TargetFilterPostHook, TargetFilterPreHook,
 };
 
 use std::collections::BTreeMap;
