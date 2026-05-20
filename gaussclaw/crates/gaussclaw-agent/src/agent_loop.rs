@@ -68,6 +68,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    audit::AuditTrace,
     compaction::{CompactionRecord, Compactor},
     Completion, Message, Prompt, ProviderError, ProviderHandle, TurnError, TurnPolicy, TurnResult,
 };
@@ -339,6 +340,15 @@ pub struct AgentLoop {
     /// OpenHarness-inspired: Auto-Compaction preserves task state
     /// across context-window pressure without dropping tool results.
     pub compactor: Option<Arc<dyn Compactor>>,
+    /// Optional audit trace. When `Some` *and* `hooks` is also `Some`,
+    /// every `PreToolHook::Deny` / `Warn` outcome is appended to the
+    /// tamper-evident chain as a `HookDeny` / `HookWarn` entry. The
+    /// args bytes never enter the chain — only their BLAKE3 hash —
+    /// so hostile args cannot ride the audit channel to exfiltrate.
+    ///
+    /// Setting this without `hooks` does nothing; setting hooks
+    /// without this skips the audit append but still fires the hook.
+    pub audit: Option<AuditTrace>,
 }
 
 impl AgentLoop {
@@ -351,7 +361,16 @@ impl AgentLoop {
             fallback: Vec::new(),
             hooks: None,
             compactor: None,
+            audit: None,
         }
+    }
+
+    /// Attach an [`AuditTrace`]. When set alongside a `HookBus`,
+    /// every `Deny`/`Warn` outcome is appended to the chain.
+    #[must_use]
+    pub fn with_audit(mut self, audit: AuditTrace) -> Self {
+        self.audit = Some(audit);
+        self
     }
 
     /// Attach a `HookBus`. Subsequent tool calls fire pre/post-hooks.
@@ -557,6 +576,12 @@ impl AgentLoop {
                     let pre = PreToolEvent::new(tc.name.clone(), tc.args.clone())
                         .with_taint(taint);
                     let report = bus.fire_pre(&pre).await;
+                    // Args canonical-JSON, hashed for the audit chain
+                    // (the chain stores only the BLAKE3 — never the
+                    // raw args — so secrets in args can't leak via
+                    // the receipt chain).
+                    let args_bytes =
+                        serde_json::to_vec(&tc.args).unwrap_or_else(|_| b"null".to_vec());
                     for w in &report.warnings {
                         sink.emit(LoopEvent::ToolWarn {
                             name: tc.name.clone(),
@@ -564,6 +589,16 @@ impl AgentLoop {
                             turn: iterations,
                         })
                         .await;
+                        if let Some(audit) = self.audit.as_ref() {
+                            audit
+                                .record_hook_warn(
+                                    tc.name.clone(),
+                                    w.clone(),
+                                    &args_bytes,
+                                    taint,
+                                )
+                                .await;
+                        }
                     }
                     if let Some(reason) = report.outcome.reason().map(str::to_owned) {
                         if report.outcome.is_deny() {
@@ -573,6 +608,16 @@ impl AgentLoop {
                                 turn: iterations,
                             })
                             .await;
+                            if let Some(audit) = self.audit.as_ref() {
+                                audit
+                                    .record_hook_deny(
+                                        tc.name.clone(),
+                                        reason.clone(),
+                                        &args_bytes,
+                                        taint,
+                                    )
+                                    .await;
+                            }
                             let body = serde_json::json!({
                                 "error": "hook_denied",
                                 "reason": reason,
@@ -1067,6 +1112,166 @@ mod tests {
         assert!(events.iter().any(
             |e| matches!(e, LoopEvent::ToolComplete { name, ok, .. } if name == "echo" && *ok)
         ));
+    }
+
+    /// When both `hooks` and `audit` are attached, a `Deny` advances
+    /// the audit chain head by one — a `HookDeny` entry lands on the
+    /// chain alongside the usual `ToolDenied` `LoopEvent`.
+    #[tokio::test]
+    async fn hook_deny_appends_to_audit_chain() {
+        use crate::audit::AuditTrace;
+        use gauss_hooks::{HookBus, HookOutcome, PreToolEvent, PreToolHook};
+
+        struct DenyAll;
+        #[async_trait::async_trait]
+        impl PreToolHook for DenyAll {
+            fn name(&self) -> &str {
+                "deny_all"
+            }
+            async fn on_pre_tool(&self, _e: &PreToolEvent) -> HookOutcome {
+                HookOutcome::Deny("blocked for test".into())
+            }
+        }
+
+        let provider = Arc::new(ScriptProvider::new(
+            "scripted",
+            vec![
+                Completion::new(
+                    "<tool name=\"echo\">{\"text\":\"hi\"}</tool>",
+                    "scripted",
+                    "tool",
+                    TokenCount::new(1, 1),
+                ),
+                Completion::new("done", "scripted", "stop", TokenCount::new(1, 1)),
+            ],
+        ));
+        let bus = HookBus::new();
+        bus.register_pre(Arc::new(DenyAll), 0);
+        let audit = AuditTrace::new();
+        let head_before = audit.head().await;
+        let loop_ = AgentLoop::new(loop_policy(provider))
+            .with_hooks(bus)
+            .with_audit(audit.clone());
+        let sink = MemorySink::new();
+        loop_
+            .run(
+                Prompt::new("scripted", vec![Message::new("user", "go")]),
+                TaintLabel::User,
+                None,
+                &sink,
+            )
+            .await
+            .expect("ok");
+        let head_after = audit.head().await;
+        assert_ne!(
+            head_before.to_hex(),
+            head_after.to_hex(),
+            "HookDeny must advance the audit chain"
+        );
+    }
+
+    /// `HookWarn` outcomes also land on the audit chain (advisory but
+    /// recorded for completeness).
+    #[tokio::test]
+    async fn hook_warn_appends_to_audit_chain() {
+        use crate::audit::AuditTrace;
+        use gauss_hooks::{HookBus, HookOutcome, PreToolEvent, PreToolHook};
+
+        struct WarnTwice;
+        #[async_trait::async_trait]
+        impl PreToolHook for WarnTwice {
+            fn name(&self) -> &str {
+                "warn"
+            }
+            async fn on_pre_tool(&self, _e: &PreToolEvent) -> HookOutcome {
+                HookOutcome::Warn("careful".into())
+            }
+        }
+
+        let provider = Arc::new(ScriptProvider::new(
+            "scripted",
+            vec![
+                Completion::new(
+                    "<tool name=\"echo\">{\"text\":\"hi\"}</tool>",
+                    "scripted",
+                    "tool",
+                    TokenCount::new(1, 1),
+                ),
+                Completion::new("done", "scripted", "stop", TokenCount::new(1, 1)),
+            ],
+        ));
+        let bus = HookBus::new();
+        bus.register_pre(Arc::new(WarnTwice), 0);
+        let audit = AuditTrace::new();
+        let head_before = audit.head().await;
+        let loop_ = AgentLoop::new(loop_policy(provider))
+            .with_hooks(bus)
+            .with_audit(audit.clone());
+        let sink = MemorySink::new();
+        loop_
+            .run(
+                Prompt::new("scripted", vec![Message::new("user", "go")]),
+                TaintLabel::User,
+                None,
+                &sink,
+            )
+            .await
+            .expect("ok");
+        let head_after = audit.head().await;
+        assert_ne!(
+            head_before.to_hex(),
+            head_after.to_hex(),
+            "HookWarn must advance the audit chain"
+        );
+    }
+
+    /// Without `with_audit`, the loop still functions and emits the
+    /// `LoopEvent::ToolDenied`. Confirms the audit append is optional.
+    #[tokio::test]
+    async fn audit_is_optional_for_hook_dispatch() {
+        use gauss_hooks::{HookBus, HookOutcome, PreToolEvent, PreToolHook};
+
+        struct DenyAll;
+        #[async_trait::async_trait]
+        impl PreToolHook for DenyAll {
+            fn name(&self) -> &str {
+                "deny_all"
+            }
+            async fn on_pre_tool(&self, _e: &PreToolEvent) -> HookOutcome {
+                HookOutcome::Deny("nope".into())
+            }
+        }
+
+        let provider = Arc::new(ScriptProvider::new(
+            "scripted",
+            vec![
+                Completion::new(
+                    "<tool name=\"echo\">{\"text\":\"hi\"}</tool>",
+                    "scripted",
+                    "tool",
+                    TokenCount::new(1, 1),
+                ),
+                Completion::new("done", "scripted", "stop", TokenCount::new(1, 1)),
+            ],
+        ));
+        let bus = HookBus::new();
+        bus.register_pre(Arc::new(DenyAll), 0);
+        let loop_ = AgentLoop::new(loop_policy(provider)).with_hooks(bus);
+        // No `with_audit(...)`.
+        let sink = MemorySink::new();
+        loop_
+            .run(
+                Prompt::new("scripted", vec![Message::new("user", "go")]),
+                TaintLabel::User,
+                None,
+                &sink,
+            )
+            .await
+            .expect("ok");
+        let events = sink.events().await;
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, LoopEvent::ToolDenied { .. })));
     }
 
     /// Auto-Compaction fires between iterations when the running
