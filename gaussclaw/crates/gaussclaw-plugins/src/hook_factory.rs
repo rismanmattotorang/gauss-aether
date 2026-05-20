@@ -268,9 +268,7 @@ impl HookFactory for DefaultHookFactory {
             ("dry-run-preview", HookLifecycle::PreTool) => {
                 Ok(BuiltHook::Pre(Arc::new(DryRunPreview)))
             }
-            ("shell-guard", HookLifecycle::PreTool) => {
-                Ok(BuiltHook::Pre(Arc::new(ShellGuard)))
-            }
+            ("shell-guard", HookLifecycle::PreTool) => Ok(BuiltHook::Pre(Arc::new(ShellGuard))),
             ("audit-log", HookLifecycle::PostTool) => Ok(BuiltHook::Post(Arc::new(AuditLogNoop))),
             (other, _) => Err(PluginError::Backend(format!(
                 "DefaultHookFactory does not know hook id `{other}` for the declared lifecycle"
@@ -312,7 +310,7 @@ struct ShellGuard;
 const SHELL_DENY_SUBSTRINGS: &[&str] = &[
     "rm -rf /",
     "rm -rf /*",
-    ":(){:|:&};:",   // classic fork bomb
+    ":(){:|:&};:", // classic fork bomb
     "mkfs.",
     "dd of=/dev/",
     "> /dev/sda",
@@ -335,9 +333,7 @@ impl PreToolHook for ShellGuard {
             .unwrap_or_default();
         for needle in SHELL_DENY_SUBSTRINGS {
             if cmd.contains(needle) {
-                return HookOutcome::Deny(format!(
-                    "shell-guard: refused (matched `{needle}`)"
-                ));
+                return HookOutcome::Deny(format!("shell-guard: refused (matched `{needle}`)"));
             }
         }
         HookOutcome::Allow
@@ -904,7 +900,8 @@ mod tests {
                 Ok(BuiltHook::Pre(Arc::new(Marker(self.0))))
             }
         }
-        let chain = ChainedHookFactory::new(vec![Box::new(Inner("first")), Box::new(Inner("second"))]);
+        let chain =
+            ChainedHookFactory::new(vec![Box::new(Inner("first")), Box::new(Inner("second"))]);
         let built = chain
             .build(&HookDeclaration {
                 id: "anything".into(),

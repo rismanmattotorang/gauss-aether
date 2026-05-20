@@ -110,11 +110,10 @@ fn run_web(
             picked.as_str()
         );
         let audit = gaussclaw_agent::AuditTrace::new();
-        let policy = gaussclaw_agent::TurnPolicy::new(kernel.clone(), provider)
-            .with_audit(audit.clone());
-        let compactor: std::sync::Arc<dyn gaussclaw_agent::Compactor> = std::sync::Arc::new(
-            gaussclaw_agent::WindowedCompactor::defaults(),
-        );
+        let policy =
+            gaussclaw_agent::TurnPolicy::new(kernel.clone(), provider).with_audit(audit.clone());
+        let compactor: std::sync::Arc<dyn gaussclaw_agent::Compactor> =
+            std::sync::Arc::new(gaussclaw_agent::WindowedCompactor::defaults());
         let agent = std::sync::Arc::new(
             gaussclaw_agent::AgentLoop::new(policy)
                 .with_compactor(compactor)
