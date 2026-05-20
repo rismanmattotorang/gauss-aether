@@ -698,8 +698,15 @@ Deliverables:
    install ./manifest.toml` validates, prompts for cap grant, writes
    the registered tool under `$XDG_DATA_HOME/gaussclaw/skills/`.
    Every installed skill is a signed receipt.
-8. `gaussclaw-redact` (new) — sensitive-word redaction over outbound
-   messages, configurable per profile.
+8. ✅ `gaussclaw-redact` (new) — sensitive-word redaction over outbound
+   messages, configurable per profile. *Two-layer policy (literal
+   substrings + compiled regex). Default rule catalogue covers 7
+   high-value patterns (credit cards, AWS keys, GH tokens, JWTs,
+   Bearer headers, URL-embedded passwords, PEM private keys).
+   `RedactionReport` carries per-rule hit counts with stable
+   `(rule_id, count)` tuples so the audit chain records exactly
+   which patterns fired. Hermes's redactor logs "redacted" with
+   no provenance.*
 
 Success criteria:
 

@@ -3045,6 +3045,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gaussclaw-redact"
+version = "0.0.1"
+dependencies = [
+ "gauss-core",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "gaussclaw-skill"
 version = "0.0.1"
 dependencies = [

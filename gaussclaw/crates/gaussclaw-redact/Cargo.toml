@@ -1,0 +1,22 @@
+[package]
+name        = "gaussclaw-redact"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+description = "Sensitive-word + structured-pattern redaction over outbound messages."
+
+[lints]
+workspace = true
+
+[dependencies]
+gauss-core  = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+regex       = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
