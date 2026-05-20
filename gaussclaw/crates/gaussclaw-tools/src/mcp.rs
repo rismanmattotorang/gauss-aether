@@ -315,7 +315,7 @@ mod tests {
         struct Stub;
         #[async_trait]
         impl McpClient for Stub {
-            fn server_name(&self) -> &str {
+            fn server_name(&self) -> &'static str {
                 "stub"
             }
             async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError> {
@@ -359,7 +359,7 @@ mod tests {
         struct Down;
         #[async_trait]
         impl McpClient for Down {
-            fn server_name(&self) -> &str {
+            fn server_name(&self) -> &'static str {
                 "down"
             }
             async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>, McpError> {

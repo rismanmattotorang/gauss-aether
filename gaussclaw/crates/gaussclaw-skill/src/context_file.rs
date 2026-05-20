@@ -128,9 +128,7 @@ impl ContextFileFinder {
             start.to_path_buf()
         } else {
             std::env::current_dir()
-                .map_err(|e| {
-                    SkillError::InvalidSchema(format!("cwd lookup: {e}"))
-                })?
+                .map_err(|e| SkillError::InvalidSchema(format!("cwd lookup: {e}")))?
                 .join(start)
         };
 

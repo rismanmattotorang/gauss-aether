@@ -27,7 +27,7 @@ pub use agent_loop::{
     ToolCall, DEFAULT_MAX_ITERATIONS,
 };
 
-pub use compaction::{Compactor, CompactionRecord, WindowedCompactor, SUMMARY_PREFIX};
+pub use compaction::{CompactionRecord, Compactor, WindowedCompactor, SUMMARY_PREFIX};
 
 pub use audit::{
     blake3_hex, AuditEntry, AuditTrace, InboundRecord, OutboundRecord, PlaneLabel,

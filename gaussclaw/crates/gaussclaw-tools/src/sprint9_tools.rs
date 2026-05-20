@@ -1,8 +1,8 @@
-//! Sprint 9 batch 1 — `web_fetch`, `web_search`, `send_message`,
-//! `pdf_extract` tools.
+//! Sprint 9 deferred tools — `web_fetch`, `web_search`,
+//! `send_message`, `pdf_extract`, `mcp_invoke`.
 //!
-//! Each tool follows the existing `ToolTrait` pattern. The four
-//! together close most of the Sprint 7 §4 deferred list:
+//! Each tool follows the existing `ToolTrait` pattern. Together they
+//! close most of the Sprint 7 §4 deferred list:
 //!
 //! - [`WebFetchTool`] — HTTP GET + simple text-extraction (HTML
 //!   tag stripping). Cap-gated `cap:network:http_get`.
@@ -13,8 +13,13 @@
 //!   Cap-gated `cap:network:http_post`.
 //! - [`PdfExtractTool`] — minimal PDF text extraction. Zero-dep
 //!   fallback: walks `BT … ET` blocks for printable strings.
+//! - [`McpInvokeTool`] — generic dynamic dispatch to any MCP server
+//!   registered in an [`McpServerRegistry`]. Differs from the
+//!   discovery-based [`crate::mcp::McpBridge`] which pre-builds one
+//!   tool per remote-server-tool at startup; `mcp_invoke` is the
+//!   late-binding sibling.
 //!
-//! All four follow GaussClaw's structural pattern (cap-gated,
+//! All five follow GaussClaw's structural pattern (cap-gated,
 //! adversarial-taint by default on network inbound, schema-guarded
 //! output).
 
@@ -493,6 +498,127 @@ pub fn extract_pdf_text(bytes: &[u8]) -> String {
     out
 }
 
+// ─── mcp_invoke ────────────────────────────────────────────────────────────
+
+const MCP_INVOKE_MANIFEST: &str = r#"
+name        = "mcp_invoke"
+description = "Dispatch a typed JSON-RPC 2.0 call to a registered MCP server. Picks the server by name from the in-process registry."
+usage       = "Args: {server: string, tool: string, args: object}. Returns {result: any}."
+caps        = ["network:http_post"]
+taint       = "web"
+reversible  = false
+persistent  = false
+
+[guards]
+no_instruction_substrings = true
+max_string_len            = 65536
+
+[schema]
+type = "object"
+"#;
+
+/// Registry of named MCP clients. `mcp_invoke` picks the right
+/// transport for a given `{server, ...}` payload by looking up the
+/// server name here. Production deployments register one transport
+/// per MCP server; tests use the in-process mock.
+#[derive(Default)]
+pub struct McpServerRegistry {
+    clients: std::sync::Mutex<std::collections::BTreeMap<String, Arc<dyn crate::mcp::McpClient>>>,
+}
+
+impl std::fmt::Debug for McpServerRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let g = self.clients.lock().expect("poisoned");
+        f.debug_struct("McpServerRegistry")
+            .field("servers", &g.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+impl McpServerRegistry {
+    /// Build an empty registry.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register `client` under `name`. Subsequent registrations under
+    /// the same name overwrite the prior client.
+    pub fn register(&self, name: impl Into<String>, client: Arc<dyn crate::mcp::McpClient>) {
+        self.clients
+            .lock()
+            .expect("poisoned")
+            .insert(name.into(), client);
+    }
+
+    /// List the names of every registered server.
+    #[must_use]
+    pub fn server_names(&self) -> Vec<String> {
+        self.clients
+            .lock()
+            .expect("poisoned")
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    fn get(&self, name: &str) -> Option<Arc<dyn crate::mcp::McpClient>> {
+        self.clients.lock().expect("poisoned").get(name).cloned()
+    }
+}
+
+/// `mcp_invoke` tool — typed dispatch to a named MCP server.
+pub struct McpInvokeTool {
+    manifest: ToolManifest,
+    registry: Arc<McpServerRegistry>,
+}
+
+impl McpInvokeTool {
+    /// Build a tool over a server registry.
+    ///
+    /// # Panics
+    /// Build-time only.
+    #[must_use]
+    pub fn new(registry: Arc<McpServerRegistry>) -> Self {
+        let skill = SkillManifest::from_toml(MCP_INVOKE_MANIFEST).expect("toml");
+        let manifest = skill.compile(ToolId("mcp_invoke".into())).expect("compile");
+        Self { manifest, registry }
+    }
+}
+
+#[async_trait]
+impl ToolTrait for McpInvokeTool {
+    fn manifest(&self) -> &ToolManifest {
+        &self.manifest
+    }
+
+    async fn invoke_raw(&self, args: serde_json::Value) -> GaussResult<serde_json::Value> {
+        let server = args
+            .get("server")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| GaussError::Internal("missing string field `server`".into()))?;
+        let tool = args
+            .get("tool")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| GaussError::Internal("missing string field `tool`".into()))?;
+        let call_args = args.get("args").cloned().unwrap_or(serde_json::Value::Null);
+        let client = self
+            .registry
+            .get(server)
+            .ok_or_else(|| GaussError::Internal(format!("mcp: unknown server `{server}`")))?;
+        let result = client
+            .call_tool(tool, call_args)
+            .await
+            .map_err(|e| GaussError::Internal(format!("mcp: {e}")))?;
+        Ok(serde_json::json!({
+            "kind":   "mcp_invoke_result",
+            "server": server,
+            "tool":   tool,
+            "result": result,
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -702,5 +828,74 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, GaussError::Internal(_)));
+    }
+
+    // ─── mcp_invoke ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn mcp_invoke_routes_to_registered_server() {
+        use crate::mcp::{McpToolDescriptor, MockMcpClient};
+        let registry = Arc::new(McpServerRegistry::new());
+        let mock = MockMcpClient::new("local").with_tool(
+            McpToolDescriptor::new("echo", "echo the body back"),
+            |args| serde_json::json!({"echoed": args}),
+        );
+        registry.register("local", Arc::new(mock));
+        let t = McpInvokeTool::new(registry.clone());
+        let out = t
+            .invoke_raw(serde_json::json!({
+                "server": "local",
+                "tool":   "echo",
+                "args":   {"hi": 1}
+            }))
+            .await
+            .unwrap();
+        assert_eq!(out["kind"], "mcp_invoke_result");
+        assert_eq!(out["server"], "local");
+        assert_eq!(out["tool"], "echo");
+        assert_eq!(out["result"]["echoed"]["hi"], 1);
+    }
+
+    #[tokio::test]
+    async fn mcp_invoke_rejects_unknown_server() {
+        let registry = Arc::new(McpServerRegistry::new());
+        let t = McpInvokeTool::new(registry);
+        let err = t
+            .invoke_raw(serde_json::json!({
+                "server": "missing",
+                "tool":   "x",
+                "args":   {}
+            }))
+            .await
+            .unwrap_err();
+        match err {
+            GaussError::Internal(m) => assert!(m.contains("unknown server")),
+            other => panic!("expected Internal, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_invoke_rejects_missing_fields() {
+        let registry = Arc::new(McpServerRegistry::new());
+        let t = McpInvokeTool::new(registry);
+        assert!(t
+            .invoke_raw(serde_json::json!({"server": "x"}))
+            .await
+            .is_err());
+        assert!(t
+            .invoke_raw(serde_json::json!({"tool": "y"}))
+            .await
+            .is_err());
+    }
+
+    #[test]
+    fn mcp_registry_lists_registered_servers() {
+        let registry = McpServerRegistry::new();
+        assert_eq!(registry.server_names().len(), 0);
+        let mock = crate::mcp::MockMcpClient::new("alpha");
+        registry.register("alpha", Arc::new(mock));
+        let names = registry.server_names();
+        assert_eq!(names.len(), 1);
+        assert_eq!(names[0], "alpha");
     }
 }

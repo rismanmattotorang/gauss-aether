@@ -847,9 +847,13 @@ Deliverables:
    dispatch over a pluggable `MessageSink` trait (mock sink ships
    for tests; production wires through `gaussclaw-channels`).
    Lands as `gaussclaw-tools::sprint9_tools::SendMessageTool`.
-5. **`mcp_invoke` tool** (Sprint 7 §4 deferred). MCP client
-   primitive — typed JSON-RPC 2.0 over stdio, cap-gated, mirrors
-   `gaussclaw-lsp-client` shape.
+5. **`mcp_invoke` tool** (Sprint 7 §4 deferred). ✅ MCP client
+   primitive — late-binding dynamic dispatch over an
+   `McpServerRegistry`. Differs from the discovery-based
+   `gaussclaw-tools::mcp::McpBridge` (one tool per remote-tool,
+   prebuilt at startup) in that `mcp_invoke` is a single generic
+   tool the agent can use to call any registered server's tools by
+   name at invocation time.
 6. **`terminal` PTY tool** (Sprint 7 §4 deferred). Real PTY via
    `portable-pty` behind a Cargo feature; cap-gated to
    `cap:executor:local`.
