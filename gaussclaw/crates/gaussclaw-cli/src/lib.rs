@@ -12,6 +12,8 @@
 
 #![allow(clippy::module_name_repetitions, clippy::doc_markdown)]
 
+pub mod slash;
+
 use clap::{Parser, Subcommand};
 
 /// Top-level CLI.

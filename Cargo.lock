@@ -2626,6 +2626,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gauss-hooks"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "gauss-core",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "gauss-hwca"
 version = "0.0.1"
 dependencies = [
@@ -2831,6 +2843,7 @@ dependencies = [
  "blake3",
  "gauss-audit",
  "gauss-core",
+ "gauss-hooks",
  "gauss-hwca",
  "gauss-kernel",
  "gauss-traits",
