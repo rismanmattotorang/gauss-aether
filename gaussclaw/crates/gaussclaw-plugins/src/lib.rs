@@ -87,6 +87,54 @@ impl PluginKind {
     }
 }
 
+/// Lifecycle stage a `HookDeclaration` attaches to.
+///
+/// Mirrors `gauss_hooks::{PreToolHook, PostToolHook}` — at startup
+/// the plugin loader registers each declared hook with the live
+/// `HookBus` at the corresponding stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum HookLifecycle {
+    /// Fired before tool dispatch. May `Warn` or `Deny`.
+    PreTool,
+    /// Fired after tool dispatch. Advisory only.
+    PostTool,
+}
+
+/// One hook a plugin promises to install when loaded. Data-only —
+/// the runtime resolves `id` to a concrete `PreToolHook` / `PostToolHook`
+/// implementation at registration time. Plugins that haven't been
+/// loaded yet still surface their declarations through `plugin list`
+/// so operators can see what they're about to admit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct HookDeclaration {
+    /// Hook id (`[a-z0-9_-]+`). Plugins MUST resolve this id to a
+    /// concrete callback when they're loaded; the loader fails
+    /// closed on a missing implementation.
+    pub id: String,
+    /// Lifecycle stage — `pre_tool` or `post_tool`.
+    pub lifecycle: HookLifecycle,
+    /// Optional dispatch priority (0 = earliest). Mirrors the
+    /// `HookBus::register_*` priority parameter. Defaults to 100.
+    #[serde(default = "default_hook_priority")]
+    pub priority: u8,
+    /// Optional list of tool ids the hook applies to. Empty (the
+    /// default) means "every tool" — the bus consults the hook for
+    /// every dispatch.
+    #[serde(default)]
+    pub target_tools: Vec<String>,
+    /// Human-readable description shown in `plugin list`.
+    #[serde(default)]
+    pub description: String,
+}
+
+const fn default_hook_priority() -> u8 {
+    100
+}
+
 /// Parsed `plugin.toml` (one per plugin).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -113,6 +161,13 @@ pub struct PluginManifest {
     /// Tags for filtering / dashboard rendering.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Hooks the plugin declares it will install (OpenHarness-inspired).
+    /// Each declaration carries an id + lifecycle + priority + an
+    /// optional `target_tools` filter. The plugin loader resolves
+    /// the ids to concrete `PreToolHook` / `PostToolHook` impls at
+    /// startup and registers them with the live `HookBus`.
+    #[serde(default)]
+    pub hooks: Vec<HookDeclaration>,
 }
 
 impl PluginManifest {
@@ -168,7 +223,45 @@ impl PluginManifest {
         if self.version.is_empty() {
             return Err(PluginError::InvalidManifest("version empty".into()));
         }
+        // Hook declarations must have unique ids and valid id grammar.
+        let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for h in &self.hooks {
+            if h.id.is_empty() {
+                return Err(PluginError::InvalidManifest("hook id empty".into()));
+            }
+            for c in h.id.chars() {
+                if !c.is_ascii_alphanumeric() && c != '_' && c != '-' {
+                    return Err(PluginError::InvalidManifest(format!(
+                        "hook id `{}` contains forbidden char {c:?}",
+                        h.id
+                    )));
+                }
+            }
+            if !seen.insert(h.id.as_str()) {
+                return Err(PluginError::InvalidManifest(format!(
+                    "duplicate hook id `{}`",
+                    h.id
+                )));
+            }
+        }
         Ok(())
+    }
+
+    /// Iterate hooks of the given lifecycle. The plugin loader calls
+    /// this twice — once per lifecycle — and registers each entry
+    /// with the live `HookBus`.
+    pub fn hooks_for(&self, lifecycle: HookLifecycle) -> impl Iterator<Item = &HookDeclaration> {
+        self.hooks.iter().filter(move |h| h.lifecycle == lifecycle)
+    }
+
+    /// Convenience: report whether the plugin declares any hook for
+    /// the given tool id. The match honours `HookDeclaration::target_tools`
+    /// — an empty list matches every tool.
+    #[must_use]
+    pub fn applies_to_tool(&self, lifecycle: HookLifecycle, tool: &str) -> bool {
+        self.hooks_for(lifecycle).any(|h| {
+            h.target_tools.is_empty() || h.target_tools.iter().any(|t| t == tool)
+        })
     }
 }
 
@@ -726,5 +819,146 @@ kind = "standalone"
         .unwrap();
         reg.unregister(PluginKind::Backend, "a").unwrap();
         assert!(reg.is_empty());
+    }
+
+    // ── OpenHarness-inspired hook declaration tests ──────────────────────
+
+    const HOOK_MANIFEST: &str = r#"
+name        = "guard"
+version     = "0.1.0"
+kind        = "standalone"
+description = "blocks dangerous shells"
+caps        = []
+
+[[hooks]]
+id          = "shell-guard"
+lifecycle   = "pre_tool"
+priority    = 10
+target_tools = ["shell"]
+description  = "refuses rm -rf /"
+
+[[hooks]]
+id          = "audit-log"
+lifecycle   = "post_tool"
+description = "writes every result to /var/log"
+"#;
+
+    #[test]
+    fn hooks_round_trip_through_toml() {
+        let m = PluginManifest::from_toml(HOOK_MANIFEST).expect("parse");
+        assert_eq!(m.hooks.len(), 2);
+        assert_eq!(m.hooks[0].id, "shell-guard");
+        assert!(matches!(m.hooks[0].lifecycle, HookLifecycle::PreTool));
+        assert_eq!(m.hooks[0].priority, 10);
+        assert_eq!(m.hooks[0].target_tools, vec!["shell".to_string()]);
+        assert!(matches!(m.hooks[1].lifecycle, HookLifecycle::PostTool));
+        // priority defaulted to 100.
+        assert_eq!(m.hooks[1].priority, 100);
+    }
+
+    #[test]
+    fn empty_hook_id_is_rejected() {
+        let raw = r#"
+name = "x"
+version = "0.1.0"
+kind = "standalone"
+
+[[hooks]]
+id = ""
+lifecycle = "pre_tool"
+"#;
+        let err = PluginManifest::from_toml(raw).unwrap_err();
+        assert!(matches!(err, PluginError::InvalidManifest(_)));
+    }
+
+    #[test]
+    fn duplicate_hook_id_is_rejected() {
+        let raw = r#"
+name = "x"
+version = "0.1.0"
+kind = "standalone"
+
+[[hooks]]
+id = "h"
+lifecycle = "pre_tool"
+
+[[hooks]]
+id = "h"
+lifecycle = "post_tool"
+"#;
+        let err = PluginManifest::from_toml(raw).unwrap_err();
+        match err {
+            PluginError::InvalidManifest(msg) => assert!(msg.contains("duplicate")),
+            other => panic!("expected InvalidManifest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn forbidden_chars_in_hook_id_rejected() {
+        let raw = r#"
+name = "x"
+version = "0.1.0"
+kind = "standalone"
+
+[[hooks]]
+id = "bad id"
+lifecycle = "pre_tool"
+"#;
+        let err = PluginManifest::from_toml(raw).unwrap_err();
+        assert!(matches!(err, PluginError::InvalidManifest(_)));
+    }
+
+    #[test]
+    fn hooks_for_filters_by_lifecycle() {
+        let m = PluginManifest::from_toml(HOOK_MANIFEST).unwrap();
+        let pre: Vec<&str> = m
+            .hooks_for(HookLifecycle::PreTool)
+            .map(|h| h.id.as_str())
+            .collect();
+        let post: Vec<&str> = m
+            .hooks_for(HookLifecycle::PostTool)
+            .map(|h| h.id.as_str())
+            .collect();
+        assert_eq!(pre, vec!["shell-guard"]);
+        assert_eq!(post, vec!["audit-log"]);
+    }
+
+    #[test]
+    fn applies_to_tool_honours_target_filter() {
+        let m = PluginManifest::from_toml(HOOK_MANIFEST).unwrap();
+        // shell-guard targets only "shell".
+        assert!(m.applies_to_tool(HookLifecycle::PreTool, "shell"));
+        assert!(!m.applies_to_tool(HookLifecycle::PreTool, "echo"));
+        // audit-log has an empty target list → matches every tool.
+        assert!(m.applies_to_tool(HookLifecycle::PostTool, "shell"));
+        assert!(m.applies_to_tool(HookLifecycle::PostTool, "echo"));
+    }
+
+    #[test]
+    fn manifest_without_hooks_parses_clean() {
+        let raw = r#"
+name = "x"
+version = "0.1.0"
+kind = "standalone"
+"#;
+        let m = PluginManifest::from_toml(raw).unwrap();
+        assert!(m.hooks.is_empty());
+        assert!(!m.applies_to_tool(HookLifecycle::PreTool, "any"));
+    }
+
+    #[test]
+    fn unknown_field_under_hooks_is_rejected() {
+        let raw = r#"
+name = "x"
+version = "0.1.0"
+kind = "standalone"
+
+[[hooks]]
+id = "h"
+lifecycle = "pre_tool"
+rogue = true
+"#;
+        let err = PluginManifest::from_toml(raw).unwrap_err();
+        assert!(matches!(err, PluginError::Toml(_)));
     }
 }

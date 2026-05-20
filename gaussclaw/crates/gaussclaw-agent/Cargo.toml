@@ -18,6 +18,7 @@ gauss-kernel = { workspace = true }
 gauss-audit  = { workspace = true }
 gauss-hwca   = { workspace = true }
 gauss-hooks  = { workspace = true }
+gaussclaw-skill = { workspace = true }
 gaussclaw-store = { workspace = true }
 gaussclaw-tools = { workspace = true }
 async-trait  = { workspace = true }
