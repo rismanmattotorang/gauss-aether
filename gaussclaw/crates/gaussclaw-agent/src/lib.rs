@@ -30,8 +30,8 @@ pub use agent_loop::{
 pub use compaction::{CompactionRecord, Compactor, WindowedCompactor, SUMMARY_PREFIX};
 
 pub use audit::{
-    blake3_hex, AuditEntry, AuditTrace, InboundRecord, OutboundRecord, PlaneLabel,
-    TurnCompleteRecord, TurnStartRecord,
+    blake3_hex, AuditEntry, AuditTrace, HookDenyRecord, HookWarnRecord, InboundRecord,
+    OutboundRecord, PlaneLabel, TurnCompleteRecord, TurnStartRecord,
 };
 
 use std::sync::Arc;

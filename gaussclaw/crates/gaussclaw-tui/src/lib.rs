@@ -141,6 +141,16 @@ pub struct App<'a> {
     input_history: HistoryStore,
     /// Last assistant text, for `/copy`.
     last_assistant: Option<String>,
+    /// Data-driven slash-command catalogue (defaults plus plugin
+    /// registrations). The TUI consults this for `/commands` listing
+    /// and for the "did you mean?" suggestion on unknown commands.
+    ///
+    /// The TUI's hand-written `dispatch_slash` `match` still owns the
+    /// real behaviour for the built-in commands — the registry is
+    /// authoritative for *discoverability*, not behaviour. This keeps
+    /// the locked snapshot output stable while letting plugins
+    /// surface their own command names through `/commands`.
+    slash_registry: gaussclaw_cli::slash::SlashRegistry,
 }
 
 impl App<'_> {
@@ -172,7 +182,21 @@ impl App<'_> {
             scroll_offset: 0,
             input_history,
             last_assistant: None,
+            slash_registry: gaussclaw_cli::slash::SlashRegistry::with_defaults(),
         }
+    }
+
+    /// Borrow the slash-command registry. Plugins / channel adapters
+    /// use this to register additional commands at startup. The TUI
+    /// surfaces every entry in `/commands` output and uses the
+    /// catalogue for the "did you mean?" suggestion on unknown input.
+    pub fn slash_registry(&self) -> &gaussclaw_cli::slash::SlashRegistry {
+        &self.slash_registry
+    }
+
+    /// Mutable handle to the registry — for plugin registration.
+    pub fn slash_registry_mut(&mut self) -> &mut gaussclaw_cli::slash::SlashRegistry {
+        &mut self.slash_registry
     }
 
     /// Push an entry onto the history pane.
@@ -420,14 +444,45 @@ impl App<'_> {
 
             "sandbox" => "Composite sandbox layers (per tool dispatch):\n  L1 WASM (wasmi)\n  L2 Landlock\n  L3 seccomp\n  L4 bwrap\nUpper-bound compromise: Pr ≤ 1.1 × 10⁻⁷ (theorem T10).".into(),
 
+            "commands" => self.slash_registry.help_text(),
+
             "tools" | "config" | "logs" | "queue" | "undo" | "retry" | "paste" | "compact"
             | "resume" | "sessions" | "details" | "statusbar" => {
                 format!("/{head} {rest}: awaits agent-loop wiring; tracked in STRATEGY.md.")
             }
 
-            _ => format!("Unknown command: /{head}. Try /help."),
+            other => {
+                // Consult the slash registry for a "did you mean?"
+                // suggestion. Plugin-registered commands surface here
+                // even though they aren't in the hand-written match.
+                if let Some(cmd) = self.slash_registry.resolve(other) {
+                    format!(
+                        "/{other}: {desc} (plugin-registered; pending TUI wiring).",
+                        desc = cmd.description,
+                    )
+                } else if let Some(suggestion) = self.closest_slash(other) {
+                    format!(
+                        "Unknown command: /{other}. Did you mean /{suggestion}? Try /help or /commands.",
+                    )
+                } else {
+                    format!("Unknown command: /{other}. Try /help.")
+                }
+            }
         };
         self.history.push(Entry::System(body));
+    }
+
+    /// Cheap edit-distance "did you mean?" against the slash registry.
+    /// Returns the closest canonical name within Levenshtein distance ≤ 2.
+    fn closest_slash(&self, head: &str) -> Option<&'static str> {
+        let mut best: Option<(&'static str, usize)> = None;
+        for cmd in self.slash_registry.iter() {
+            let d = levenshtein(head, cmd.name);
+            if d <= 2 && best.map_or(true, |(_, bd)| d < bd) {
+                best = Some((cmd.name, d));
+            }
+        }
+        best.map(|(n, _)| n)
     }
 
     /// Render the whole UI.
@@ -568,6 +623,34 @@ fn emit_osc52(text: &str) {
     // emulator without being intercepted.
     let _ = std::io::Write::write_all(&mut io::stdout(), format!("\x1b]52;c;{b64}\x07").as_bytes());
     let _ = std::io::Write::flush(&mut io::stdout());
+}
+
+/// Iterative Levenshtein edit distance. Used by the TUI's "did you
+/// mean?" suggestion against the slash registry. We early-out at
+/// distance > 3 since the caller only cares about ≤ 2.
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let (n, m) = (a.len(), b.len());
+    if n == 0 {
+        return m;
+    }
+    if m == 0 {
+        return n;
+    }
+    let mut prev: Vec<usize> = (0..=m).collect();
+    let mut curr: Vec<usize> = vec![0; m + 1];
+    for i in 1..=n {
+        curr[0] = i;
+        for j in 1..=m {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            curr[j] = (prev[j] + 1)
+                .min(curr[j - 1] + 1)
+                .min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[m]
 }
 
 /// In-app help body for `/help`.
@@ -782,6 +865,70 @@ mod tests {
         let last = app.history().last().expect("entry");
         match last {
             Entry::System(body) => assert!(body.contains("Unknown command")),
+            other => panic!("expected System, got {other:?}"),
+        }
+    }
+
+    /// `/commands` lists the entire slash-registry — the catalogue
+    /// surfaces every registered command (defaults + plugin entries).
+    #[test]
+    fn slash_commands_lists_registry_entries() {
+        let mut app = App::new(StatusInfo::default());
+        type_str(&mut app, "/commands");
+        app.on_key(enter());
+        let last = app.history().last().expect("entry");
+        match last {
+            Entry::System(body) => {
+                assert!(body.contains("Available slash commands"));
+                assert!(body.contains("/help"));
+                assert!(body.contains("/compact"));
+            }
+            other => panic!("expected System, got {other:?}"),
+        }
+    }
+
+    /// A near-miss surfaces the "did you mean?" hint sourced from the
+    /// registry's catalogue.
+    #[test]
+    fn near_miss_offers_did_you_mean() {
+        let mut app = App::new(StatusInfo::default());
+        type_str(&mut app, "/hep"); // 1 edit from /help
+        app.on_key(enter());
+        let last = app.history().last().expect("entry");
+        match last {
+            Entry::System(body) => {
+                assert!(body.contains("Did you mean /help"));
+            }
+            other => panic!("expected System, got {other:?}"),
+        }
+    }
+
+    /// Plugin-registered command (added via `slash_registry_mut`) is
+    /// resolved by the TUI fallback path even though the hand-written
+    /// `match` doesn't list it. The body announces "plugin-registered".
+    #[test]
+    fn plugin_registered_command_resolves_via_registry() {
+        use gaussclaw_cli::slash::{SlashCommand, SlashKind};
+
+        let mut app = App::new(StatusInfo::default());
+        app.slash_registry_mut()
+            .register(SlashCommand::new(
+                "deploy",
+                &[],
+                "ship the build",
+                SlashKind::Agent,
+                true,
+            ))
+            .unwrap();
+        type_str(&mut app, "/deploy");
+        app.on_key(enter());
+        let last = app.history().last().expect("entry");
+        match last {
+            Entry::System(body) => {
+                assert!(body.contains("/deploy"));
+                assert!(body.contains("plugin-registered"));
+                assert!(body.contains("ship the build"));
+            }
             other => panic!("expected System, got {other:?}"),
         }
     }

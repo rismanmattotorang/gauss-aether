@@ -47,6 +47,47 @@ pub enum AuditEntry {
     TurnStart(TurnStartRecord),
     /// A turn finished — provider replied, response queued.
     TurnComplete(TurnCompleteRecord),
+    /// A `PreToolHook` denied a tool call. Records the tool name,
+    /// the hook chain identity, and the reason — every denial is
+    /// replayable post-hoc. (OpenHarness-inspired lifecycle audit.)
+    HookDeny(HookDenyRecord),
+    /// A `PreToolHook` raised a non-blocking warning that did not
+    /// stop the dispatch. Recorded so the audit trail of advisories
+    /// is complete.
+    HookWarn(HookWarnRecord),
+}
+
+/// Recorded `PreToolHook::Deny` event.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HookDenyRecord {
+    /// Tool id the hook refused to dispatch.
+    pub tool: String,
+    /// Free-form reason text emitted by the denying hook.
+    pub reason: String,
+    /// BLAKE3 hex of the canonical-JSON-encoded args (the args
+    /// themselves stay out of the chain to avoid leaking secrets).
+    pub args_hash: String,
+    /// Incoming taint label at the time of the denial.
+    pub taint: TaintLabel,
+    /// RFC3339 timestamp.
+    pub ts: String,
+}
+
+/// Recorded `PreToolHook::Warn` event.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HookWarnRecord {
+    /// Tool id the hook advised on.
+    pub tool: String,
+    /// Free-form warning message.
+    pub message: String,
+    /// BLAKE3 hex of the args.
+    pub args_hash: String,
+    /// Incoming taint.
+    pub taint: TaintLabel,
+    /// RFC3339 timestamp.
+    pub ts: String,
 }
 
 /// Inbound payload (the audit-WAL precondition for any handler).
@@ -258,6 +299,44 @@ impl AuditTrace {
             prompt_tokens,
             completion_tokens,
             finish_reason: finish_reason.into(),
+            ts: rfc3339_now(),
+        }))
+        .await
+    }
+
+    /// Convenience: record a `PreToolHook::Deny`. The args bytes
+    /// don't appear in the chain — only their BLAKE3 — so a hostile
+    /// argument value cannot exfiltrate secrets through the audit log.
+    pub async fn record_hook_deny(
+        &self,
+        tool: impl Into<String>,
+        reason: impl Into<String>,
+        args_bytes: &[u8],
+        taint: TaintLabel,
+    ) -> ChainHead {
+        self.record(AuditEntry::HookDeny(HookDenyRecord {
+            tool: tool.into(),
+            reason: reason.into(),
+            args_hash: blake3_hex(args_bytes),
+            taint,
+            ts: rfc3339_now(),
+        }))
+        .await
+    }
+
+    /// Convenience: record a `PreToolHook::Warn` (advisory, non-blocking).
+    pub async fn record_hook_warn(
+        &self,
+        tool: impl Into<String>,
+        message: impl Into<String>,
+        args_bytes: &[u8],
+        taint: TaintLabel,
+    ) -> ChainHead {
+        self.record(AuditEntry::HookWarn(HookWarnRecord {
+            tool: tool.into(),
+            message: message.into(),
+            args_hash: blake3_hex(args_bytes),
+            taint,
             ts: rfc3339_now(),
         }))
         .await
