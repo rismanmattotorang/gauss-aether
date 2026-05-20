@@ -253,12 +253,47 @@ impl LoopSink for NoopSink {
     async fn emit(&self, _event: LoopEvent) {}
 }
 
+/// Share-able cancel-flag handle.
+///
+/// Sprint 9 §2 — every front-end runtime (TUI's `Ctrl+C`, the
+/// dashboard's `WS Close`, the ACP server's `cancel` RPC) holds an
+/// independent `CancelHandle` that flips the same atomic flag the
+/// `AgentLoop` polls between iterations. The handle is intentionally
+/// minimal — it doesn't carry the event stream, so a front-end that
+/// only needs to cancel doesn't accept a full [`MemorySink`].
+///
+/// Cheap to clone (`Arc<AtomicBool>`).
+#[derive(Debug, Default, Clone)]
+pub struct CancelHandle {
+    inner: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl CancelHandle {
+    /// Build a fresh, un-fired handle.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the cancel flag. The next [`AgentLoop`] iteration boundary
+    /// will return [`LoopOutcome::stop_reason`] = `"cancelled"`.
+    pub fn request_cancel(&self) {
+        self.inner.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Inspect the cancel flag.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.inner.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 /// In-memory sink that retains every event. Used by tests and the
 /// snapshot conformance suite.
 #[derive(Debug, Default, Clone)]
 pub struct MemorySink {
     events: Arc<tokio::sync::Mutex<Vec<LoopEvent>>>,
-    cancel: Arc<std::sync::atomic::AtomicBool>,
+    cancel: CancelHandle,
 }
 
 impl MemorySink {
@@ -268,6 +303,25 @@ impl MemorySink {
         Self::default()
     }
 
+    /// Build a sink that shares its cancel flag with an existing
+    /// [`CancelHandle`]. Used when a front-end runtime constructs the
+    /// cancel handle first (e.g. so the TUI's Ctrl+C handler captures
+    /// it) and then attaches the event sink.
+    #[must_use]
+    pub fn with_cancel_handle(cancel: CancelHandle) -> Self {
+        Self {
+            events: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            cancel,
+        }
+    }
+
+    /// Borrow the share-able cancel handle. Front-end runtimes clone
+    /// this so they can cancel from outside the sink owner.
+    #[must_use]
+    pub fn cancel_handle(&self) -> CancelHandle {
+        self.cancel.clone()
+    }
+
     /// Snapshot every recorded event.
     pub async fn events(&self) -> Vec<LoopEvent> {
         self.events.lock().await.clone()
@@ -275,7 +329,7 @@ impl MemorySink {
 
     /// Cause the next iteration boundary to return cancelled.
     pub fn request_cancel(&self) {
-        self.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.cancel.request_cancel();
     }
 }
 
@@ -286,7 +340,7 @@ impl LoopSink for MemorySink {
     }
 
     fn should_cancel(&self) -> bool {
-        self.cancel.load(std::sync::atomic::Ordering::SeqCst)
+        self.cancel.is_cancelled()
     }
 }
 
@@ -396,6 +450,7 @@ impl AgentLoop {
     ///
     /// Emits a [`LoopEvent`] to `sink` at every boundary. Honours
     /// [`LoopSink::should_cancel`] between iterations.
+    #[allow(clippy::cognitive_complexity)]
     pub async fn run(
         &self,
         prompt: Prompt,
@@ -922,6 +977,60 @@ mod tests {
         assert_eq!(outcome.iterations, 0);
     }
 
+    // ── Sprint 9 §2: mid-turn cancel via share-able CancelHandle ──────────
+
+    #[tokio::test]
+    async fn cancel_handle_shared_with_sink_cancels_loop() {
+        // A front-end runtime (TUI Ctrl+C, WS close, ACP cancel RPC)
+        // holds a `CancelHandle` cloned from the sink. Flipping it
+        // from outside cancels the next iteration boundary.
+        let provider = stub_provider("hello");
+        let loop_ = AgentLoop::new(loop_policy(provider));
+        let sink = MemorySink::new();
+        let handle = sink.cancel_handle();
+        // Cancel *from a separate task* — simulates a UI thread.
+        let h = handle.clone();
+        tokio::spawn(async move {
+            h.request_cancel();
+        })
+        .await
+        .unwrap();
+        let outcome = loop_
+            .run(
+                Prompt::new("any", vec![Message::new("user", "hi")]),
+                TaintLabel::User,
+                None,
+                &sink,
+            )
+            .await
+            .expect("ok");
+        assert_eq!(outcome.stop_reason, "cancelled");
+    }
+
+    #[tokio::test]
+    async fn sink_constructed_with_pre_built_cancel_handle_observes_flag() {
+        // Inverse construction: build the handle first (the front-end
+        // owns it), then attach a sink that uses it. This is the
+        // production wiring for the WS server.
+        let handle = CancelHandle::new();
+        let sink = MemorySink::with_cancel_handle(handle.clone());
+        assert!(!sink.should_cancel());
+        handle.request_cancel();
+        assert!(sink.should_cancel());
+        assert!(handle.is_cancelled());
+    }
+
+    #[test]
+    fn cancel_handle_clones_share_the_same_flag() {
+        let a = CancelHandle::new();
+        let b = a.clone();
+        assert!(!a.is_cancelled());
+        assert!(!b.is_cancelled());
+        b.request_cancel();
+        assert!(a.is_cancelled());
+        assert!(b.is_cancelled());
+    }
+
     #[tokio::test]
     async fn fallback_attempts_recorded_on_provider_error() {
         struct FailingProvider;
@@ -967,7 +1076,7 @@ mod tests {
         struct DenyShell;
         #[async_trait::async_trait]
         impl PreToolHook for DenyShell {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "deny_shell"
             }
             async fn on_pre_tool(&self, e: &PreToolEvent) -> HookOutcome {
@@ -1025,7 +1134,7 @@ mod tests {
         struct Warner;
         #[async_trait::async_trait]
         impl PreToolHook for Warner {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "warn"
             }
             async fn on_pre_tool(&self, _e: &PreToolEvent) -> HookOutcome {
@@ -1138,7 +1247,7 @@ mod tests {
         struct Counter;
         #[async_trait::async_trait]
         impl PostToolHook for Counter {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "counter"
             }
             async fn on_post_tool(&self, _e: &PostToolEvent) {

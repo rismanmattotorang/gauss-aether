@@ -23,8 +23,8 @@ pub mod audit;
 pub mod compaction;
 
 pub use agent_loop::{
-    parse_inline_tool_calls, AgentLoop, LoopEvent, LoopOutcome, LoopSink, MemorySink, NoopSink,
-    ToolCall, DEFAULT_MAX_ITERATIONS,
+    parse_inline_tool_calls, AgentLoop, CancelHandle, LoopEvent, LoopOutcome, LoopSink, MemorySink,
+    NoopSink, ToolCall, DEFAULT_MAX_ITERATIONS,
 };
 
 pub use compaction::{CompactionRecord, Compactor, WindowedCompactor, SUMMARY_PREFIX};

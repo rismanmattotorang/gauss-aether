@@ -834,9 +834,13 @@ Deliverables:
    GaussClaw's WebSocket frame format is ready — just needs the
    loop driver wiring.
 2. **Mid-turn Ctrl-C / WS-close cancellation** (Sprint 4 §4
-   follow-on). The `MemorySink::request_cancel` primitive exists;
-   the TUI's `Ctrl+C` and the dashboard's `WS Close` both need to
-   set the flag.
+   follow-on). ✅ The new `CancelHandle` type decouples the cancel
+   flag from `MemorySink` — front-end runtimes (TUI Ctrl+C, WS
+   close, ACP `cancel` RPC) clone a `CancelHandle` and flip it
+   from outside the sink owner. `MemorySink::cancel_handle()` and
+   `MemorySink::with_cancel_handle(handle)` ship for both
+   construction orders. The actual TUI/WS hookups land alongside
+   the runtime bring-up that consumes `AgentLoop::run` directly.
 3. **`web_fetch` + `web_search` tools** (Sprint 7 §4 deferred). ✅
    `web_fetch` over the existing `HttpTool` with content
    extraction; `web_search` over a pluggable `SearchProvider`

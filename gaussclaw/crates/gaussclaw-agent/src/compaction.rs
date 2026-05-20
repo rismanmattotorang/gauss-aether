@@ -146,22 +146,19 @@ impl Compactor for WindowedCompactor {
         if before_chars <= self.budget_chars {
             return None;
         }
-        if messages.len() <= self.keep_tail + 1 {
+        if messages.len() <= self.keep_tail.saturating_add(1) {
             // Not enough messages to compact — would leave nothing in
             // the "to summarise" slice.
             return None;
         }
 
         // Identify the leading system message (preserve verbatim).
-        let leading_system_idx = if messages
-            .first()
-            .map(|m| m.role == "system")
-            .unwrap_or(false)
-        {
-            Some(0)
-        } else {
-            None
-        };
+        let leading_system_idx: Option<usize> =
+            if messages.first().is_some_and(|m| m.role == "system") {
+                Some(0)
+            } else {
+                None
+            };
 
         // Build the "to summarise" range. We pick everything between
         // the leading system message and the trailing `keep_tail`
@@ -183,7 +180,7 @@ impl Compactor for WindowedCompactor {
             return None;
         }
 
-        let summarise_from = leading_system_idx.map_or(0, |i| i + 1);
+        let summarise_from = leading_system_idx.map_or(0, |i| i.saturating_add(1));
         if summarise_from >= keep_from {
             return None;
         }
@@ -237,7 +234,12 @@ impl Compactor for WindowedCompactor {
             .collect();
 
         let tail: Vec<Message> = messages[keep_from..].to_vec();
-        let mut rebuilt: Vec<Message> = Vec::with_capacity(2 + preserved_tools.len() + tail.len());
+        let mut rebuilt: Vec<Message> = Vec::with_capacity(
+            preserved_tools
+                .len()
+                .saturating_add(tail.len())
+                .saturating_add(2),
+        );
         if let Some(idx) = leading_system_idx {
             rebuilt.push(messages[idx].clone());
         }
@@ -245,7 +247,6 @@ impl Compactor for WindowedCompactor {
         rebuilt.extend(preserved_tools);
         rebuilt.extend(tail);
 
-        let before_len = messages.len();
         *messages = rebuilt;
         let after_chars = total_chars(messages);
 
@@ -266,7 +267,7 @@ mod tests {
     use super::*;
 
     fn pad_msg(role: &str, fill: char, n: usize) -> Message {
-        Message::new(role, std::iter::repeat(fill).take(n).collect::<String>())
+        Message::new(role, std::iter::repeat_n(fill, n).collect::<String>())
     }
 
     #[test]
