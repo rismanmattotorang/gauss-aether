@@ -877,9 +877,13 @@ Deliverables:
    replay on open. The chain-protected Trinity table layer is a
    follow-on; the durability gap (cron jobs lost on restart) closes
    here.
-10. **Real Modal HTTP client** (Sprint 6 §1.3 follow-on). Wire
-    `gaussclaw-providers` into `gauss-exec::ModalExecutor` once
-    Modal's HTTP API stability lands.
+10. **Real Modal HTTP client** (Sprint 6 §1.3 follow-on). ✅
+    `ModalHttpClient` trait, `ModalCallRequest`/`ModalCallResponse`
+    types, and a `MockModalHttpClient` ship in
+    `gauss-exec::modal`. `ModalExecutor::with_client(..)` accepts
+    any `Arc<dyn ModalHttpClient>`; production wires a
+    `reqwest`-backed client via a follow-on adapter crate once
+    Modal API credentials are available.
 
 ### Sprint 9 — wrap-up: production-ready, follow-on-complete
 

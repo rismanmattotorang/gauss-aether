@@ -56,7 +56,10 @@ pub mod types;
 
 pub use docker::{build_docker_argv, DockerConfig, DockerExecutor};
 pub use local::LocalExecutor;
-pub use modal::{MockModalExecutor, ModalConfig, ModalExecutor};
+pub use modal::{
+    MockModalExecutor, MockModalHttpClient, ModalCallRequest, ModalCallResponse, ModalConfig,
+    ModalExecutor, ModalHttpClient, UnconfiguredModalClient,
+};
 pub use router::{ExecRouter, ExecRouterError};
 pub use ssh::{build_ssh_argv, SshConfig, SshExecutor};
 pub use types::{
