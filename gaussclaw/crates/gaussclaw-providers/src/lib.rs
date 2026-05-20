@@ -78,6 +78,10 @@ pub mod openai_compat;
 pub mod postconditions;
 pub mod replicate;
 pub mod router;
+pub mod select;
+
+#[cfg(test)]
+mod e2e_anthropic;
 
 pub use anthropic::AnthropicProvider;
 pub use backend::{HttpBackend, HttpError, HttpRequest, HttpResponse, MockHttpBackend};
@@ -98,3 +102,4 @@ pub use openai_compat::{
 pub use postconditions::{check_postconditions, PostconditionError};
 pub use replicate::ReplicateProvider;
 pub use router::{RoutedCompletion, RouterProvider, RouterTransparencyError};
+pub use select::{pick_provider, PickedProvider, ProviderChoice, UnconfiguredBackend};
