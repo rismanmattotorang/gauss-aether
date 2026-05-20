@@ -596,7 +596,9 @@ impl wire::WireOutbox for WebSocketOutbox {
     async fn send(&self, frame: serde_json::Value) -> bool {
         use futures_util::SinkExt;
         let mut g = self.sink.lock().await;
-        g.send(Message::Text(frame.to_string().into())).await.is_ok()
+        g.send(Message::Text(frame.to_string().into()))
+            .await
+            .is_ok()
     }
 }
 
@@ -661,10 +663,7 @@ async fn chat_socket(socket: WebSocket, agent: Option<Arc<AgentLoop>>) {
             vec![AgentMessage::new("user", user_text.clone())],
         );
         let sink = wire::WireLoopSink::new(outbox.clone());
-        match agent
-            .run(prompt, TaintLabel::User, None, &sink)
-            .await
-        {
+        match agent.run(prompt, TaintLabel::User, None, &sink).await {
             Ok(_outcome) => {
                 // Done frame is already emitted by the loop sink.
             }
@@ -2530,14 +2529,11 @@ taint = "trusted"
     #[tokio::test]
     async fn chat_socket_path_streams_loop_events_via_wire() {
         use crate::wire::{CaptureOutbox, WireLoopSink, WireOutbox};
-        use gaussclaw_agent::{
-            AgentLoop, EchoProvider, KernelHandle, Message, Prompt, TurnPolicy,
-        };
         use gauss_core::TaintLabel;
+        use gaussclaw_agent::{AgentLoop, EchoProvider, KernelHandle, Message, Prompt, TurnPolicy};
         use std::sync::Arc;
 
-        let provider: Arc<dyn gaussclaw_agent::ProviderHandle> =
-            Arc::new(EchoProvider::default());
+        let provider: Arc<dyn gaussclaw_agent::ProviderHandle> = Arc::new(EchoProvider::default());
         let policy = TurnPolicy::new(KernelHandle::permissive(), provider);
         let agent = Arc::new(AgentLoop::new(policy));
 
@@ -2674,12 +2670,10 @@ taint = "trusted"
         use gaussclaw_agent::{AgentLoop, EchoProvider, KernelHandle, TurnPolicy};
         use std::sync::Arc;
 
-        let provider: Arc<dyn gaussclaw_agent::ProviderHandle> =
-            Arc::new(EchoProvider::default());
+        let provider: Arc<dyn gaussclaw_agent::ProviderHandle> = Arc::new(EchoProvider::default());
         let policy = TurnPolicy::new(KernelHandle::permissive(), provider);
         let agent = Arc::new(AgentLoop::new(policy));
-        let state =
-            ServerState::new(Config::default(), None).with_agent(agent.clone());
+        let state = ServerState::new(Config::default(), None).with_agent(agent.clone());
         let got = state.agent().expect("agent attached");
         assert!(Arc::ptr_eq(&got, &agent));
     }
