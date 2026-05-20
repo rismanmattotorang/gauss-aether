@@ -126,7 +126,22 @@ pub enum Tick {
     Continue,
     /// Re-render once and exit cleanly.
     Quit,
+    /// The user pressed a cancel key while an agent loop was running.
+    /// The runtime should ask the in-flight loop to wind down (typically
+    /// by flipping a `gaussclaw_agent::CancelHandle`) and then resume the
+    /// TUI input cycle without exiting.
+    CancelInFlight,
 }
+
+/// Callback the TUI fires on user-initiated cancel.
+///
+/// Sprint 10 §7 — production runtimes pass a closure that calls
+/// `gaussclaw_agent::CancelHandle::request_cancel`; tests pass a
+/// closure that flips a local flag.
+///
+/// Boxed so it's trait-object-safe; cheap clones not needed because the
+/// `App` owns it for its lifetime.
+pub type CancelCallback = Box<dyn Fn() + Send + Sync>;
 
 // ─── the app ────────────────────────────────────────────────────────────────
 
@@ -151,6 +166,15 @@ pub struct App<'a> {
     /// the locked snapshot output stable while letting plugins
     /// surface their own command names through `/commands`.
     slash_registry: gaussclaw_cli::slash::SlashRegistry,
+    /// True when the runtime has notified the App that an agent-loop
+    /// turn is in flight. While `true`, `Ctrl+C` and `<Esc>` fire the
+    /// cancel callback instead of quitting the TUI.
+    turn_in_flight: bool,
+    /// Optional cancel-callback the runtime wires to a
+    /// `gaussclaw_agent::CancelHandle`. `None` keeps the legacy
+    /// "Ctrl+C quits the TUI hard" behaviour for runtimes that don't
+    /// drive an agent loop.
+    on_cancel: Option<CancelCallback>,
 }
 
 impl App<'_> {
@@ -183,6 +207,8 @@ impl App<'_> {
             input_history,
             last_assistant: None,
             slash_registry: gaussclaw_cli::slash::SlashRegistry::with_defaults(),
+            turn_in_flight: false,
+            on_cancel: None,
         }
     }
 
@@ -197,6 +223,33 @@ impl App<'_> {
     /// Mutable handle to the registry — for plugin registration.
     pub fn slash_registry_mut(&mut self) -> &mut gaussclaw_cli::slash::SlashRegistry {
         &mut self.slash_registry
+    }
+
+    /// Attach a cancel callback. Sprint 10 §7 — production runtimes
+    /// pass a closure that calls
+    /// `gaussclaw_agent::CancelHandle::request_cancel`; when set, the
+    /// TUI's `Ctrl+C` / `<Esc>` keys fire the callback (asking the
+    /// in-flight loop to wind down) instead of hard-quitting the TUI
+    /// whenever `mark_turn_in_flight(true)` has been called.
+    #[must_use]
+    pub fn with_cancel_callback(mut self, cb: CancelCallback) -> Self {
+        self.on_cancel = Some(cb);
+        self
+    }
+
+    /// Tell the App whether an agent-loop turn is currently in flight.
+    /// The runtime calls `mark_turn_in_flight(true)` when it dispatches
+    /// `AgentLoop::run` and `mark_turn_in_flight(false)` when the loop
+    /// returns (whether normally or via cancel). Cancel keys only fire
+    /// the callback while `turn_in_flight == true`.
+    pub const fn mark_turn_in_flight(&mut self, in_flight: bool) {
+        self.turn_in_flight = in_flight;
+    }
+
+    /// True when the runtime has marked a turn as in-flight.
+    #[must_use]
+    pub const fn is_turn_in_flight(&self) -> bool {
+        self.turn_in_flight
     }
 
     /// Push an entry onto the history pane.
@@ -221,10 +274,41 @@ impl App<'_> {
             return Tick::Continue;
         }
 
+        // Sprint 10 §7 — `<Esc>` is the dedicated "cancel in-flight"
+        // key. It does nothing when no turn is in flight, mirroring
+        // every modern terminal agent (Cursor, aider, claude-code).
+        if key.code == KeyCode::Esc {
+            if self.turn_in_flight {
+                if let Some(cb) = self.on_cancel.as_ref() {
+                    cb();
+                }
+                self.history.push(Entry::System(
+                    "Cancel requested. The loop will wind down at the next boundary.".into(),
+                ));
+                return Tick::CancelInFlight;
+            }
+            return Tick::Continue;
+        }
+
         // Global keybindings first.
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
-                KeyCode::Char('c' | 'd') => return Tick::Quit,
+                KeyCode::Char('c' | 'd') => {
+                    // Sprint 10 §7 — `Ctrl+C` during an in-flight turn
+                    // asks the loop to cancel rather than hard-quitting
+                    // the TUI. A second `Ctrl+C` after the loop has
+                    // returned (or when no turn is in flight) quits.
+                    if self.turn_in_flight {
+                        if let Some(cb) = self.on_cancel.as_ref() {
+                            cb();
+                            self.history.push(Entry::System(
+                                "Cancel requested. Press Ctrl+C again after the loop returns to quit.".into(),
+                            ));
+                            return Tick::CancelInFlight;
+                        }
+                    }
+                    return Tick::Quit;
+                }
                 KeyCode::Char('l') => {
                     self.history.clear();
                     self.history.push(Entry::System("Session cleared.".into()));
@@ -674,7 +758,8 @@ Keybindings
 ───────────
   Enter              submit current input
   Shift+Enter        insert a newline
-  Ctrl+C, Ctrl+D     quit
+  Ctrl+C, Ctrl+D     cancel in-flight turn (or quit when idle)
+  Esc                cancel in-flight turn (no-op when idle)
   Ctrl+L             clear history
   Ctrl+P / Up        recall previous input
   Ctrl+N / Down      recall next input
@@ -744,9 +829,16 @@ fn run_event_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App<'_>) -> 
         terminal.draw(|f| app.render(f))?;
         if crossterm::event::poll(Duration::from_millis(250))? {
             if let Event::Key(key) = crossterm::event::read()? {
-                if app.on_key(key) == Tick::Quit {
-                    terminal.draw(|f| app.render(f))?;
-                    return Ok(());
+                match app.on_key(key) {
+                    Tick::Quit => {
+                        terminal.draw(|f| app.render(f))?;
+                        return Ok(());
+                    }
+                    // The cancel callback already fired in `on_key`; the
+                    // event loop just keeps spinning so the user sees
+                    // the system-message breadcrumb appear and can
+                    // continue interacting once the loop returns.
+                    Tick::CancelInFlight | Tick::Continue => {}
                 }
             }
         }
@@ -966,5 +1058,85 @@ mod tests {
         app.on_key(enter());
         let buf = snapshot_render(&app, 80, 14);
         insta::assert_snapshot!("after_one_turn", buffer_text(&buf));
+    }
+
+    // ── Sprint 10 §7: Ctrl+C / Esc cancel-in-flight wiring ────────────────
+
+    fn esc() -> KeyEvent {
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+    }
+
+    /// Returns `(app, flag)` where flipping `flag` proves the cancel
+    /// callback fired. The callback only flips `flag` — production
+    /// wires it to `CancelHandle::request_cancel`.
+    fn app_with_cancel_flag() -> (App<'static>, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let f = flag.clone();
+        let app = App::new(StatusInfo::default()).with_cancel_callback(Box::new(move || {
+            f.store(true, std::sync::atomic::Ordering::SeqCst);
+        }));
+        (app, flag)
+    }
+
+    #[test]
+    fn ctrl_c_with_no_callback_still_quits_when_no_turn_in_flight() {
+        // Legacy behaviour preserved: a runtime that doesn't drive the
+        // agent loop (e.g. a pure shell demo) keeps the hard-quit.
+        let mut app = App::new(StatusInfo::default());
+        assert_eq!(app.on_key(ctrl('c')), Tick::Quit);
+    }
+
+    #[test]
+    fn ctrl_c_during_turn_in_flight_fires_callback_and_returns_cancel() {
+        let (mut app, fired) = app_with_cancel_flag();
+        app.mark_turn_in_flight(true);
+        assert_eq!(app.on_key(ctrl('c')), Tick::CancelInFlight);
+        assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
+        // History gains a system breadcrumb so the user sees why
+        // Ctrl+C didn't quit.
+        assert!(app
+            .history()
+            .iter()
+            .any(|e| matches!(e, Entry::System(s) if s.contains("Cancel requested"))));
+    }
+
+    #[test]
+    fn ctrl_c_after_in_flight_clears_still_quits() {
+        // After the runtime calls `mark_turn_in_flight(false)`, the
+        // next Ctrl+C reverts to quitting — the "two presses to exit"
+        // UX the help footer documents.
+        let (mut app, _fired) = app_with_cancel_flag();
+        app.mark_turn_in_flight(true);
+        app.on_key(ctrl('c'));
+        app.mark_turn_in_flight(false);
+        assert_eq!(app.on_key(ctrl('c')), Tick::Quit);
+    }
+
+    #[test]
+    fn esc_during_turn_in_flight_fires_cancel_callback() {
+        let (mut app, fired) = app_with_cancel_flag();
+        app.mark_turn_in_flight(true);
+        assert_eq!(app.on_key(esc()), Tick::CancelInFlight);
+        assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn esc_when_no_turn_in_flight_is_a_noop() {
+        // `<Esc>` is a dedicated cancel key — when idle it must NOT
+        // quit, NOT clear, and NOT fire the callback. Mirrors aider /
+        // claude-code / Cursor's behaviour.
+        let (mut app, fired) = app_with_cancel_flag();
+        assert_eq!(app.on_key(esc()), Tick::Continue);
+        assert!(!fired.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn turn_in_flight_flag_round_trips() {
+        let mut app = App::new(StatusInfo::default());
+        assert!(!app.is_turn_in_flight());
+        app.mark_turn_in_flight(true);
+        assert!(app.is_turn_in_flight());
+        app.mark_turn_in_flight(false);
+        assert!(!app.is_turn_in_flight());
     }
 }

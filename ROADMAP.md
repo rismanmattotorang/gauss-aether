@@ -967,11 +967,14 @@ Deliverables:
    streaming and non-streaming code paths produce byte-equal
    canonical completions on a shared probe set.
 
-7. **TUI `Ctrl+C` → `CancelHandle` hookup.** Connect the
-   `gaussclaw-tui` input handler so `Ctrl+C` flips the flag from
-   Sprint 9 §2; `<Esc>` triggers a "soft cancel" that asks the
-   loop to wind down at the next iteration boundary rather than
-   hard-killing. Local, fully testable.
+7. **TUI `Ctrl+C` → `CancelHandle` hookup.** ✅ The `App` accepts
+   a `CancelCallback` via `App::with_cancel_callback`; while
+   `mark_turn_in_flight(true)`, `Ctrl+C` and `<Esc>` fire the
+   callback (production wires it to
+   `gaussclaw_agent::CancelHandle::request_cancel`) and return
+   `Tick::CancelInFlight` rather than hard-quitting the TUI.
+   When idle, `Ctrl+C` keeps its legacy quit semantics so demos
+   and no-runtime usages stay unchanged.
 
 8. **Dashboard WS-close → `CancelHandle` hookup.** In
    `gaussclaw-web`, when the WebSocket closes the connection's
