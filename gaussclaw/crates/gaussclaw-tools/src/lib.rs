@@ -87,6 +87,7 @@ pub mod json_get;
 pub mod json_set;
 pub mod markdown_render;
 pub mod math_eval;
+pub mod mcp;
 pub mod memory;
 pub mod path_security;
 pub mod regex_match;
@@ -120,6 +121,9 @@ pub use json_get::JsonGetTool;
 pub use json_set::JsonSetTool;
 pub use markdown_render::{render_html, render_text, MarkdownRenderTool};
 pub use math_eval::MathEvalTool;
+pub use mcp::{
+    McpBridge, McpClient, McpError, McpToolBridge, McpToolDescriptor, MockMcpClient,
+};
 pub use memory::{MemoryReadTool, MemoryWriteTool};
 pub use path_security::{scan_path, PathRule, PathSecurityTool, PathVerdict, PATH_RULES};
 pub use regex_match::RegexMatchTool;

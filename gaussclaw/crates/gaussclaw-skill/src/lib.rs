@@ -64,6 +64,10 @@
 
 #![allow(clippy::doc_markdown)]
 
+pub mod markdown_skill;
+
+pub use markdown_skill::MarkdownSkill;
+
 use gauss_core::{CapToken, TaintLabel, ToolId};
 use gauss_traits::{OutputSchema, SchemaGuards, ToolManifest};
 use serde::{Deserialize, Serialize};
