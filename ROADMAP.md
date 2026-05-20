@@ -693,8 +693,16 @@ Deliverables:
    landed earlier: ✅ `code_execution` (Sprint 6 §5). Pending follow-on:
    `terminal` (PTY), `web_fetch`, `web_search`, `send_message`,
    `mcp_invoke`, `image_describe`, `transcribe`, `tts`, `pdf_extract`.
-5. **5 new channel adapters**: WhatsApp, Signal, Matrix, Mattermost,
-   SMS (Twilio).
+5. ✅ **5 new channel adapters**: WhatsApp, Signal, Matrix, Mattermost,
+   SMS (Twilio). *All five share the existing `ChannelTrait`
+   contract (typed ingress + in-memory outbox + cap declaration).
+   Per-protocol signature primitives: WhatsApp `X-Hub-Signature-256`
+   HMAC-SHA256, Mattermost Slack-style `v0=` HMAC-SHA256, Twilio
+   `X-Twilio-Signature` HMAC-SHA1+base64, Matrix Bearer-token
+   constant-time compare, Signal bridge ingress (local-socket
+   trust). 12 tests cover each signature path + tamper-rejection.
+   Adversarial-taint default downgraded to `Web` on signature
+   verification.*
 6. `gaussclaw proxy` subcommand — local OAuth-to-OpenAI-compat
    proxy. Each upstream provider's OAuth flow happens once; clients
    point at `http://localhost:<port>/v1` and get cross-vendor

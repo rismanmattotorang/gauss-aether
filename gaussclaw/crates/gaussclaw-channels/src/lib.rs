@@ -61,11 +61,15 @@
 pub mod discord;
 pub mod email;
 pub mod slack;
+pub mod sprint7_adapters;
 pub mod telegram;
 
 pub use discord::DiscordChannel;
 pub use email::{EmailChannel, ParsedEmail};
 pub use slack::SlackChannel;
+pub use sprint7_adapters::{
+    MatrixChannel, MattermostChannel, SignalChannel, TwilioSmsChannel, WhatsAppChannel,
+};
 pub use telegram::TelegramChannel;
 
 use std::collections::BTreeMap;
@@ -105,6 +109,16 @@ pub enum ChannelError {
     /// Underlying IO / transport failure.
     #[error("transport: {0}")]
     Transport(String),
+    /// Detailed signature failure (Sprint 7 §5). Carries a reason
+    /// string so the audit chain records which axis failed.
+    #[error("signature invalid: {0}")]
+    SignatureInvalid(String),
+    /// Replay-window guard tripped (Sprint 7 §5).
+    #[error("timestamp outside replay window")]
+    ReplayWindow,
+    /// Internal failure inside an adapter (Sprint 7 §5).
+    #[error("internal: {0}")]
+    Internal(String),
 }
 
 /// Convenience result alias.
