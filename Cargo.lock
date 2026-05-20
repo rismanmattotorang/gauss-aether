@@ -3226,10 +3226,12 @@ name = "gaussclaw-web"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "futures-util",
  "gauss-core",
  "gauss-cron",
+ "gauss-hooks",
  "gaussclaw-agent",
  "gaussclaw-config",
  "gaussclaw-export",

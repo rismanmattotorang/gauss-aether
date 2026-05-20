@@ -31,9 +31,11 @@ serde            = { workspace = true }
 serde_json       = { workspace = true }
 tracing          = { workspace = true }
 futures-util     = { workspace = true }
+async-trait      = { workspace = true }
 
 [dev-dependencies]
 tokio           = { workspace = true, features = ["test-util", "macros", "fs"] }
 gaussclaw-store = { workspace = true }
 gauss-core      = { workspace = true }
+gauss-hooks     = { workspace = true }
 tempfile        = { workspace = true }
