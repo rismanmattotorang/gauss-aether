@@ -699,10 +699,15 @@ Deliverables:
    proxy. Each upstream provider's OAuth flow happens once; clients
    point at `http://localhost:<port>/v1` and get cross-vendor
    completions.
-7. Skill installer (no longer just preview) — `gaussclaw skill
-   install ./manifest.toml` validates, prompts for cap grant, writes
-   the registered tool under `$XDG_DATA_HOME/gaussclaw/skills/`.
-   Every installed skill is a signed receipt.
+7. ✅ Skill installer — `gaussclaw skill {preview, install, list,
+   remove}`. `install` validates the manifest, computes a BLAKE3
+   provenance digest over the canonical TOML, writes `skill.toml`
+   + `receipt.json` under
+   `$XDG_DATA_HOME/gaussclaw/skills/<name>/`. The receipt itself
+   carries an independent BLAKE3 digest printed at install time —
+   **every installed skill produces a signed receipt** the operator
+   can verify against the on-disk manifest. `--force` re-overwrites,
+   `--root` overrides the install location.
 8. ✅ `gaussclaw-redact` (new) — sensitive-word redaction over outbound
    messages, configurable per profile. *Two-layer policy (literal
    substrings + compiled regex). Default rule catalogue covers 7

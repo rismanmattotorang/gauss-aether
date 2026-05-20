@@ -18,7 +18,7 @@
 use clap::Parser;
 use gaussclaw_cli::{
     ChatArgs, Cli, Command, ConfigCmd, CronCmd, DoctorArgs, GatewayCmd, ImportArgs, ModelCmd,
-    PluginsCmd, ReceiptCmd, SnapshotCmd, ToolsCmd, WebArgs,
+    PluginsCmd, ReceiptCmd, SkillCmd, SnapshotCmd, ToolsCmd, WebArgs,
 };
 use gaussclaw_tui::StatusInfo;
 
@@ -156,6 +156,7 @@ fn dispatch(
         Command::Cron(sub) => run_cron(sub),
         Command::Snapshot(sub) => run_snapshot(sub),
         Command::Plugins(sub) => run_plugins(sub),
+        Command::Skill(sub) => run_skill(sub),
         Command::Web(_) => unreachable!("`web` is dispatched above in main()"),
     }
 }
@@ -874,4 +875,142 @@ fn run_plugins(sub: PluginsCmd) -> anyhow::Result<()> {
         }
         Ok::<(), anyhow::Error>(())
     })
+}
+
+// ─── Sprint 7 §7: skill installer ──────────────────────────────────────────
+
+#[allow(clippy::too_many_lines)]
+fn run_skill(sub: SkillCmd) -> anyhow::Result<()> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async move {
+        use std::path::PathBuf;
+
+        fn default_root() -> anyhow::Result<PathBuf> {
+            directories::ProjectDirs::from("io", "gauss-aether", "gaussclaw")
+                .map(|p| p.data_dir().join("skills"))
+                .ok_or_else(|| anyhow::anyhow!("no XDG data dir available; pass --root PATH"))
+        }
+
+        async fn read_manifest(path: &str) -> anyhow::Result<(PathBuf, String, gaussclaw_skill::SkillManifest, String)> {
+            let p = PathBuf::from(path);
+            let manifest_path = if p.is_dir() { p.join("skill.toml") } else { p };
+            let toml_src = tokio::fs::read_to_string(&manifest_path)
+                .await
+                .map_err(|e| anyhow::anyhow!("read {}: {e}", manifest_path.display()))?;
+            let manifest = gaussclaw_skill::SkillManifest::from_toml(&toml_src)
+                .map_err(|e| anyhow::anyhow!("parse: {e}"))?;
+            let provenance = blake3::hash(toml_src.as_bytes()).to_hex().to_string();
+            Ok((manifest_path, toml_src, manifest, provenance))
+        }
+
+        match sub {
+            SkillCmd::Preview { path } => {
+                let (_, _, manifest, provenance) = read_manifest(&path).await?;
+                let cap_token = manifest
+                    .cap_required()
+                    .map_err(|e| anyhow::anyhow!("resolve caps: {e}"))?;
+                println!(
+                    "ok: skill manifest validated\n  name:        {}\n  caps:        {:?}\n  cap_bits:    0x{:016x}\n  taint:       {}\n  reversible:  {}\n  persistent:  {}\n  provenance:  {}",
+                    manifest.name,
+                    manifest.caps,
+                    cap_token.bits(),
+                    manifest.taint,
+                    manifest.reversible,
+                    manifest.persistent,
+                    provenance,
+                );
+            }
+            SkillCmd::Install { path, root, force } => {
+                let (_, toml_src, manifest, provenance) = read_manifest(&path).await?;
+                let root = root
+                    .map(PathBuf::from)
+                    .map_or_else(default_root, Ok)?;
+                let dir = root.join(&manifest.name);
+                if tokio::fs::try_exists(&dir).await? {
+                    if !force {
+                        return Err(anyhow::anyhow!(
+                            "skill {} already installed at {}; pass --force to overwrite",
+                            manifest.name,
+                            dir.display()
+                        ));
+                    }
+                    tokio::fs::remove_dir_all(&dir).await?;
+                }
+                tokio::fs::create_dir_all(&dir).await?;
+                tokio::fs::write(dir.join("skill.toml"), toml_src.as_bytes()).await?;
+                let receipt = serde_json::json!({
+                    "kind":        "skill_install_receipt",
+                    "name":        manifest.name,
+                    "caps":        manifest.caps,
+                    "taint":       manifest.taint,
+                    "reversible":  manifest.reversible,
+                    "provenance":  provenance,
+                    "installed_at": now_unix(),
+                });
+                let receipt_bytes = serde_json::to_vec_pretty(&receipt)?;
+                tokio::fs::write(dir.join("receipt.json"), &receipt_bytes).await?;
+                let receipt_digest = blake3::hash(&receipt_bytes).to_hex().to_string();
+                println!(
+                    "ok: skill installed\n  name:        {}\n  dir:         {}\n  provenance:  {}\n  receipt:     {}",
+                    manifest.name,
+                    dir.display(),
+                    provenance,
+                    receipt_digest,
+                );
+            }
+            SkillCmd::List { root } => {
+                let root = root
+                    .map(PathBuf::from)
+                    .map_or_else(default_root, Ok)?;
+                if !tokio::fs::try_exists(&root).await? {
+                    println!("(no skills installed at {})", root.display());
+                    return Ok::<(), anyhow::Error>(());
+                }
+                let mut rd = tokio::fs::read_dir(&root).await?;
+                let mut count = 0u64;
+                println!("{:<28}  {:<10}  {:<10}  {:<10}", "name", "taint", "rev", "persist");
+                while let Some(entry) = rd.next_entry().await? {
+                    let p = entry.path();
+                    let skill = p.join("skill.toml");
+                    if !tokio::fs::try_exists(&skill).await? {
+                        continue;
+                    }
+                    let src = tokio::fs::read_to_string(&skill).await?;
+                    if let Ok(m) = gaussclaw_skill::SkillManifest::from_toml(&src) {
+                        count = count.saturating_add(1);
+                        println!(
+                            "{:<28}  {:<10}  {:<10}  {:<10}",
+                            m.name, m.taint, m.reversible, m.persistent
+                        );
+                    }
+                }
+                if count == 0 {
+                    println!("(no skills installed at {})", root.display());
+                }
+            }
+            SkillCmd::Remove { name, root } => {
+                let root = root
+                    .map(PathBuf::from)
+                    .map_or_else(default_root, Ok)?;
+                let dir = root.join(&name);
+                if !tokio::fs::try_exists(&dir).await? {
+                    return Err(anyhow::anyhow!(
+                        "no skill {name} installed under {}",
+                        root.display()
+                    ));
+                }
+                tokio::fs::remove_dir_all(&dir).await?;
+                println!("ok: removed {}", dir.display());
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
 }

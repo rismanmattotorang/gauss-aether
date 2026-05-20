@@ -2840,7 +2840,9 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
+ "blake3",
  "clap",
+ "directories",
  "gauss-checkpoint",
  "gauss-core",
  "gauss-cron",
@@ -2852,6 +2854,7 @@ dependencies = [
  "gaussclaw-export",
  "gaussclaw-migrate",
  "gaussclaw-plugins",
+ "gaussclaw-skill",
  "gaussclaw-store",
  "gaussclaw-tools",
  "gaussclaw-tui",

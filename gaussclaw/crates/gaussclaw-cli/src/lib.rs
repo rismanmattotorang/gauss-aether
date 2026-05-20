@@ -102,6 +102,10 @@ pub enum Command {
     #[command(subcommand)]
     Plugins(PluginsCmd),
 
+    /// Manage skills (Sprint 7 §7).
+    #[command(subcommand)]
+    Skill(SkillCmd),
+
     /// Launch the web dashboard (Axum + retained React frontend) (GaussClaw extension).
     Web(WebArgs),
 }
@@ -278,6 +282,52 @@ pub enum PluginsCmd {
         /// Path to a `plugin.toml` (or its containing directory).
         #[arg(value_name = "PATH")]
         path: String,
+    },
+}
+
+// ─── skill ──────────────────────────────────────────────────────────────────
+
+/// `skill` subcommand — Sprint 7 §7.
+///
+/// Skills are TOML-declared tool manifests under
+/// `$XDG_DATA_HOME/gaussclaw/skills/<name>/`. Each install writes a
+/// BLAKE3-anchored receipt alongside the manifest.
+#[derive(Debug, clap::Subcommand)]
+pub enum SkillCmd {
+    /// Validate a manifest without installing. Returns the provenance
+    /// digest + the parsed cap set so an operator can audit before
+    /// committing.
+    Preview {
+        /// Path to a `skill.toml` (or a directory containing one).
+        #[arg(value_name = "PATH")]
+        path: String,
+    },
+    /// Install a skill under the user discovery root.
+    Install {
+        /// Path to a `skill.toml` (or its containing directory).
+        #[arg(value_name = "PATH")]
+        path: String,
+        /// Override the install directory root.
+        #[arg(long = "root", value_name = "DIR")]
+        root: Option<String>,
+        /// Overwrite an existing installation.
+        #[arg(long = "force")]
+        force: bool,
+    },
+    /// List installed skills.
+    List {
+        /// Override the discovery root.
+        #[arg(long = "root", value_name = "DIR")]
+        root: Option<String>,
+    },
+    /// Remove an installed skill by name.
+    Remove {
+        /// Skill name.
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// Override the discovery root.
+        #[arg(long = "root", value_name = "DIR")]
+        root: Option<String>,
     },
 }
 
@@ -477,6 +527,7 @@ pub const fn dispatch_id(cmd: &Command) -> &'static str {
         Command::Cron(_) => "cron",
         Command::Snapshot(_) => "snapshot",
         Command::Plugins(_) => "plugins",
+        Command::Skill(_) => "skill",
         Command::Web(_) => "web",
     }
 }
@@ -498,6 +549,7 @@ pub const SUBCOMMANDS: &[(&str, bool)] = &[
     ("cron", true),
     ("snapshot", false),
     ("plugins", false),
+    ("skill", false),
     ("web", false),
 ];
 
@@ -528,6 +580,7 @@ mod tests {
             ("cron", &["gaussclaw", "cron", "list"]),
             ("snapshot", &["gaussclaw", "snapshot", "list"]),
             ("plugins", &["gaussclaw", "plugins", "list"]),
+            ("skill", &["gaussclaw", "skill", "list"]),
             ("web", &["gaussclaw", "web"]),
         ];
         for (id, argv) in leaf {
