@@ -233,22 +233,16 @@ impl MemoryFile {
         let tmp = tmp_path(path);
         if let Some(parent) = tmp.parent() {
             fs::create_dir_all(parent).map_err(|e| {
-                SkillError::InvalidSchema(format!(
-                    "mkdir {}: {e}",
-                    parent.display()
-                ))
+                SkillError::InvalidSchema(format!("mkdir {}: {e}", parent.display()))
             })?;
         }
         {
-            let mut f = fs::File::create(&tmp).map_err(|e| {
-                SkillError::InvalidSchema(format!("create {}: {e}", tmp.display()))
-            })?;
-            f.write_all(body.as_bytes()).map_err(|e| {
-                SkillError::InvalidSchema(format!("write {}: {e}", tmp.display()))
-            })?;
-            f.sync_all().map_err(|e| {
-                SkillError::InvalidSchema(format!("fsync {}: {e}", tmp.display()))
-            })?;
+            let mut f = fs::File::create(&tmp)
+                .map_err(|e| SkillError::InvalidSchema(format!("create {}: {e}", tmp.display())))?;
+            f.write_all(body.as_bytes())
+                .map_err(|e| SkillError::InvalidSchema(format!("write {}: {e}", tmp.display())))?;
+            f.sync_all()
+                .map_err(|e| SkillError::InvalidSchema(format!("fsync {}: {e}", tmp.display())))?;
         }
         fs::rename(&tmp, path).map_err(|e| {
             SkillError::InvalidSchema(format!(

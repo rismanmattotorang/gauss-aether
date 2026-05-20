@@ -31,9 +31,7 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use gaussclaw_skill::{
-    join_context, ContextFileFinder, MarkdownSkill, MemoryFile,
-};
+use gaussclaw_skill::{join_context, ContextFileFinder, MarkdownSkill, MemoryFile};
 
 use crate::enrich::PromptEnricher;
 
@@ -317,9 +315,8 @@ mod tests {
 
     #[tokio::test]
     async fn context_enricher_silent_on_missing_root() {
-        let e = ContextFileEnricher::new(PathBuf::from(
-            "/this/path/definitely/does/not/exist/xyz123",
-        ));
+        let e =
+            ContextFileEnricher::new(PathBuf::from("/this/path/definitely/does/not/exist/xyz123"));
         // Missing roots return Ok(empty) from the walker, which we
         // surface as `None`.
         assert!(e.enrich().await.is_none());
@@ -363,8 +360,7 @@ mod tests {
         let root = tmpdir("md-allow");
         write_skill(&root, "keep", "body keep\n");
         write_skill(&root, "drop", "body drop\n");
-        let e = MarkdownSkillEnricher::new(root.clone())
-            .with_allowlist(["keep".to_owned()]);
+        let e = MarkdownSkillEnricher::new(root.clone()).with_allowlist(["keep".to_owned()]);
         let body = e.enrich().await.unwrap();
         assert!(body.contains("## keep"));
         assert!(!body.contains("## drop"));
@@ -384,8 +380,8 @@ mod tests {
     async fn markdown_skill_allowlist_with_no_matches_yields_none() {
         let root = tmpdir("md-no-match");
         write_skill(&root, "available", "body\n");
-        let e = MarkdownSkillEnricher::new(root.clone())
-            .with_allowlist(["not-available".to_owned()]);
+        let e =
+            MarkdownSkillEnricher::new(root.clone()).with_allowlist(["not-available".to_owned()]);
         assert!(e.enrich().await.is_none());
         let _ = std::fs::remove_dir_all(&root);
     }

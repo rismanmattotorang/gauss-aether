@@ -982,12 +982,16 @@ Deliverables:
    `cancelled` at the next boundary with the partial transcript
    intact.
 
-9. **`StdioMcpClient` — production MCP transport.** Spawns a
-   configured MCP server as a child process, speaks JSON-RPC 2.0
-   over `stdin`/`stdout`, surfaces transport errors as
-   `McpError::Transport`. Lives in `gaussclaw-tools` alongside the
-   existing `McpBridge`. Fully testable with a stub child binary
-   (no network).
+9. **`StdioMcpClient` — production MCP transport.** ✅ Spawns a
+   configured MCP server as a child process and speaks JSON-RPC
+   2.0 with LSP-style `Content-Length` framing over
+   `stdin`/`stdout`. Lives in
+   `gaussclaw-tools::mcp_stdio::StdioMcpClient` next to the
+   existing `HttpMcpClient`. Two constructors: `spawn` for the
+   production path (real child) and `with_streams` for tests
+   (`tokio::io::duplex`-driven, no subprocess needed). Concurrent
+   calls serialise on the inner mutex; id-mismatch and missing-
+   `result|error` failures surface as `McpError::Protocol`.
 
 10. **Chain-protected Trinity cron store.** A `TrinityCronJobStore`
     in `gaussclaw-store` that wraps Sprint 9 §9's
