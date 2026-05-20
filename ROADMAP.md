@@ -904,6 +904,110 @@ When Sprint 9 closes, the codebase has:
 - A live `gauss-poly` baseline in CI that fails closed on silent
   provider drift.
 
+### Sprint 10 — production wiring (size: L)
+
+**Goal:** turn Sprint 9's trait surfaces + mocks into wired-up,
+deployable backends. Sprint 9 stopped at the contract layer so the
+trait shapes could land without dragging external deps into the base
+crates; Sprint 10 ships the real adapters as per-adapter crates and
+finishes the UI hookups Sprint 9 §1/§2 left open.
+
+**Crate layout:** every adapter ships as its own crate
+(`gaussclaw-http`, `gaussclaw-pty`, `gaussclaw-search-tavily`, …) so
+the base crates' dep graphs stay minimal. Matches the existing
+workspace pattern (`gaussclaw-providers`, `gaussclaw-channels`).
+
+**Live-network test policy:** every vendor-touching integration
+test is `#[ignore]`-gated AND behind a `live-network` feature.
+Default `cargo test --workspace --lib` runs zero network requests.
+Operators verify with
+`cargo test --features live-network -- --ignored` against their own
+credentials.
+
+Deliverables:
+
+1. **`gaussclaw-http` — `reqwest`-backed `HttpClient`.** Provides
+   `ReqwestHttpClient` with TLS, configurable redirect policy,
+   body cap, and the per-request header allowlist already enforced
+   by `HttpToolPolicy`. Unit tests use `wiremock`; live tests are
+   gated behind the `live-network` feature.
+
+2. **`gaussclaw-pty` — `portable-pty`-backed `PtyBackend`.** Real
+   PTY via the `portable-pty` crate. Cap-gated to
+   `EXECUTOR_LOCAL`; wall-clock timeout kills the child and
+   surfaces partial output through the existing `PtyResult` shape.
+   Fully testable without network.
+
+3. **`gaussclaw-modal-http` — `reqwest`-backed `ModalHttpClient`.**
+   Real Modal API client. Endpoint, bearer-token auth,
+   retry-with-jitter, and per-call cost-cap pre-check from
+   `ModalConfig::max_cost_dollars`. Unit-tested with `wiremock`.
+   If Modal's HTTP API is still in flux this deliverable degrades
+   to a "fully-built stub with codec + retry but no live wiring" —
+   Sprint 9's typed contract surface stays intact either way.
+
+4. **`gaussclaw-search-{tavily,serpapi,brave}` — `SearchProvider`
+   adapters.** Three vendor crates, each sitting behind the
+   Sprint 9 §3 `SearchProvider` trait. One canonical response
+   normaliser so consumers see the same `SearchResult` shape
+   regardless of vendor. Vendor selection is operator config.
+
+5. **`ChannelMessageSink` — Sprint 9 §4 trait wired through
+   `gaussclaw-channels`.** No new crate; the wiring lands in
+   `gaussclaw-channels` itself. Resolves `channel: "slack"` (or
+   `"discord"`/`"telegram"`) to the right `ChannelTrait::send` and
+   returns a typed error for unknown channels.
+
+6. **Native streaming overrides for Anthropic + OpenAI + Ollama.**
+   Three `complete_streaming` overrides in `gaussclaw-providers`.
+   Anthropic SSE, OpenAI `chat/completions/stream`, Ollama
+   line-delimited JSON. Cohere/Google/HuggingFace/Replicate stay
+   on the Sprint 9 §1 default impl (one token = full body) —
+   explicit Sprint 10 non-goal. A new polyhedral test asserts the
+   streaming and non-streaming code paths produce byte-equal
+   canonical completions on a shared probe set.
+
+7. **TUI `Ctrl+C` → `CancelHandle` hookup.** Connect the
+   `gaussclaw-tui` input handler so `Ctrl+C` flips the flag from
+   Sprint 9 §2; `<Esc>` triggers a "soft cancel" that asks the
+   loop to wind down at the next iteration boundary rather than
+   hard-killing. Local, fully testable.
+
+8. **Dashboard WS-close → `CancelHandle` hookup.** In
+   `gaussclaw-web`, when the WebSocket closes the connection's
+   `CancelHandle` flips. The live `AgentLoop::run` returns
+   `cancelled` at the next boundary with the partial transcript
+   intact.
+
+9. **`StdioMcpClient` — production MCP transport.** Spawns a
+   configured MCP server as a child process, speaks JSON-RPC 2.0
+   over `stdin`/`stdout`, surfaces transport errors as
+   `McpError::Transport`. Lives in `gaussclaw-tools` alongside the
+   existing `McpBridge`. Fully testable with a stub child binary
+   (no network).
+
+10. **Chain-protected Trinity cron store.** A `TrinityCronJobStore`
+    in `gaussclaw-store` that wraps Sprint 9 §9's
+    `FileBackedJobStore` and ALSO writes every `LogRecord` into
+    the `SurrealMemory` chain log. Implements `JobStore` so
+    consumers see one type; cron-job mutations get the same
+    Merkle integrity surface every session turn has.
+
+### Sprint 10 — wrap-up: production-ready, deployable
+
+When Sprint 10 closes, the codebase has:
+
+- Every Sprint 9 trait wired to at least one production adapter.
+- `cargo test --workspace --lib` green; live-network tests gated
+  behind `--features live-network -- --ignored`.
+- `cargo clippy --workspace -- -D warnings` clean.
+- `docs/SPRINT10_DEPLOYMENT.md` runbook covering feature flags,
+  env-var wiring, and the minimum required backend matrix per
+  surface (TUI / dashboard / ACP server).
+- The Sprint 8 `poly-gate` workflow passes because §6's streaming
+  overrides preserve canonical-bytes equivalence with their
+  non-streaming counterparts.
+
 ---
 
 ## 7. Resource estimates & risk
