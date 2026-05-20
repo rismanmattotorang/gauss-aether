@@ -106,6 +106,9 @@ pub enum Command {
     #[command(subcommand)]
     Skill(SkillCmd),
 
+    /// Local OAuth-to-OpenAI-compat proxy (Sprint 7 §6).
+    Proxy(ProxyArgs),
+
     /// Launch the web dashboard (Axum + retained React frontend) (GaussClaw extension).
     Web(WebArgs),
 }
@@ -331,6 +334,26 @@ pub enum SkillCmd {
     },
 }
 
+// ─── proxy ──────────────────────────────────────────────────────────────────
+
+/// `proxy` arguments — Sprint 7 §6.
+#[derive(Debug, Parser)]
+pub struct ProxyArgs {
+    /// Bind host. Defaults to `127.0.0.1`.
+    #[arg(long = "host", default_value = "127.0.0.1")]
+    pub host: String,
+
+    /// Bind port. `0` lets the OS pick a free port.
+    #[arg(short = 'p', long = "port", default_value_t = 8643)]
+    pub port: u16,
+
+    /// Use the in-process `MockUpstream` (default until Sprint 8 wires
+    /// `gaussclaw-providers`). Real upstreams come from
+    /// `--upstream PROVIDER` once the wiring lands.
+    #[arg(long = "mock")]
+    pub mock: bool,
+}
+
 // ─── web ────────────────────────────────────────────────────────────────────
 
 /// `web` arguments.
@@ -528,6 +551,7 @@ pub const fn dispatch_id(cmd: &Command) -> &'static str {
         Command::Snapshot(_) => "snapshot",
         Command::Plugins(_) => "plugins",
         Command::Skill(_) => "skill",
+        Command::Proxy(_) => "proxy",
         Command::Web(_) => "web",
     }
 }
@@ -550,6 +574,7 @@ pub const SUBCOMMANDS: &[(&str, bool)] = &[
     ("snapshot", false),
     ("plugins", false),
     ("skill", false),
+    ("proxy", false),
     ("web", false),
 ];
 
@@ -581,6 +606,7 @@ mod tests {
             ("snapshot", &["gaussclaw", "snapshot", "list"]),
             ("plugins", &["gaussclaw", "plugins", "list"]),
             ("skill", &["gaussclaw", "skill", "list"]),
+            ("proxy", &["gaussclaw", "proxy", "--mock"]),
             ("web", &["gaussclaw", "web"]),
         ];
         for (id, argv) in leaf {

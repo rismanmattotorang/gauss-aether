@@ -18,7 +18,7 @@
 use clap::Parser;
 use gaussclaw_cli::{
     ChatArgs, Cli, Command, ConfigCmd, CronCmd, DoctorArgs, GatewayCmd, ImportArgs, ModelCmd,
-    PluginsCmd, ReceiptCmd, SkillCmd, SnapshotCmd, ToolsCmd, WebArgs,
+    PluginsCmd, ProxyArgs, ReceiptCmd, SkillCmd, SnapshotCmd, ToolsCmd, WebArgs,
 };
 use gaussclaw_tui::StatusInfo;
 
@@ -157,6 +157,7 @@ fn dispatch(
         Command::Snapshot(sub) => run_snapshot(sub),
         Command::Plugins(sub) => run_plugins(sub),
         Command::Skill(sub) => run_skill(sub),
+        Command::Proxy(args) => run_proxy(args),
         Command::Web(_) => unreachable!("`web` is dispatched above in main()"),
     }
 }
@@ -1013,4 +1014,34 @@ fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+}
+
+// ─── Sprint 7 §6: proxy ────────────────────────────────────────────────────
+
+fn run_proxy(args: ProxyArgs) -> anyhow::Result<()> {
+    let addr: std::net::SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
+    let url = format!("http://{addr}/");
+    eprintln!("gaussclaw proxy: serving on {url} (OpenAI-compat /v1/chat/completions)");
+    if args.mock {
+        eprintln!("note: using MockUpstream — completions are deterministic echoes.");
+    } else {
+        eprintln!(
+            "note: real upstream wiring (gaussclaw-providers) lands in Sprint 8; for now \
+             every proxy run is mock-backed."
+        );
+    }
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async move {
+        let upstream: std::sync::Arc<dyn gaussclaw_proxy::UpstreamCaller> =
+            std::sync::Arc::new(gaussclaw_proxy::MockUpstream::new());
+        let state =
+            gaussclaw_proxy::ProxyState::new(gaussclaw_proxy::ProxyConfig::default(), upstream)
+                .map_err(|e| anyhow::anyhow!("proxy init: {e}"))?;
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        tracing::info!(%addr, "gaussclaw-proxy listening");
+        axum::serve(listener, gaussclaw_proxy::router(state)).await?;
+        Ok::<(), anyhow::Error>(())
+    })
 }

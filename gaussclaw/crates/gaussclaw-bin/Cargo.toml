@@ -23,6 +23,8 @@ gaussclaw-web      = { workspace = true }
 gaussclaw-store    = { workspace = true }
 gaussclaw-migrate  = { workspace = true }
 gaussclaw-plugins  = { workspace = true }
+gaussclaw-proxy    = { workspace = true }
+axum               = { workspace = true }
 gaussclaw-skill    = { workspace = true }
 blake3             = { workspace = true }
 directories        = { workspace = true }

@@ -703,10 +703,18 @@ Deliverables:
    trust). 12 tests cover each signature path + tamper-rejection.
    Adversarial-taint default downgraded to `Web` on signature
    verification.*
-6. `gaussclaw proxy` subcommand — local OAuth-to-OpenAI-compat
-   proxy. Each upstream provider's OAuth flow happens once; clients
-   point at `http://localhost:<port>/v1` and get cross-vendor
-   completions.
+6. ✅ `gaussclaw proxy` subcommand — local OAuth-to-OpenAI-compat
+   proxy. *New `gaussclaw-proxy` crate hosts an Axum server with
+   `POST /v1/chat/completions` accepting the OpenAI wire shape.
+   **Every outbound message body passes through
+   `gaussclaw_redact::RedactionPolicy::default_policy()` before
+   crossing the network** — credit cards / AWS keys / GH tokens /
+   JWTs / Bearer headers / URL passwords / PEM keys get scrubbed
+   automatically. The response includes the per-rule redaction
+   report. Cap-gated by `cap:network:http_post`. Real upstream
+   wiring (gaussclaw-providers) lands in Sprint 8; ships now with
+   `MockUpstream` so the contract is testable end-to-end. 8 unit
+   tests.*
 7. ✅ Skill installer — `gaussclaw skill {preview, install, list,
    remove}`. `install` validates the manifest, computes a BLAKE3
    provenance digest over the canonical TOML, writes `skill.toml`

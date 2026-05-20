@@ -1,0 +1,26 @@
+---
+source: gaussclaw/crates/gaussclaw-conformance/src/cli_parity.rs
+assertion_line: 99
+expression: body
+---
+Local OAuth-to-OpenAI-compat proxy (Sprint 7 §6)
+
+Usage: proxy [OPTIONS]
+
+Options:
+      --host <HOST>
+          Bind host. Defaults to `127.0.0.1`
+          
+          [default: 127.0.0.1]
+
+  -p, --port <PORT>
+          Bind port. `0` lets the OS pick a free port
+          
+          [default: 8643]
+
+      --mock
+          Use the in-process `MockUpstream` (default until Sprint 8 wires `gaussclaw-providers`).
+          Real upstreams come from `--upstream PROVIDER` once the wiring lands
+
+  -h, --help
+          Print help

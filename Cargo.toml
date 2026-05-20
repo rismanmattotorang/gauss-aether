@@ -49,6 +49,7 @@ members = [
     "gaussclaw/crates/gaussclaw-migrate",
     "gaussclaw/crates/gaussclaw-plugins",
     "gaussclaw/crates/gaussclaw-redact",
+    "gaussclaw/crates/gaussclaw-proxy",
     "gaussclaw/crates/gaussclaw-conformance",
     "gaussclaw/crates/gaussclaw-bin",
 ]
@@ -110,6 +111,7 @@ gaussclaw-config         = { path = "gaussclaw/crates/gaussclaw-config",        
 gaussclaw-migrate        = { path = "gaussclaw/crates/gaussclaw-migrate",        version = "0.0.1" }
 gaussclaw-plugins        = { path = "gaussclaw/crates/gaussclaw-plugins",        version = "0.0.1" }
 gaussclaw-redact         = { path = "gaussclaw/crates/gaussclaw-redact",         version = "0.0.1" }
+gaussclaw-proxy          = { path = "gaussclaw/crates/gaussclaw-proxy",          version = "0.0.1" }
 gaussclaw-conformance    = { path = "gaussclaw/crates/gaussclaw-conformance",    version = "0.0.1" }
 
 # Async

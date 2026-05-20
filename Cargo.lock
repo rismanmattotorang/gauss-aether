@@ -2840,6 +2840,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum",
  "blake3",
  "clap",
  "directories",
@@ -2854,6 +2855,7 @@ dependencies = [
  "gaussclaw-export",
  "gaussclaw-migrate",
  "gaussclaw-plugins",
+ "gaussclaw-proxy",
  "gaussclaw-skill",
  "gaussclaw-store",
  "gaussclaw-tools",
@@ -3046,6 +3048,23 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "gaussclaw-proxy"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "axum",
+ "gauss-core",
+ "gaussclaw-redact",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
 ]
 
 [[package]]
