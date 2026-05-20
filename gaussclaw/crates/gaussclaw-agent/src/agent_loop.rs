@@ -71,6 +71,7 @@ use crate::{
     Completion, Message, Prompt, ProviderError, ProviderHandle, TurnError, TurnPolicy, TurnResult,
 };
 use gauss_core::TaintLabel;
+use gauss_hooks::{HookBus, PostToolEvent, PreToolEvent};
 
 // ─── tool-call wire shape ─────────────────────────────────────────────────
 
@@ -186,6 +187,22 @@ pub enum LoopEvent {
         result: serde_json::Value,
         turn: u32,
     },
+    /// A `PreToolHook` denied a tool call before dispatch. The loop
+    /// records the reason and falls through with a synthetic
+    /// `"tool"`-role error message so the model sees the denial.
+    /// (OpenHarness-inspired lifecycle hook surface.)
+    ToolDenied {
+        name: String,
+        reason: String,
+        turn: u32,
+    },
+    /// A `PreToolHook` emitted a non-blocking warning. The loop still
+    /// dispatches the tool; the message is surfaced for observability.
+    ToolWarn {
+        name: String,
+        message: String,
+        turn: u32,
+    },
     /// A provider fallback attempt is in progress.
     FallbackAttempt {
         from_provider: String,
@@ -295,6 +312,14 @@ pub struct AgentLoop {
     /// returns a [`ProviderError`], the loop walks this list in order
     /// before surfacing the error to the caller.
     pub fallback: Vec<Arc<dyn ProviderHandle>>,
+    /// Optional lifecycle hook bus. When `Some`, every tool call fires
+    /// `PreToolHook` callbacks (which may `Deny` or `Warn`) and every
+    /// completed call fires `PostToolHook` observers. `None` disables
+    /// the surface entirely — the loop still runs unchanged.
+    ///
+    /// OpenHarness-inspired: PreToolUse/PostToolUse lifecycle events
+    /// give plugins a hook point without touching the registry.
+    pub hooks: Option<HookBus>,
 }
 
 impl AgentLoop {
@@ -305,7 +330,16 @@ impl AgentLoop {
             policy,
             max_iterations: DEFAULT_MAX_ITERATIONS,
             fallback: Vec::new(),
+            hooks: None,
         }
+    }
+
+    /// Attach a `HookBus`. Subsequent tool calls fire pre/post-hooks.
+    /// Disabled by default to keep the no-hooks path zero-overhead.
+    #[must_use]
+    pub fn with_hooks(mut self, hooks: HookBus) -> Self {
+        self.hooks = Some(hooks);
+        self
     }
 
     /// Override the iteration cap.
@@ -461,6 +495,50 @@ impl AgentLoop {
                     turn: iterations,
                 })
                 .await;
+
+                // PreToolUse hooks. The bus may `Warn` (advisory) or
+                // `Deny` (short-circuit). On deny, we synthesise a
+                // tool-role error message so the model sees what
+                // happened — same shape as a tool dispatch failure.
+                if let Some(bus) = self.hooks.as_ref() {
+                    let pre = PreToolEvent::new(tc.name.clone(), tc.args.clone())
+                        .with_taint(taint);
+                    let report = bus.fire_pre(&pre).await;
+                    for w in &report.warnings {
+                        sink.emit(LoopEvent::ToolWarn {
+                            name: tc.name.clone(),
+                            message: w.clone(),
+                            turn: iterations,
+                        })
+                        .await;
+                    }
+                    if let Some(reason) = report.outcome.reason().map(str::to_owned) {
+                        if report.outcome.is_deny() {
+                            sink.emit(LoopEvent::ToolDenied {
+                                name: tc.name.clone(),
+                                reason: reason.clone(),
+                                turn: iterations,
+                            })
+                            .await;
+                            let body = serde_json::json!({
+                                "error": "hook_denied",
+                                "reason": reason,
+                            });
+                            let mut content =
+                                format!("[tool:{} denied] {body}", tc.name);
+                            if let Some(id) = &tc.id {
+                                content = format!("[tool_call_id={id}] {content}");
+                            }
+                            messages.push(Message {
+                                role: "tool".into(),
+                                content,
+                            });
+                            continue;
+                        }
+                    }
+                }
+
+                let started = std::time::Instant::now();
                 let (ok, result_json) = match self
                     .policy
                     .dispatch_tool(&tc.name, tc.args.clone(), taint, 0)
@@ -469,6 +547,8 @@ impl AgentLoop {
                     Ok(validated) => (true, validated.into_json()),
                     Err(e) => (false, serde_json::json!({ "error": format!("{e:?}") })),
                 };
+                let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+
                 sink.emit(LoopEvent::ToolComplete {
                     name: tc.name.clone(),
                     ok,
@@ -476,6 +556,17 @@ impl AgentLoop {
                     turn: iterations,
                 })
                 .await;
+
+                // PostToolUse hooks fire after the schema-validated
+                // result lands but before the next iteration prompts
+                // the model. Advisory only.
+                if let Some(bus) = self.hooks.as_ref() {
+                    let post = PostToolEvent::new(tc.name.clone(), ok, result_json.clone())
+                        .with_elapsed_ms(elapsed_ms)
+                        .with_taint(taint);
+                    bus.fire_post(&post).await;
+                }
+
                 let body = serde_json::to_string(&result_json).unwrap_or_else(|_| "{}".into());
                 let mut content = format!("[tool:{} result] {body}", tc.name);
                 if let Some(id) = &tc.id {
@@ -811,5 +902,166 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, LoopEvent::FallbackAttempt { from_provider, to_provider, .. } if from_provider == "fails" && to_provider == "echo")));
+    }
+
+    // ── OpenHarness-inspired hook integration tests ───────────────────────
+
+    /// `PreToolHook::Deny` short-circuits the dispatch: the tool never
+    /// runs, the loop emits a `ToolDenied` event, and an error message
+    /// is appended so the model sees the denial. (OpenHarness PreToolUse.)
+    #[tokio::test]
+    async fn hook_deny_skips_dispatch_and_emits_event() {
+        use gauss_hooks::{HookBus, HookOutcome, PreToolEvent, PreToolHook};
+
+        struct DenyShell;
+        #[async_trait::async_trait]
+        impl PreToolHook for DenyShell {
+            fn name(&self) -> &str {
+                "deny_shell"
+            }
+            async fn on_pre_tool(&self, e: &PreToolEvent) -> HookOutcome {
+                if e.tool == "echo" {
+                    HookOutcome::Deny("policy: echo blocked for test".into())
+                } else {
+                    HookOutcome::Allow
+                }
+            }
+        }
+
+        let provider = Arc::new(ScriptProvider::new(
+            "scripted",
+            vec![
+                Completion::new(
+                    "<tool name=\"echo\">{\"text\":\"hi\"}</tool>",
+                    "scripted",
+                    "tool",
+                    TokenCount::new(1, 1),
+                ),
+                Completion::new("done", "scripted", "stop", TokenCount::new(1, 1)),
+            ],
+        ));
+        let bus = HookBus::new();
+        bus.register_pre(Arc::new(DenyShell), 0);
+        let loop_ = AgentLoop::new(loop_policy(provider)).with_hooks(bus);
+        let sink = MemorySink::new();
+        let outcome = loop_
+            .run(
+                Prompt::new("scripted", vec![Message::new("user", "go")]),
+                TaintLabel::User,
+                None,
+                &sink,
+            )
+            .await
+            .expect("ok");
+        assert_eq!(outcome.stop_reason, "stop");
+        let events = sink.events().await;
+        assert!(events.iter().any(|e| matches!(e, LoopEvent::ToolDenied { name, reason, .. } if name == "echo" && reason.contains("policy: echo blocked"))));
+        // The denied tool MUST NOT have emitted a ToolComplete event.
+        assert!(
+            !events.iter().any(|e| matches!(e, LoopEvent::ToolComplete { name, .. } if name == "echo")),
+            "denied tool should not produce ToolComplete"
+        );
+    }
+
+    /// `HookOutcome::Warn` is advisory — the tool still runs, but the
+    /// loop emits a `ToolWarn` event for observers.
+    #[tokio::test]
+    async fn hook_warn_does_not_block_dispatch() {
+        use gauss_hooks::{HookBus, HookOutcome, PreToolEvent, PreToolHook};
+
+        struct Warner;
+        #[async_trait::async_trait]
+        impl PreToolHook for Warner {
+            fn name(&self) -> &str {
+                "warn"
+            }
+            async fn on_pre_tool(&self, _e: &PreToolEvent) -> HookOutcome {
+                HookOutcome::Warn("be careful out there".into())
+            }
+        }
+
+        let provider = Arc::new(ScriptProvider::new(
+            "scripted",
+            vec![
+                Completion::new(
+                    "<tool name=\"echo\">{\"text\":\"hi\"}</tool>",
+                    "scripted",
+                    "tool",
+                    TokenCount::new(1, 1),
+                ),
+                Completion::new("done", "scripted", "stop", TokenCount::new(1, 1)),
+            ],
+        ));
+        let bus = HookBus::new();
+        bus.register_pre(Arc::new(Warner), 0);
+        let loop_ = AgentLoop::new(loop_policy(provider)).with_hooks(bus);
+        let sink = MemorySink::new();
+        let outcome = loop_
+            .run(
+                Prompt::new("scripted", vec![Message::new("user", "go")]),
+                TaintLabel::User,
+                None,
+                &sink,
+            )
+            .await
+            .expect("ok");
+        assert_eq!(outcome.stop_reason, "stop");
+        let events = sink.events().await;
+        assert!(events.iter().any(
+            |e| matches!(e, LoopEvent::ToolWarn { name, message, .. } if name == "echo" && message.contains("be careful"))
+        ));
+        // Tool DID complete (warn is advisory).
+        assert!(events.iter().any(
+            |e| matches!(e, LoopEvent::ToolComplete { name, ok, .. } if name == "echo" && *ok)
+        ));
+    }
+
+    /// `PostToolHook` observes every completed dispatch — exercised
+    /// here by an AtomicUsize counter that increments per fire.
+    #[tokio::test]
+    async fn post_hook_observes_completed_dispatch() {
+        use gauss_hooks::{HookBus, PostToolEvent, PostToolHook};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static SEEN: AtomicUsize = AtomicUsize::new(0);
+        struct Counter;
+        #[async_trait::async_trait]
+        impl PostToolHook for Counter {
+            fn name(&self) -> &str {
+                "counter"
+            }
+            async fn on_post_tool(&self, _e: &PostToolEvent) {
+                SEEN.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let provider = Arc::new(ScriptProvider::new(
+            "scripted",
+            vec![
+                Completion::new(
+                    "<tool name=\"echo\">{\"text\":\"hi\"}</tool>",
+                    "scripted",
+                    "tool",
+                    TokenCount::new(1, 1),
+                ),
+                Completion::new("done", "scripted", "stop", TokenCount::new(1, 1)),
+            ],
+        ));
+        let bus = HookBus::new();
+        bus.register_post(Arc::new(Counter), 0);
+        SEEN.store(0, Ordering::SeqCst);
+        let loop_ = AgentLoop::new(loop_policy(provider)).with_hooks(bus);
+        let sink = MemorySink::new();
+        let outcome = loop_
+            .run(
+                Prompt::new("scripted", vec![Message::new("user", "go")]),
+                TaintLabel::User,
+                None,
+                &sink,
+            )
+            .await
+            .expect("ok");
+        assert_eq!(outcome.stop_reason, "stop");
+        assert_eq!(SEEN.load(Ordering::SeqCst), 1);
     }
 }

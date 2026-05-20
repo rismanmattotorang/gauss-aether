@@ -28,6 +28,7 @@ members = [
     "gauss-aether/crates/gauss-exec",
     "gauss-aether/crates/gauss-worktree",
     "gauss-aether/crates/gauss-conformance",
+    "gauss-aether/crates/gauss-hooks",
 
     # ── GaussClaw — Hermes-to-Rust port (see gaussclaw/ROADMAP.md) ───────────
     "gaussclaw/crates/gaussclaw-agent",
@@ -89,6 +90,7 @@ gauss-checkpoint = { path = "gauss-aether/crates/gauss-checkpoint", version = "0
 gauss-curator    = { path = "gauss-aether/crates/gauss-curator",    version = "0.0.1" }
 gauss-exec       = { path = "gauss-aether/crates/gauss-exec",       version = "0.0.1" }
 gauss-worktree   = { path = "gauss-aether/crates/gauss-worktree",   version = "0.0.1" }
+gauss-hooks      = { path = "gauss-aether/crates/gauss-hooks",      version = "0.0.1" }
 
 # GaussClaw internal crates (Hermes port; see gaussclaw/ROADMAP.md)
 gaussclaw-agent          = { path = "gaussclaw/crates/gaussclaw-agent",          version = "0.0.1" }
