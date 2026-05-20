@@ -926,11 +926,18 @@ credentials.
 
 Deliverables:
 
-1. **`gaussclaw-http` — `reqwest`-backed `HttpClient`.** Provides
-   `ReqwestHttpClient` with TLS, configurable redirect policy,
-   body cap, and the per-request header allowlist already enforced
-   by `HttpToolPolicy`. Unit tests use `wiremock`; live tests are
-   gated behind the `live-network` feature.
+1. **`gaussclaw-http` — `reqwest`-backed `HttpClient`.** ✅
+   `ReqwestHttpClient` ships in the new
+   `gaussclaw/crates/gaussclaw-http` crate. TLS via `rustls` +
+   `rustls-native-certs` (no OpenSSL); configurable timeout,
+   redirect policy (default 10 hops, `0` disables entirely),
+   response-body cap (default 1 MiB), and identifying User-Agent.
+   Unit tests run against `wiremock` instances (no real network);
+   a `live-network` cargo feature gates one `#[ignore]`-marked
+   smoke test against `example.com`. Adding the crate forced
+   constructors on `gaussclaw_tools::{HttpRequest, HttpResponse}`
+   (both `#[non_exhaustive]`) so external adapter crates can
+   synthesise them.
 
 2. **`gaussclaw-pty` — `portable-pty`-backed `PtyBackend`.** Real
    PTY via the `portable-pty` crate. Cap-gated to

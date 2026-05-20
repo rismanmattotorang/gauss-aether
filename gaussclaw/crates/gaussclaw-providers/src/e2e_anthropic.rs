@@ -39,11 +39,11 @@
 
 use std::sync::Arc;
 
+use gauss_core::TaintLabel;
 use gaussclaw_agent::{
     AgentLoop, AuditTrace, KernelHandle, LoopEvent, MemorySink, Message, Prompt, ProviderHandle,
     TurnPolicy,
 };
-use gauss_core::TaintLabel;
 use serde_json::json;
 
 use crate::{AnthropicProvider, HttpResponse, MockHttpBackend};
@@ -68,8 +68,7 @@ fn canned_response(text: &str, stop_reason: &str) -> HttpResponse {
 
 fn build_loop(provider: Arc<dyn ProviderHandle>) -> (AgentLoop, AuditTrace) {
     let audit = AuditTrace::new();
-    let policy =
-        TurnPolicy::new(KernelHandle::permissive(), provider).with_audit(audit.clone());
+    let policy = TurnPolicy::new(KernelHandle::permissive(), provider).with_audit(audit.clone());
     (AgentLoop::new(policy).with_audit(audit.clone()), audit)
 }
 
@@ -130,9 +129,10 @@ async fn anthropic_provider_drives_full_loop_one_turn() {
 /// cleanly with the compactor (no spurious compaction frames).
 #[tokio::test]
 async fn anthropic_short_turn_no_compaction() {
-    let backend = Arc::new(MockHttpBackend::new(vec![canned_response("ok", "end_turn")]));
-    let provider: Arc<dyn ProviderHandle> =
-        Arc::new(AnthropicProvider::new(backend, "sk-test"));
+    let backend = Arc::new(MockHttpBackend::new(vec![canned_response(
+        "ok", "end_turn",
+    )]));
+    let provider: Arc<dyn ProviderHandle> = Arc::new(AnthropicProvider::new(backend, "sk-test"));
     let (loop_, _audit) = build_loop(provider);
     let sink = MemorySink::new();
     loop_
@@ -150,9 +150,10 @@ async fn anthropic_short_turn_no_compaction() {
 /// or real.
 #[tokio::test]
 async fn anthropic_run_advances_audit_chain() {
-    let backend = Arc::new(MockHttpBackend::new(vec![canned_response("ok", "end_turn")]));
-    let provider: Arc<dyn ProviderHandle> =
-        Arc::new(AnthropicProvider::new(backend, "sk-test"));
+    let backend = Arc::new(MockHttpBackend::new(vec![canned_response(
+        "ok", "end_turn",
+    )]));
+    let provider: Arc<dyn ProviderHandle> = Arc::new(AnthropicProvider::new(backend, "sk-test"));
     let (loop_, audit) = build_loop(provider);
     let head_before = audit.head().await;
     let sink = MemorySink::new();
@@ -173,8 +174,7 @@ async fn two_sequential_runs_each_produce_a_chain_advance() {
         canned_response("first", "end_turn"),
         canned_response("second", "end_turn"),
     ]));
-    let provider: Arc<dyn ProviderHandle> =
-        Arc::new(AnthropicProvider::new(backend, "sk-test"));
+    let provider: Arc<dyn ProviderHandle> = Arc::new(AnthropicProvider::new(backend, "sk-test"));
     let (loop_, audit) = build_loop(provider);
     let sink = MemorySink::new();
     let head_initial = audit.head().await;
@@ -201,8 +201,7 @@ async fn anthropic_upstream_5xx_surfaces_as_error_done() {
         status: 503,
         body: b"service unavailable".to_vec(),
     }]));
-    let provider: Arc<dyn ProviderHandle> =
-        Arc::new(AnthropicProvider::new(backend, "sk-test"));
+    let provider: Arc<dyn ProviderHandle> = Arc::new(AnthropicProvider::new(backend, "sk-test"));
     let (loop_, _audit) = build_loop(provider);
     let sink = MemorySink::new();
     let result = loop_
@@ -220,7 +219,9 @@ async fn anthropic_upstream_5xx_surfaces_as_error_done() {
 /// key would never reach the wire.
 #[tokio::test]
 async fn loop_run_propagates_credentials_to_the_codec() {
-    let backend = Arc::new(MockHttpBackend::new(vec![canned_response("ok", "end_turn")]));
+    let backend = Arc::new(MockHttpBackend::new(vec![canned_response(
+        "ok", "end_turn",
+    )]));
     let provider: Arc<dyn ProviderHandle> = Arc::new(AnthropicProvider::new(
         backend.clone(),
         "sk-ant-this-is-the-test-key",

@@ -41,6 +41,7 @@ members = [
     "gaussclaw/crates/gaussclaw-store",
     "gaussclaw/crates/gaussclaw-skill",
     "gaussclaw/crates/gaussclaw-tools",
+    "gaussclaw/crates/gaussclaw-http",
     "gaussclaw/crates/gaussclaw-providers",
     "gaussclaw/crates/gaussclaw-providers-meta",
     "gaussclaw/crates/gaussclaw-api-modes",
@@ -107,6 +108,7 @@ gaussclaw-channels       = { path = "gaussclaw/crates/gaussclaw-channels",      
 gaussclaw-store          = { path = "gaussclaw/crates/gaussclaw-store",          version = "0.0.1" }
 gaussclaw-skill          = { path = "gaussclaw/crates/gaussclaw-skill",          version = "0.0.1" }
 gaussclaw-tools          = { path = "gaussclaw/crates/gaussclaw-tools",          version = "0.0.1" }
+gaussclaw-http           = { path = "gaussclaw/crates/gaussclaw-http",           version = "0.0.1" }
 gaussclaw-providers      = { path = "gaussclaw/crates/gaussclaw-providers",      version = "0.0.1" }
 gaussclaw-providers-meta = { path = "gaussclaw/crates/gaussclaw-providers-meta", version = "0.0.1" }
 gaussclaw-api-modes      = { path = "gaussclaw/crates/gaussclaw-api-modes",      version = "0.0.1" }
@@ -127,6 +129,12 @@ async-trait = "0.1"
 tokio       = { version = "1", default-features = false, features = ["sync", "rt", "rt-multi-thread", "macros", "time", "io-util", "net", "signal"] }
 futures     = { version = "0.3", default-features = false, features = ["std"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+# HTTP client — Sprint 10 §1 (gaussclaw-http)
+# rustls + rustls-native-certs keeps OpenSSL out of the dep tree;
+# `json` enables the convenience codec used by HttpMcpClient.
+reqwest  = { version = "0.13", default-features = false, features = ["rustls", "rustls-native-certs", "json"] }
+wiremock = { version = "0.6", default-features = false }
 
 # CLI surface — Phase 1 (gaussclaw-cli, gaussclaw-bin)
 clap   = { version = "4.5", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions", "color", "wrap_help"] }

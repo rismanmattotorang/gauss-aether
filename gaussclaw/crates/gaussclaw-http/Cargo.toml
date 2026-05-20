@@ -1,0 +1,29 @@
+[package]
+name        = "gaussclaw-http"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+description = "Production reqwest-backed HttpClient for the GaussClaw tool catalogue (Sprint 10 §1)."
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Gates the live-network integration tests behind both
+# `--features live-network` AND `--ignored`. Default `cargo test`
+# runs zero network requests.
+live-network = []
+
+[dependencies]
+gaussclaw-tools = { workspace = true }
+async-trait     = { workspace = true }
+reqwest         = { workspace = true }
+tokio           = { workspace = true }
+
+[dev-dependencies]
+tokio    = { workspace = true, features = ["test-util", "macros"] }
+wiremock = { workspace = true }

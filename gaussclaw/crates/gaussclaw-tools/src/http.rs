@@ -63,6 +63,26 @@ pub struct HttpRequest {
     pub body: Option<String>,
 }
 
+impl HttpRequest {
+    /// Construct a request. Required because the struct is
+    /// `#[non_exhaustive]` and cannot be struct-literal'd from
+    /// outside this crate.
+    #[must_use]
+    pub const fn new(
+        method: HttpMethod,
+        url: String,
+        headers: BTreeMap<String, String>,
+        body: Option<String>,
+    ) -> Self {
+        Self {
+            method,
+            url,
+            headers,
+            body,
+        }
+    }
+}
+
 /// One HTTP response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -75,6 +95,28 @@ pub struct HttpResponse {
     pub body: String,
     /// `true` when [`HttpResponse::body`] was truncated by the policy.
     pub truncated: bool,
+}
+
+impl HttpResponse {
+    /// Construct a response. Required because the struct is
+    /// `#[non_exhaustive]` and cannot be struct-literal'd from
+    /// outside this crate (Sprint 10 §1 — the `gaussclaw-http`
+    /// adapter needs to synthesise responses from a `reqwest`
+    /// reply).
+    #[must_use]
+    pub const fn new(
+        status: u16,
+        headers: BTreeMap<String, String>,
+        body: String,
+        truncated: bool,
+    ) -> Self {
+        Self {
+            status,
+            headers,
+            body,
+            truncated,
+        }
+    }
 }
 
 /// Supported request methods. `HEAD` and `GET` use the same cap;
