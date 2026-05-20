@@ -21,8 +21,12 @@
 
 #![allow(clippy::doc_markdown, clippy::module_name_repetitions)]
 
-use gaussclaw_agent::LoopEvent;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use gaussclaw_agent::{LoopEvent, LoopSink};
 use serde_json::{json, Value};
+use tokio::sync::Mutex;
 
 /// Translate one [`LoopEvent`] into the JSON envelope the dashboard
 /// chat pane expects. Returns `None` for variants that have no
@@ -113,6 +117,86 @@ pub fn loop_event_to_wire(event: &LoopEvent) -> Option<Value> {
             "iterations": iterations,
         })),
         _ => None,
+    }
+}
+
+// ─── LoopSink → WebSocket bridge ──────────────────────────────────────────
+
+/// Trait abstraction over "something that can ship a JSON envelope
+/// over the wire". The chat WebSocket implements this directly; tests
+/// implement it with an in-memory `Vec<Value>` capture.
+#[async_trait::async_trait]
+pub trait WireOutbox: Send + Sync {
+    /// Send one envelope. Returns `false` when the outbox is closed
+    /// (connection lost) — the sink propagates the close to the loop
+    /// via [`LoopSink::should_cancel`].
+    async fn send(&self, frame: Value) -> bool;
+}
+
+/// `LoopSink` that translates every `LoopEvent` via
+/// [`loop_event_to_wire`] and ships the JSON envelope through a
+/// [`WireOutbox`]. Used by `chat_socket` to stream loop activity to
+/// the dashboard; used by tests with an in-memory outbox.
+pub struct WireLoopSink {
+    outbox: Arc<dyn WireOutbox>,
+    /// Set to `true` the moment the outbox reports a failed send;
+    /// the agent loop checks this between iterations and returns
+    /// `LoopOutcome::Cancelled` so we never run a turn against a
+    /// closed socket.
+    closed: AtomicBool,
+}
+
+impl WireLoopSink {
+    /// Wrap an outbox.
+    #[must_use]
+    pub fn new(outbox: Arc<dyn WireOutbox>) -> Self {
+        Self {
+            outbox,
+            closed: AtomicBool::new(false),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl LoopSink for WireLoopSink {
+    async fn emit(&self, event: LoopEvent) {
+        if self.closed.load(Ordering::SeqCst) {
+            return;
+        }
+        if let Some(frame) = loop_event_to_wire(&event) {
+            // The dashboard already accepts both bare `{type: …}` envelopes
+            // and `{ok: true, data: {…}}` envelopes; emit the bare shape so
+            // app.js's existing `payload.type === '…'` dispatch fires
+            // unchanged.
+            if !self.outbox.send(frame).await {
+                self.closed.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    fn should_cancel(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+}
+
+/// In-memory outbox used by the chat-socket integration tests.
+#[derive(Default)]
+pub struct CaptureOutbox {
+    frames: Mutex<Vec<Value>>,
+}
+
+impl CaptureOutbox {
+    /// Snapshot every received frame.
+    pub async fn frames(&self) -> Vec<Value> {
+        self.frames.lock().await.clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl WireOutbox for CaptureOutbox {
+    async fn send(&self, frame: Value) -> bool {
+        self.frames.lock().await.push(frame);
+        true
     }
 }
 

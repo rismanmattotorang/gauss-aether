@@ -35,8 +35,8 @@ pub use enrich::{collect_enrichments, wrap_enrichment, PromptEnricher};
 pub use enrich_impls::{ContextFileEnricher, MarkdownSkillEnricher, MemoryFileEnricher};
 
 pub use audit::{
-    blake3_hex, AuditEntry, AuditTrace, HookDenyRecord, HookWarnRecord, InboundRecord,
-    OutboundRecord, PlaneLabel, TurnCompleteRecord, TurnStartRecord,
+    blake3_hex, AuditEntry, AuditTrace, CompactionAuditRecord, HookDenyRecord, HookWarnRecord,
+    InboundRecord, OutboundRecord, PlaneLabel, TurnCompleteRecord, TurnStartRecord,
 };
 
 use std::sync::Arc;

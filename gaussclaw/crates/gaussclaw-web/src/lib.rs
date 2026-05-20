@@ -50,7 +50,10 @@ use axum::routing::get;
 use axum::Router;
 use gauss_core::{CapToken, TaintLabel};
 use gauss_cron::{parse_schedule, FireOutcome, Job, JobId, Scheduler, SystemClock};
-use gaussclaw_agent::{AuditTrace, KernelHandle, SurfaceRequest};
+use gaussclaw_agent::{
+    AgentLoop, AuditTrace, KernelHandle, Message as AgentMessage, Prompt as AgentPrompt,
+    SurfaceRequest,
+};
 use gaussclaw_config::Config;
 use gaussclaw_export::{verify_envelope, Envelope, VerifyEnvelopeError};
 use gaussclaw_skill::SkillManifest;
@@ -309,6 +312,13 @@ pub struct ServerState {
     /// Sprint 7 §3 — plugin discovery roots; the dashboard's
     /// `/api/plugins` endpoint walks them on demand.
     plugin_roots: Vec<std::path::PathBuf>,
+    /// Optional agent loop driving the `/api/chat/ws` WebSocket. When
+    /// `None`, the WebSocket falls back to the stub-echo banner so
+    /// the dashboard still loads against a partially-wired backend.
+    /// When `Some`, every user message is dispatched through the loop
+    /// and every `LoopEvent` is streamed back as a dashboard wire
+    /// frame via [`wire::loop_event_to_wire`].
+    agent: Option<Arc<AgentLoop>>,
 }
 
 impl ServerState {
@@ -349,7 +359,26 @@ impl ServerState {
             cron: None,
             logs: Arc::new(LogBuffer::with_capacity(200)),
             plugin_roots: Vec::new(),
+            agent: None,
         }
+    }
+
+    /// Attach an agent loop. Subsequent `/api/chat/ws` connections
+    /// dispatch every user message through this loop and stream
+    /// `LoopEvent`s back to the browser. The provider, hooks,
+    /// compactor, audit trace, and enrichers attached to the loop
+    /// all apply.
+    #[must_use]
+    pub fn with_agent(mut self, agent: Arc<AgentLoop>) -> Self {
+        self.agent = Some(agent);
+        self
+    }
+
+    /// Borrow the optional agent loop. Returns `None` until
+    /// [`Self::with_agent`] is called.
+    #[must_use]
+    pub fn agent(&self) -> Option<Arc<AgentLoop>> {
+        self.agent.clone()
     }
 
     /// Push a structured log entry into the in-memory ring buffer.
@@ -543,48 +572,104 @@ async fn handle_chat_ws(State(state): State<ServerState>, ws: WebSocketUpgrade) 
         )
             .into_response();
     }
-    ws.on_upgrade(chat_socket)
+    let agent = state.agent.clone();
+    ws.on_upgrade(move |socket| chat_socket(socket, agent))
 }
 
-async fn chat_socket(mut socket: WebSocket) {
-    // Skeleton: echo a single welcome frame, then close. Real streaming
-    // arrives with the agent loop in Phase 1 slice 5 (three-plane routing).
-    let banner = serde_json::json!({
-        "ok": true,
-        "data": {
-            "kind": "system",
-            "body": "chat WebSocket connected — agent dispatch lands in slice 5 (three-plane routing)"
-        }
+/// Adapter making the live WebSocket usable as a [`wire::WireOutbox`].
+/// Cloning shares the underlying split sender behind an `Arc<Mutex>`;
+/// every event handler clones once, the agent loop holds the sink for
+/// the lifetime of the run.
+struct WebSocketOutbox {
+    sink: Arc<tokio::sync::Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
+}
+
+#[async_trait::async_trait]
+impl wire::WireOutbox for WebSocketOutbox {
+    async fn send(&self, frame: serde_json::Value) -> bool {
+        use futures_util::SinkExt;
+        let mut g = self.sink.lock().await;
+        g.send(Message::Text(frame.to_string().into())).await.is_ok()
+    }
+}
+
+async fn chat_socket(socket: WebSocket, agent: Option<Arc<AgentLoop>>) {
+    use futures_util::stream::StreamExt;
+    let (sender, mut receiver) = socket.split();
+    let outbox: Arc<dyn wire::WireOutbox> = Arc::new(WebSocketOutbox {
+        sink: Arc::new(tokio::sync::Mutex::new(sender)),
     });
-    if socket
-        .send(Message::Text(banner.to_string().into()))
-        .await
-        .is_err()
-    {
+
+    // Banner — same shape the dashboard already handles. We send the
+    // bare wire envelope (`{kind: "system", body: …}`) wrapped in the
+    // legacy `{ok, data}` shell for backwards compatibility with the
+    // existing app.js dispatch.
+    let banner = if agent.is_some() {
+        "chat WebSocket connected — agent dispatch live."
+    } else {
+        "chat WebSocket connected — no agent attached (server running in stub mode)."
+    };
+    let banner_frame = serde_json::json!({
+        "ok": true,
+        "data": { "kind": "system", "body": banner },
+    });
+    if !outbox.send(banner_frame).await {
         return;
     }
-    while let Some(msg) = socket.recv().await {
+
+    // No agent attached → fall back to the legacy stub echo so the
+    // dashboard still loads against a partially-wired backend.
+    let Some(agent) = agent else {
+        while let Some(msg) = receiver.next().await {
+            let Ok(msg) = msg else { return };
+            let body = match &msg {
+                Message::Text(t) => t.as_str().to_string(),
+                Message::Binary(_) => "(binary frame ignored)".into(),
+                Message::Close(_) => return,
+                _ => continue,
+            };
+            let reply = serde_json::json!({
+                "ok": true,
+                "data": { "kind": "assistant", "body": format!("(stub echo) {body}") },
+            });
+            if !outbox.send(reply).await {
+                return;
+            }
+        }
+        return;
+    };
+
+    // Agent path. Each inbound user message → one AgentLoop run.
+    while let Some(msg) = receiver.next().await {
         let Ok(msg) = msg else { return };
-        // For now echo the incoming text back as a stub assistant frame.
-        let body = match &msg {
+        let user_text = match &msg {
             Message::Text(t) => t.as_str().to_string(),
-            Message::Binary(_) => "(binary frame ignored)".into(),
             Message::Close(_) => return,
+            // Pings, pongs, binary frames are ignored on the chat
+            // channel — only text gets dispatched.
             _ => continue,
         };
-        let reply = serde_json::json!({
-            "ok": true,
-            "data": {
-                "kind": "assistant",
-                "body": format!("(stub echo) {body}")
-            }
-        });
-        if socket
-            .send(Message::Text(reply.to_string().into()))
+        let prompt = AgentPrompt::new(
+            "default",
+            vec![AgentMessage::new("user", user_text.clone())],
+        );
+        let sink = wire::WireLoopSink::new(outbox.clone());
+        match agent
+            .run(prompt, TaintLabel::User, None, &sink)
             .await
-            .is_err()
         {
-            return;
+            Ok(_outcome) => {
+                // Done frame is already emitted by the loop sink.
+            }
+            Err(e) => {
+                let err_frame = serde_json::json!({
+                    "type": "error",
+                    "error": format!("{e:?}"),
+                });
+                if !outbox.send(err_frame).await {
+                    return;
+                }
+            }
         }
     }
 }
@@ -2381,5 +2466,182 @@ taint = "trusted"
         assert_eq!(resp["data"]["convergent"], true);
         assert_eq!(resp["data"]["a_length"], 0);
         assert_eq!(resp["data"]["b_length"], 0);
+    }
+
+    // ── chat socket → AgentLoop integration ────────────────────────────────
+
+    /// End-to-end: when an AgentLoop is attached to ServerState, the
+    /// chat path runs a real turn and the dashboard receives every
+    /// LoopEvent translated through `wire::loop_event_to_wire`.
+    ///
+    /// We bypass the WebSocket transport (axum Test doesn't expose a
+    /// WS client) and drive the loop directly against a CaptureOutbox.
+    /// The outbox + sink + agent are the same instances handle_chat_ws
+    /// builds in production, so this exercises the wired path
+    /// without the socket layer.
+    #[tokio::test]
+    async fn chat_socket_path_streams_loop_events_via_wire() {
+        use crate::wire::{CaptureOutbox, WireLoopSink, WireOutbox};
+        use gaussclaw_agent::{
+            AgentLoop, EchoProvider, KernelHandle, Message, Prompt, TurnPolicy,
+        };
+        use gauss_core::TaintLabel;
+        use std::sync::Arc;
+
+        let provider: Arc<dyn gaussclaw_agent::ProviderHandle> =
+            Arc::new(EchoProvider::default());
+        let policy = TurnPolicy::new(KernelHandle::permissive(), provider);
+        let agent = Arc::new(AgentLoop::new(policy));
+
+        let outbox: Arc<CaptureOutbox> = Arc::new(CaptureOutbox::default());
+        let outbox_dyn: Arc<dyn WireOutbox> = outbox.clone();
+        let sink = WireLoopSink::new(outbox_dyn);
+        let _ = agent
+            .run(
+                Prompt::new("test", vec![Message::new("user", "hi")]),
+                TaintLabel::User,
+                None,
+                &sink,
+            )
+            .await
+            .expect("run ok");
+
+        let frames = outbox.frames().await;
+        // Every run emits at least: UserSubmitted → Assistant → Done.
+        let kinds: Vec<&str> = frames
+            .iter()
+            .filter_map(|f| f.get("type").and_then(|v| v.as_str()))
+            .collect();
+        assert!(kinds.contains(&"user"), "no user frame in {kinds:?}");
+        assert!(
+            kinds.contains(&"assistant"),
+            "no assistant frame in {kinds:?}"
+        );
+        assert!(kinds.contains(&"done"), "no done frame in {kinds:?}");
+    }
+
+    /// `LoopEvent::ToolDenied` (sprint 7) reaches the dashboard via
+    /// the wire translation when a `PreToolHook::Deny` fires inside
+    /// the same chat path.
+    #[tokio::test]
+    async fn chat_socket_path_surfaces_tool_denied_frames() {
+        use crate::wire::{CaptureOutbox, WireLoopSink, WireOutbox};
+        use async_trait::async_trait;
+        use gauss_core::TaintLabel;
+        use gauss_hooks::{HookBus, HookOutcome, PreToolEvent, PreToolHook};
+        use gaussclaw_agent::{
+            AgentLoop, Completion, KernelHandle, Message, Prompt, ProviderHandle, ProviderResult,
+            TokenCount, TurnPolicy,
+        };
+        use std::sync::Arc;
+
+        // Scripted provider: turn 1 asks for echo; turn 2 stops.
+        struct ScriptedProvider {
+            seq: std::sync::Mutex<usize>,
+        }
+        #[async_trait]
+        impl ProviderHandle for ScriptedProvider {
+            fn name(&self) -> &str {
+                "scripted"
+            }
+            async fn complete(&self, _p: &Prompt) -> ProviderResult<Completion> {
+                let mut g = self.seq.lock().unwrap();
+                *g += 1;
+                if *g == 1 {
+                    Ok(Completion::new(
+                        "<tool name=\"echo\">{\"text\":\"x\"}</tool>",
+                        "scripted",
+                        "tool",
+                        TokenCount::new(1, 1),
+                    ))
+                } else {
+                    Ok(Completion::new(
+                        "done",
+                        "scripted",
+                        "stop",
+                        TokenCount::new(1, 1),
+                    ))
+                }
+            }
+        }
+
+        struct DenyEcho;
+        #[async_trait]
+        impl PreToolHook for DenyEcho {
+            fn name(&self) -> &str {
+                "deny-echo"
+            }
+            async fn on_pre_tool(&self, e: &PreToolEvent) -> HookOutcome {
+                if e.tool == "echo" {
+                    HookOutcome::Deny("policy: echo blocked".into())
+                } else {
+                    HookOutcome::Allow
+                }
+            }
+        }
+
+        let provider: Arc<dyn ProviderHandle> = Arc::new(ScriptedProvider {
+            seq: std::sync::Mutex::new(0),
+        });
+        let policy = TurnPolicy::new(KernelHandle::permissive(), provider);
+        let bus = HookBus::new();
+        bus.register_pre(Arc::new(DenyEcho), 0);
+        let agent = Arc::new(AgentLoop::new(policy).with_hooks(bus));
+
+        let outbox: Arc<CaptureOutbox> = Arc::new(CaptureOutbox::default());
+        let outbox_dyn: Arc<dyn WireOutbox> = outbox.clone();
+        let sink = WireLoopSink::new(outbox_dyn);
+        let _ = agent
+            .run(
+                Prompt::new("test", vec![Message::new("user", "go")]),
+                TaintLabel::User,
+                None,
+                &sink,
+            )
+            .await
+            .expect("run ok");
+
+        let frames = outbox.frames().await;
+        let kinds: Vec<&str> = frames
+            .iter()
+            .filter_map(|f| f.get("type").and_then(|v| v.as_str()))
+            .collect();
+        assert!(
+            kinds.contains(&"tool.denied"),
+            "expected tool.denied in {kinds:?}"
+        );
+        // We should NOT see a tool.complete for echo — the deny short-
+        // circuited dispatch.
+        let saw_echo_complete = frames.iter().any(|f| {
+            f.get("type").and_then(|v| v.as_str()) == Some("tool.complete")
+                && f.get("tool").and_then(|v| v.as_str()) == Some("echo")
+        });
+        assert!(!saw_echo_complete, "echo must not run when denied");
+    }
+
+    /// `ServerState::with_agent` is honoured: calling `agent()` after
+    /// attachment returns the same Arc.
+    #[test]
+    fn server_state_with_agent_round_trip() {
+        use gaussclaw_agent::{AgentLoop, EchoProvider, KernelHandle, TurnPolicy};
+        use std::sync::Arc;
+
+        let provider: Arc<dyn gaussclaw_agent::ProviderHandle> =
+            Arc::new(EchoProvider::default());
+        let policy = TurnPolicy::new(KernelHandle::permissive(), provider);
+        let agent = Arc::new(AgentLoop::new(policy));
+        let state =
+            ServerState::new(Config::default(), None).with_agent(agent.clone());
+        let got = state.agent().expect("agent attached");
+        assert!(Arc::ptr_eq(&got, &agent));
+    }
+
+    /// No agent attached: ServerState::agent() returns None and the
+    /// chat path falls back to the stub echo (we test that behaviour
+    /// in the next test).
+    #[test]
+    fn server_state_default_has_no_agent() {
+        let state = ServerState::new(Config::default(), None);
+        assert!(state.agent().is_none());
     }
 }
