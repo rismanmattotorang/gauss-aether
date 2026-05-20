@@ -96,6 +96,7 @@ pub mod security_scan;
 pub mod session_search;
 pub mod shell;
 pub mod spawners;
+pub mod sprint9_tools;
 pub mod subagent;
 pub mod todo_tool;
 pub mod upper;
@@ -135,6 +136,10 @@ pub use security_scan::{
 pub use session_search::SessionSearchTool;
 pub use shell::ShellTool;
 pub use spawners::{composite_sandboxed, noop_sandboxed, unsandboxed};
+pub use sprint9_tools::{
+    extract_pdf_text, strip_html, MessageSink, MockMessageSink, MockSearchProvider, PdfExtractTool,
+    SearchProvider, SearchResult, SendMessageTool, WebFetchTool, WebSearchTool,
+};
 pub use subagent::{
     DelegateTool, MixtureOfAgentsTool, MockDispatcher, SubAgentDispatcher, SubAgentRequest,
     SubAgentResult,

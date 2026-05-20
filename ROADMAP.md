@@ -819,6 +819,66 @@ Success criteria:
 - An external security firm signs off on the cap-lattice + audit
   chain design.
 
+### Sprint 9 — production hardening + deferred follow-ons (size: L)
+
+**Goal:** close every "pending" / "follow-on" / "lands in Sprint N+1"
+marker the prior sprints left behind, plus the production-readiness
+work the structural commits punted on.
+
+Deliverables:
+
+1. **Token-level WebSocket streaming** (Sprint 4 §2 follow-on).
+   Wire the `LoopSink::Token` event end-to-end through
+   `/api/chat/ws` so the dashboard renders token-by-token, not
+   turn-by-turn. Hermes streams via `chat_completions.py`;
+   GaussClaw's WebSocket frame format is ready — just needs the
+   loop driver wiring.
+2. **Mid-turn Ctrl-C / WS-close cancellation** (Sprint 4 §4
+   follow-on). The `MemorySink::request_cancel` primitive exists;
+   the TUI's `Ctrl+C` and the dashboard's `WS Close` both need to
+   set the flag.
+3. **`web_fetch` + `web_search` tools** (Sprint 7 §4 deferred). ✅
+   `web_fetch` over the existing `HttpTool` with content
+   extraction; `web_search` over a pluggable `SearchProvider`
+   trait (mock backend ships; real backends slot in as plugins).
+   Lands as `gaussclaw-tools::sprint9_tools::{WebFetchTool,
+   WebSearchTool}`.
+4. **`send_message` tool** (Sprint 7 §4 deferred). ✅ Cross-channel
+   dispatch over a pluggable `MessageSink` trait (mock sink ships
+   for tests; production wires through `gaussclaw-channels`).
+   Lands as `gaussclaw-tools::sprint9_tools::SendMessageTool`.
+5. **`mcp_invoke` tool** (Sprint 7 §4 deferred). MCP client
+   primitive — typed JSON-RPC 2.0 over stdio, cap-gated, mirrors
+   `gaussclaw-lsp-client` shape.
+6. **`terminal` PTY tool** (Sprint 7 §4 deferred). Real PTY via
+   `portable-pty` behind a Cargo feature; cap-gated to
+   `cap:executor:local`.
+7. **`pdf_extract` tool** (Sprint 7 §4 deferred). ✅ Minimal text
+   extraction from PDF (BT/ET block walk for parenthesised
+   string literals); zero-dep fallback when no PDF lib is
+   configured. Lands as
+   `gaussclaw-tools::sprint9_tools::PdfExtractTool`.
+8. **`gauss-poly` probe-set baseline** (Sprint 8 §1 follow-on).
+   Real committed snapshots that the CI gate compares against.
+9. **Trinity-backed cron JobStore** (Sprint 5 §1 follow-on).
+   Persist cron jobs through `gaussclaw-store::cron_jobs` so they
+   survive process restarts.
+10. **Real Modal HTTP client** (Sprint 6 §1.3 follow-on). Wire
+    `gaussclaw-providers` into `gauss-exec::ModalExecutor` once
+    Modal's HTTP API stability lands.
+
+### Sprint 9 — wrap-up: production-ready, follow-on-complete
+
+When Sprint 9 closes, the codebase has:
+
+- Zero "lands in Sprint N+1" pending markers in `/ROADMAP.md`.
+- Token-by-token streaming end-to-end through the WebSocket.
+- Mid-turn cancellation in both TUI and dashboard.
+- The full Hermes-parity tool catalogue (32+ tools).
+- Persistent cron jobs across restarts.
+- A live `gauss-poly` baseline in CI that fails closed on silent
+  provider drift.
+
 ---
 
 ## 7. Resource estimates & risk
