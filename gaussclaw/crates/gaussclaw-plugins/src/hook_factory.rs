@@ -233,6 +233,169 @@ impl PluginRegistry {
     }
 }
 
+// ─── built-in default factory ─────────────────────────────────────────────
+
+/// Built-in [`HookFactory`] resolving a stable set of ids that ship
+/// with GaussClaw out of the box. Without at least one factory
+/// shipping, no plugin-declared hook can land — the registration
+/// walk fails closed on unknown ids.
+///
+/// Ids resolved:
+///
+/// * `dry-run-preview` (PreTool) — emits a `Warn` with a one-line
+///   preview of the tool name + arg shape so operators can audit
+///   plans before allowing execution. Never denies on its own.
+///
+/// * `shell-guard` (PreTool) — refuses shell tool invocations whose
+///   `cmd` arg contains a small, hard-coded list of dangerous tokens
+///   (`rm -rf /`, `:(){:|:&};:`, `mkfs.`, `dd of=/dev/`). This is a
+///   defence-in-depth backstop; the real policy belongs in
+///   site-specific factories.
+///
+/// * `audit-log` (PostTool) — no-op observer that names a hook id a
+///   plugin can use to "land on the audit chain" without writing its
+///   own callback. The agent loop already records receipts via
+///   `with_audit`; this id exists so plugins can declare a hook in
+///   their manifest without supplying their own factory.
+///
+/// Production deployments combine this with [`ChainedHookFactory`]
+/// (below) when they need additional ids resolved by a site-specific
+/// factory.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct DefaultHookFactory;
+
+impl HookFactory for DefaultHookFactory {
+    fn build(&self, decl: &HookDeclaration) -> PluginResult<BuiltHook> {
+        match (decl.id.as_str(), decl.lifecycle) {
+            ("dry-run-preview", HookLifecycle::PreTool) => {
+                Ok(BuiltHook::Pre(Arc::new(DryRunPreview)))
+            }
+            ("shell-guard", HookLifecycle::PreTool) => {
+                Ok(BuiltHook::Pre(Arc::new(ShellGuard)))
+            }
+            ("audit-log", HookLifecycle::PostTool) => Ok(BuiltHook::Post(Arc::new(AuditLogNoop))),
+            (other, _) => Err(PluginError::Backend(format!(
+                "DefaultHookFactory does not know hook id `{other}` for the declared lifecycle"
+            ))),
+        }
+    }
+}
+
+/// `dry-run-preview` — emits a Warn with the planned tool + arg shape.
+struct DryRunPreview;
+
+#[async_trait]
+impl PreToolHook for DryRunPreview {
+    fn name(&self) -> &str {
+        "dry-run-preview"
+    }
+    async fn on_pre_tool(&self, event: &PreToolEvent) -> HookOutcome {
+        // Render only the *shape* of the args (top-level field names)
+        // — the values may contain secrets and the audit chain stores
+        // a hash; the warning text stays in operator-visible logs.
+        let shape: Vec<&str> = event
+            .args
+            .as_object()
+            .map(|obj| obj.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        HookOutcome::Warn(format!(
+            "dry-run: would call {tool}(args=[{shape}])",
+            tool = event.tool,
+            shape = shape.join(",")
+        ))
+    }
+}
+
+/// `shell-guard` — refuses shell tool calls with obviously dangerous
+/// commands. Defence-in-depth only; the real policy lives in
+/// site-specific factories.
+struct ShellGuard;
+
+const SHELL_DENY_SUBSTRINGS: &[&str] = &[
+    "rm -rf /",
+    "rm -rf /*",
+    ":(){:|:&};:",   // classic fork bomb
+    "mkfs.",
+    "dd of=/dev/",
+    "> /dev/sda",
+    "chmod -R 777 /",
+];
+
+#[async_trait]
+impl PreToolHook for ShellGuard {
+    fn name(&self) -> &str {
+        "shell-guard"
+    }
+    async fn on_pre_tool(&self, event: &PreToolEvent) -> HookOutcome {
+        if event.tool != "shell" {
+            return HookOutcome::Allow;
+        }
+        let cmd = event
+            .args
+            .get("cmd")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        for needle in SHELL_DENY_SUBSTRINGS {
+            if cmd.contains(needle) {
+                return HookOutcome::Deny(format!(
+                    "shell-guard: refused (matched `{needle}`)"
+                ));
+            }
+        }
+        HookOutcome::Allow
+    }
+}
+
+/// `audit-log` — no-op `PostToolHook`. The actual audit append
+/// happens in [`gaussclaw_agent::AgentLoop`] via `with_audit`; this
+/// id exists so plugins can declare a hook in their manifest and
+/// have the factory resolve it without writing custom code.
+struct AuditLogNoop;
+
+#[async_trait]
+impl PostToolHook for AuditLogNoop {
+    fn name(&self) -> &str {
+        "audit-log"
+    }
+    async fn on_post_tool(&self, _event: &PostToolEvent) {}
+}
+
+/// Composite factory that walks an ordered list of inner factories
+/// and returns the first one that resolves the id. Production
+/// deployments stack a site-specific factory on top of
+/// [`DefaultHookFactory`] so the built-ins are still reachable
+/// without forcing every site to re-implement them.
+pub struct ChainedHookFactory {
+    factories: Vec<Box<dyn HookFactory>>,
+}
+
+impl ChainedHookFactory {
+    /// Build a chain. Order is significant — earlier factories win
+    /// when both resolve the same id.
+    #[must_use]
+    pub fn new(factories: Vec<Box<dyn HookFactory>>) -> Self {
+        Self { factories }
+    }
+}
+
+impl HookFactory for ChainedHookFactory {
+    fn build(&self, decl: &HookDeclaration) -> PluginResult<BuiltHook> {
+        let mut last_err: Option<PluginError> = None;
+        for f in &self.factories {
+            match f.build(decl) {
+                Ok(b) => return Ok(b),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| {
+            PluginError::Backend(format!(
+                "ChainedHookFactory: no inner factory resolved hook id `{}`",
+                decl.id
+            ))
+        }))
+    }
+}
+
 // ─── tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -563,6 +726,232 @@ mod tests {
                 .fire_pre(&PreToolEvent::new(tool, serde_json::json!({})))
                 .await;
             assert!(report.outcome.is_deny(), "tool {tool} should be denied");
+        }
+    }
+
+    // ── DefaultHookFactory tests ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn default_factory_resolves_dry_run_preview_as_warn() {
+        let f = DefaultHookFactory;
+        let decl = HookDeclaration {
+            id: "dry-run-preview".into(),
+            lifecycle: HookLifecycle::PreTool,
+            priority: 0,
+            target_tools: vec![],
+            description: String::new(),
+        };
+        let built = f.build(&decl).expect("resolve");
+        let pre = match built {
+            BuiltHook::Pre(p) => p,
+            _ => panic!("expected Pre"),
+        };
+        let outcome = pre
+            .on_pre_tool(&PreToolEvent::new(
+                "shell",
+                serde_json::json!({ "cmd": "ls", "cwd": "/tmp" }),
+            ))
+            .await;
+        assert!(outcome.is_warn());
+        let r = outcome.reason().unwrap();
+        assert!(r.contains("dry-run"));
+        assert!(r.contains("shell"));
+        // Args appear as a shape only — the values must NOT leak.
+        assert!(!r.contains("/tmp"));
+        assert!(!r.contains("ls"));
+    }
+
+    #[tokio::test]
+    async fn default_factory_shell_guard_blocks_dangerous_commands() {
+        let f = DefaultHookFactory;
+        let decl = HookDeclaration {
+            id: "shell-guard".into(),
+            lifecycle: HookLifecycle::PreTool,
+            priority: 0,
+            target_tools: vec![],
+            description: String::new(),
+        };
+        let pre = match f.build(&decl).unwrap() {
+            BuiltHook::Pre(p) => p,
+            _ => panic!("expected Pre"),
+        };
+        for dangerous in ["rm -rf /", "echo x ; rm -rf /", "mkfs.ext4 /dev/sda"] {
+            let outcome = pre
+                .on_pre_tool(&PreToolEvent::new(
+                    "shell",
+                    serde_json::json!({ "cmd": dangerous }),
+                ))
+                .await;
+            assert!(outcome.is_deny(), "should deny {dangerous}");
+        }
+    }
+
+    #[tokio::test]
+    async fn default_factory_shell_guard_allows_safe_shells() {
+        let f = DefaultHookFactory;
+        let pre = match f
+            .build(&HookDeclaration {
+                id: "shell-guard".into(),
+                lifecycle: HookLifecycle::PreTool,
+                priority: 0,
+                target_tools: vec![],
+                description: String::new(),
+            })
+            .unwrap()
+        {
+            BuiltHook::Pre(p) => p,
+            _ => panic!("expected Pre"),
+        };
+        for safe in ["ls", "echo hi", "cargo test"] {
+            let outcome = pre
+                .on_pre_tool(&PreToolEvent::new(
+                    "shell",
+                    serde_json::json!({ "cmd": safe }),
+                ))
+                .await;
+            assert!(outcome.is_allow(), "should allow {safe}");
+        }
+    }
+
+    #[tokio::test]
+    async fn default_factory_shell_guard_ignores_other_tools() {
+        let f = DefaultHookFactory;
+        let pre = match f
+            .build(&HookDeclaration {
+                id: "shell-guard".into(),
+                lifecycle: HookLifecycle::PreTool,
+                priority: 0,
+                target_tools: vec![],
+                description: String::new(),
+            })
+            .unwrap()
+        {
+            BuiltHook::Pre(p) => p,
+            _ => panic!("expected Pre"),
+        };
+        // Even a "rm -rf /" arg to a non-shell tool is Allow — shell-
+        // guard's job is to be a shell backstop, not a generic deny.
+        let outcome = pre
+            .on_pre_tool(&PreToolEvent::new(
+                "echo",
+                serde_json::json!({ "text": "rm -rf /" }),
+            ))
+            .await;
+        assert!(outcome.is_allow());
+    }
+
+    #[tokio::test]
+    async fn default_factory_audit_log_resolves_post_tool() {
+        let built = DefaultHookFactory
+            .build(&HookDeclaration {
+                id: "audit-log".into(),
+                lifecycle: HookLifecycle::PostTool,
+                priority: 0,
+                target_tools: vec![],
+                description: String::new(),
+            })
+            .expect("resolve");
+        assert!(built.is_post());
+    }
+
+    #[tokio::test]
+    async fn default_factory_rejects_unknown_ids() {
+        let result = DefaultHookFactory.build(&HookDeclaration {
+            id: "not-a-thing".into(),
+            lifecycle: HookLifecycle::PreTool,
+            priority: 0,
+            target_tools: vec![],
+            description: String::new(),
+        });
+        match result {
+            Err(PluginError::Backend(m)) => assert!(m.contains("not-a-thing")),
+            Err(other) => panic!("expected Backend, got {other:?}"),
+            Ok(_) => panic!("expected error for unknown id"),
+        }
+    }
+
+    /// Lifecycle mismatch (`audit-log` declared as PreTool) is
+    /// reported as an unknown-id error because the (id, lifecycle)
+    /// pair doesn't match any built-in entry.
+    #[tokio::test]
+    async fn default_factory_rejects_wrong_lifecycle_for_built_in_id() {
+        let result = DefaultHookFactory.build(&HookDeclaration {
+            id: "audit-log".into(),
+            lifecycle: HookLifecycle::PreTool,
+            priority: 0,
+            target_tools: vec![],
+            description: String::new(),
+        });
+        assert!(matches!(result, Err(PluginError::Backend(_))));
+    }
+
+    // ── ChainedHookFactory tests ─────────────────────────────────────────
+
+    /// Earlier factories in the chain win when both resolve the same id.
+    #[tokio::test]
+    async fn chained_factory_walks_in_order_and_first_wins() {
+        struct Inner(&'static str);
+        impl HookFactory for Inner {
+            fn build(&self, _decl: &HookDeclaration) -> PluginResult<BuiltHook> {
+                struct Marker(&'static str);
+                #[async_trait]
+                impl PreToolHook for Marker {
+                    fn name(&self) -> &str {
+                        self.0
+                    }
+                    async fn on_pre_tool(&self, _e: &PreToolEvent) -> HookOutcome {
+                        HookOutcome::Warn("x".into())
+                    }
+                }
+                Ok(BuiltHook::Pre(Arc::new(Marker(self.0))))
+            }
+        }
+        let chain = ChainedHookFactory::new(vec![Box::new(Inner("first")), Box::new(Inner("second"))]);
+        let built = chain
+            .build(&HookDeclaration {
+                id: "anything".into(),
+                lifecycle: HookLifecycle::PreTool,
+                priority: 0,
+                target_tools: vec![],
+                description: String::new(),
+            })
+            .unwrap();
+        let pre = match built {
+            BuiltHook::Pre(p) => p,
+            _ => panic!(),
+        };
+        assert_eq!(pre.name(), "first");
+    }
+
+    /// All-fail returns the last error.
+    #[tokio::test]
+    async fn chained_factory_returns_last_error_when_no_resolver() {
+        let chain = ChainedHookFactory::new(vec![Box::new(DefaultHookFactory)]);
+        let result = chain.build(&HookDeclaration {
+            id: "ghost".into(),
+            lifecycle: HookLifecycle::PreTool,
+            priority: 0,
+            target_tools: vec![],
+            description: String::new(),
+        });
+        assert!(matches!(result, Err(PluginError::Backend(_))));
+    }
+
+    /// Empty chain produces a clean diagnostic.
+    #[tokio::test]
+    async fn chained_factory_with_no_inner_factories_errors() {
+        let chain = ChainedHookFactory::new(vec![]);
+        let result = chain.build(&HookDeclaration {
+            id: "x".into(),
+            lifecycle: HookLifecycle::PreTool,
+            priority: 0,
+            target_tools: vec![],
+            description: String::new(),
+        });
+        match result {
+            Err(PluginError::Backend(m)) => assert!(m.contains("no inner factory")),
+            Err(other) => panic!("expected Backend, got {other:?}"),
+            Ok(_) => panic!("expected error for empty chain"),
         }
     }
 }
