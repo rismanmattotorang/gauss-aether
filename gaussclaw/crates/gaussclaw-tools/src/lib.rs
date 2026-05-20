@@ -62,7 +62,11 @@
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_lossless,
-    clippy::redundant_closure
+    clippy::redundant_closure,
+    clippy::significant_drop_tightening,
+    clippy::branches_sharing_code,
+    clippy::while_let_on_iterator,
+    clippy::option_if_let_else
 )]
 #![allow(rustdoc::broken_intra_doc_links)]
 
@@ -81,7 +85,10 @@ pub mod hash;
 pub mod http;
 pub mod json_get;
 pub mod json_set;
+pub mod markdown_render;
 pub mod math_eval;
+pub mod memory;
+pub mod path_security;
 pub mod regex_match;
 pub mod registry;
 pub mod security_scan;
@@ -89,6 +96,7 @@ pub mod session_search;
 pub mod shell;
 pub mod spawners;
 pub mod subagent;
+pub mod todo_tool;
 pub mod upper;
 pub mod uuid;
 
@@ -110,7 +118,10 @@ pub use http::{
 };
 pub use json_get::JsonGetTool;
 pub use json_set::JsonSetTool;
+pub use markdown_render::{render_html, render_text, MarkdownRenderTool};
 pub use math_eval::MathEvalTool;
+pub use memory::{MemoryReadTool, MemoryWriteTool};
+pub use path_security::{scan_path, PathRule, PathSecurityTool, PathVerdict, PATH_RULES};
 pub use regex_match::RegexMatchTool;
 pub use registry::{RegistryError, RegistryResult, ToolRegistry};
 pub use security_scan::{
@@ -124,6 +135,7 @@ pub use subagent::{
     DelegateTool, MixtureOfAgentsTool, MockDispatcher, SubAgentDispatcher, SubAgentRequest,
     SubAgentResult,
 };
+pub use todo_tool::{TodoItem, TodoStatus, TodoTool};
 pub use upper::UpperTool;
 pub use uuid::UuidTool;
 

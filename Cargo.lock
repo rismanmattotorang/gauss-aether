@@ -3104,6 +3104,7 @@ dependencies = [
  "gauss-checkpoint",
  "gauss-core",
  "gauss-cron",
+ "gauss-curator",
  "gauss-hwca",
  "gauss-sandbox",
  "gauss-traits",

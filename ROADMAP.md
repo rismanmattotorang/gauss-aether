@@ -681,13 +681,13 @@ Deliverables:
    so an operator can audit before persisting (full install-to-disk
    lands with Sprint 7 §7).
 3. Web view: a new `PluginsPage` mirroring Hermes.
-4. **15 new tools** for inventory parity:
-   `terminal` (real PTY), `code_execution`, `web_fetch`,
-   `web_search`, `memory_read` / `memory_write`, `send_message`,
-   `mcp_invoke`, `image_describe` (BLIP-style local model),
-   `transcribe` (whisper.cpp), `tts` (piper), `todo`,
-   `pdf_extract`, `markdown_render`, `path_security` (pre-exec FS
-   guard).
+4. 🟡 **15 new tools** for inventory parity. Shipping batch 1 in this
+   sprint: ✅ `memory_read`, ✅ `memory_write` (over the cross-session
+   store), ✅ `todo` (in-memory CRUD), ✅ `markdown_render` (zero-dep
+   text/html), ✅ `path_security` (5-rule FS path guard). Already
+   landed earlier: ✅ `code_execution` (Sprint 6 §5). Pending follow-on:
+   `terminal` (PTY), `web_fetch`, `web_search`, `send_message`,
+   `mcp_invoke`, `image_describe`, `transcribe`, `tts`, `pdf_extract`.
 5. **5 new channel adapters**: WhatsApp, Signal, Matrix, Mattermost,
    SMS (Twilio).
 6. `gaussclaw proxy` subcommand — local OAuth-to-OpenAI-compat

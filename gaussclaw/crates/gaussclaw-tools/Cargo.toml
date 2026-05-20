@@ -18,6 +18,7 @@ gauss-hwca      = { workspace = true }
 gauss-sandbox   = { workspace = true }
 gauss-cron       = { workspace = true }
 gauss-checkpoint = { workspace = true }
+gauss-curator    = { workspace = true }
 gaussclaw-skill = { workspace = true }
 gaussclaw-store = { workspace = true }
 async-trait     = { workspace = true }
