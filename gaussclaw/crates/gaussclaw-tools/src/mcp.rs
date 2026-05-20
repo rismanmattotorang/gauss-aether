@@ -346,7 +346,10 @@ mod tests {
         let t = tools.first().unwrap();
         // Every bridge demands NETWORK_POST; no MCP call rides without
         // an explicit network grant.
-        assert_eq!(t.manifest().cap_required.bits(), CapToken::NETWORK_POST.bits());
+        assert_eq!(
+            t.manifest().cap_required.bits(),
+            CapToken::NETWORK_POST.bits()
+        );
         // Strict schema-gate guards (IPI defence) on by default.
         assert!(t.manifest().guards.no_instruction_substrings);
     }

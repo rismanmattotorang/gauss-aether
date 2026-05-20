@@ -53,12 +53,14 @@
 #![allow(rustdoc::broken_intra_doc_links)]
 
 pub mod clock;
+pub mod file_store;
 pub mod grammar;
 pub mod job;
 pub mod scheduler;
 pub mod store;
 
 pub use clock::{Clock, FixedClock, SystemClock};
+pub use file_store::FileBackedJobStore;
 pub use grammar::{parse_schedule, Schedule, ScheduleParseError};
 pub use job::{Job, JobId, JobStatus};
 pub use scheduler::{FireOutcome, Scheduler, SchedulerError, TickReport};

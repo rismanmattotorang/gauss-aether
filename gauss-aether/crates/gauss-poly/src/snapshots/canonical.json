@@ -1,0 +1,114 @@
+{
+  "probes": [
+    {
+      "name": "user-empty-body",
+      "input": {
+        "source": {
+          "kind": "user",
+          "channel": "cli"
+        },
+        "taint": "user",
+        "body": null
+      },
+      "expected": [
+        {
+          "kind": "text",
+          "body": "ok"
+        }
+      ]
+    },
+    {
+      "name": "user-text-body",
+      "input": {
+        "source": {
+          "kind": "user",
+          "channel": "telegram"
+        },
+        "taint": "user",
+        "body": {
+          "text": "hello"
+        }
+      },
+      "expected": [
+        {
+          "kind": "text",
+          "body": "ok"
+        }
+      ]
+    },
+    {
+      "name": "tool-result",
+      "input": {
+        "source": {
+          "kind": "tool",
+          "tool": "echo"
+        },
+        "taint": "trusted",
+        "body": {
+          "echo": "hi"
+        }
+      },
+      "expected": [
+        {
+          "kind": "text",
+          "body": "ok"
+        }
+      ]
+    },
+    {
+      "name": "schedule-fire",
+      "input": {
+        "source": {
+          "kind": "schedule",
+          "schedule_id": "daily-summary"
+        },
+        "taint": "user",
+        "body": null
+      },
+      "expected": [
+        {
+          "kind": "text",
+          "body": "ok"
+        }
+      ]
+    },
+    {
+      "name": "canvas-event",
+      "input": {
+        "source": {
+          "kind": "canvas",
+          "widget_id": "submit-button"
+        },
+        "taint": "user",
+        "body": {
+          "clicked": true
+        }
+      },
+      "expected": [
+        {
+          "kind": "text",
+          "body": "ok"
+        }
+      ]
+    },
+    {
+      "name": "web-tainted-tool",
+      "input": {
+        "source": {
+          "kind": "tool",
+          "tool": "web_fetch"
+        },
+        "taint": "web",
+        "body": {
+          "url": "https://example.com"
+        }
+      },
+      "expected": [
+        {
+          "kind": "text",
+          "body": "ok"
+        }
+      ]
+    }
+  ]
+}

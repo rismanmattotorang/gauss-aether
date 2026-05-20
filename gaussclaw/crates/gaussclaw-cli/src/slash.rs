@@ -208,13 +208,7 @@ pub const DEFAULTS: &[SlashCommand] = &[
         SlashKind::Agent,
         true,
     ),
-    SlashCommand::new(
-        "undo",
-        &[],
-        "Undo the last turn.",
-        SlashKind::Agent,
-        true,
-    ),
+    SlashCommand::new("undo", &[], "Undo the last turn.", SlashKind::Agent, true),
     SlashCommand::new(
         "retry",
         &[],
@@ -319,7 +313,8 @@ impl SlashRegistry {
     pub fn with_defaults() -> Self {
         let mut reg = Self::new();
         for cmd in DEFAULTS {
-            reg.register(*cmd).expect("default catalogue self-consistent");
+            reg.register(*cmd)
+                .expect("default catalogue self-consistent");
         }
         reg
     }
@@ -428,13 +423,7 @@ mod tests {
     #[test]
     fn duplicate_registration_errors() {
         let mut reg = SlashRegistry::with_defaults();
-        let dup = SlashCommand::new(
-            "help",
-            &[],
-            "shadow attempt",
-            SlashKind::Info,
-            false,
-        );
+        let dup = SlashCommand::new("help", &[], "shadow attempt", SlashKind::Info, false);
         let err = reg.register(dup).unwrap_err();
         assert!(err.contains("/help"));
     }

@@ -554,8 +554,7 @@ impl AgentLoop {
                 // tool-role error message so the model sees what
                 // happened — same shape as a tool dispatch failure.
                 if let Some(bus) = self.hooks.as_ref() {
-                    let pre = PreToolEvent::new(tc.name.clone(), tc.args.clone())
-                        .with_taint(taint);
+                    let pre = PreToolEvent::new(tc.name.clone(), tc.args.clone()).with_taint(taint);
                     let report = bus.fire_pre(&pre).await;
                     for w in &report.warnings {
                         sink.emit(LoopEvent::ToolWarn {
@@ -577,8 +576,7 @@ impl AgentLoop {
                                 "error": "hook_denied",
                                 "reason": reason,
                             });
-                            let mut content =
-                                format!("[tool:{} denied] {body}", tc.name);
+                            let mut content = format!("[tool:{} denied] {body}", tc.name);
                             if let Some(id) = &tc.id {
                                 content = format!("[tool_call_id={id}] {content}");
                             }
@@ -1011,7 +1009,9 @@ mod tests {
         assert!(events.iter().any(|e| matches!(e, LoopEvent::ToolDenied { name, reason, .. } if name == "echo" && reason.contains("policy: echo blocked"))));
         // The denied tool MUST NOT have emitted a ToolComplete event.
         assert!(
-            !events.iter().any(|e| matches!(e, LoopEvent::ToolComplete { name, .. } if name == "echo")),
+            !events
+                .iter()
+                .any(|e| matches!(e, LoopEvent::ToolComplete { name, .. } if name == "echo")),
             "denied tool should not produce ToolComplete"
         );
     }
