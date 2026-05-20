@@ -577,6 +577,23 @@ impl AgentLoop {
                         turn: iterations,
                     })
                     .await;
+                    // Record on the audit chain when wired. Mirrors
+                    // the HookDeny / HookWarn pattern: the chain
+                    // witnesses every message-stack rewrite so audit
+                    // replay can correlate the compaction frame with
+                    // the rest of the turn.
+                    if let Some(audit) = self.audit.as_ref() {
+                        audit
+                            .record_compaction(
+                                session_id.unwrap_or(""),
+                                iterations,
+                                collapsed,
+                                retained,
+                                before_chars,
+                                after_chars,
+                            )
+                            .await;
+                    }
                 }
             }
 
@@ -1776,6 +1793,116 @@ mod tests {
             .iter()
             .any(|e| matches!(e, LoopEvent::Compacted { collapsed, .. } if *collapsed > 0));
         assert!(fired, "Compacted event should fire");
+    }
+
+    /// When both `with_audit` and `with_compactor` are attached, every
+    /// fired compaction advances the audit-chain head — the receipt
+    /// chain witnesses the message-stack rewrite.
+    #[tokio::test]
+    async fn auto_compaction_appends_to_audit_chain() {
+        use crate::audit::AuditTrace;
+        use crate::compaction::WindowedCompactor;
+        use std::sync::Arc;
+
+        let compactor: Arc<dyn crate::Compactor> = Arc::new(
+            WindowedCompactor::defaults()
+                .with_budget_chars(200)
+                .with_keep_tail(1),
+        );
+        let provider = Arc::new(ScriptProvider::new(
+            "scripted",
+            vec![
+                Completion::new(
+                    "<tool name=\"echo\">{\"text\":\"x\"}</tool>",
+                    "scripted",
+                    "tool",
+                    TokenCount::new(1, 1),
+                ),
+                Completion::new("done", "scripted", "stop", TokenCount::new(1, 1)),
+            ],
+        ));
+        let audit = AuditTrace::new();
+        let head_before = audit.head().await;
+        let loop_ = AgentLoop::new(loop_policy(provider))
+            .with_compactor(compactor)
+            .with_audit(audit.clone());
+        let sink = MemorySink::new();
+        loop_
+            .run(
+                Prompt::new(
+                    "scripted",
+                    vec![
+                        Message::new("system", "sys"),
+                        Message::new("user", "x".repeat(500)),
+                        Message::new("assistant", "y".repeat(500)),
+                        Message::new("user", "go"),
+                    ],
+                ),
+                TaintLabel::User,
+                Some("test-session"),
+                &sink,
+            )
+            .await
+            .expect("ok");
+        let head_after = audit.head().await;
+        assert_ne!(
+            head_before.to_hex(),
+            head_after.to_hex(),
+            "Auto-Compaction should advance the chain head"
+        );
+    }
+
+    /// Auto-Compaction works without an audit trace attached — the
+    /// audit append path is purely opt-in. Confirms parity with the
+    /// hook audit pattern.
+    #[tokio::test]
+    async fn audit_is_optional_for_compaction() {
+        use crate::compaction::WindowedCompactor;
+        use std::sync::Arc;
+
+        let compactor: Arc<dyn crate::Compactor> = Arc::new(
+            WindowedCompactor::defaults()
+                .with_budget_chars(200)
+                .with_keep_tail(1),
+        );
+        let provider = Arc::new(ScriptProvider::new(
+            "scripted",
+            vec![
+                Completion::new(
+                    "<tool name=\"echo\">{\"text\":\"x\"}</tool>",
+                    "scripted",
+                    "tool",
+                    TokenCount::new(1, 1),
+                ),
+                Completion::new("done", "scripted", "stop", TokenCount::new(1, 1)),
+            ],
+        ));
+        let loop_ = AgentLoop::new(loop_policy(provider)).with_compactor(compactor);
+        // NB: no .with_audit(...)
+        let sink = MemorySink::new();
+        let outcome = loop_
+            .run(
+                Prompt::new(
+                    "scripted",
+                    vec![
+                        Message::new("system", "sys"),
+                        Message::new("user", "x".repeat(500)),
+                        Message::new("assistant", "y".repeat(500)),
+                        Message::new("user", "go"),
+                    ],
+                ),
+                TaintLabel::User,
+                None,
+                &sink,
+            )
+            .await
+            .expect("ok");
+        assert_eq!(outcome.stop_reason, "stop");
+        // The Compacted LoopEvent still fires; we just don't audit it.
+        let events = sink.events().await;
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, LoopEvent::Compacted { .. })));
     }
 
     /// `PostToolHook` observes every completed dispatch — exercised

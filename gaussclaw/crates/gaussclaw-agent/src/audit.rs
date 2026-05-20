@@ -55,6 +55,12 @@ pub enum AuditEntry {
     /// stop the dispatch. Recorded so the audit trail of advisories
     /// is complete.
     HookWarn(HookWarnRecord),
+    /// Auto-Compaction fired between iterations and rewrote the
+    /// running message stack. Records the count delta + char delta +
+    /// session/iteration so audit replay can correlate the receipt
+    /// with the `LoopEvent::Compacted` frame the sink already emitted.
+    /// (OpenHarness-inspired Auto-Compaction audit surface.)
+    Compacted(CompactionAuditRecord),
 }
 
 /// Recorded `PreToolHook::Deny` event.
@@ -70,6 +76,26 @@ pub struct HookDenyRecord {
     pub args_hash: String,
     /// Incoming taint label at the time of the denial.
     pub taint: TaintLabel,
+    /// RFC3339 timestamp.
+    pub ts: String,
+}
+
+/// Recorded Auto-Compaction event.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CompactionAuditRecord {
+    /// Session id (if known; empty for ad-hoc runs without a session).
+    pub session: String,
+    /// Iteration index at which the compactor fired.
+    pub iteration: u32,
+    /// Number of messages collapsed into the summary.
+    pub collapsed: u32,
+    /// Number of messages retained after compaction (head + tail).
+    pub retained: u32,
+    /// Character count of the pre-compaction message stack.
+    pub before_chars: u64,
+    /// Character count of the post-compaction message stack.
+    pub after_chars: u64,
     /// RFC3339 timestamp.
     pub ts: String,
 }
@@ -337,6 +363,30 @@ impl AuditTrace {
             message: message.into(),
             args_hash: blake3_hex(args_bytes),
             taint,
+            ts: rfc3339_now(),
+        }))
+        .await
+    }
+
+    /// Convenience: record one Auto-Compaction event. The agent loop
+    /// calls this from `with_audit + with_compactor` setups so the
+    /// receipt chain witnesses every message-stack rewrite.
+    pub async fn record_compaction(
+        &self,
+        session: impl Into<String>,
+        iteration: u32,
+        collapsed: usize,
+        retained: usize,
+        before_chars: usize,
+        after_chars: usize,
+    ) -> ChainHead {
+        self.record(AuditEntry::Compacted(CompactionAuditRecord {
+            session: session.into(),
+            iteration,
+            collapsed: collapsed as u32,
+            retained: retained as u32,
+            before_chars: before_chars as u64,
+            after_chars: after_chars as u64,
             ts: rfc3339_now(),
         }))
         .await
