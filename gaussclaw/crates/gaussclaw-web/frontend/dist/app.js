@@ -109,6 +109,7 @@ const api = {
   profiles:   () => api.get('/api/profiles'),
   analytics:  () => api.get('/api/analytics/summary'),
   plugins:    () => api.get('/api/plugins'),
+  replayDiff: body => api.post('/api/replay/diff', body),
 };
 
 // Augment the API client with a generic POST helper.
@@ -809,6 +810,81 @@ function wirePluginsView() {
   if (r) r.addEventListener('click', () => renderers.plugins());
 }
 
+// ─── 7g. Replay diff view ───────────────────────────────────────────────────
+
+renderers.replay = async () => {
+  // Stateless view; nothing to populate on load.
+};
+
+function wireReplayView() {
+  const btn = $('#replay-run');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    const status = $('#replay-status');
+    const result = $('#replay-result');
+    if (status) status.textContent = 'Running diff…';
+    if (result) {
+      result.classList.add('hidden');
+      result.innerHTML = '';
+    }
+    let a;
+    let b;
+    try {
+      a = JSON.parse($('#replay-a').value || '[]');
+      b = JSON.parse($('#replay-b').value || '[]');
+    } catch (e) {
+      if (status) status.textContent = `Parse failed: ${e.message}`;
+      return;
+    }
+    try {
+      const report = await api.replayDiff({ a, b });
+      const ok = report.convergent;
+      if (status) {
+        status.textContent = ok
+          ? `Captures converge across ${report.a_length} turns.`
+          : `Diverged at turn ${report.first_divergence_at} (${report.rows.length} differences).`;
+      }
+      if (result) {
+        result.classList.remove('hidden');
+        result.classList.toggle('verify-ok', ok);
+        result.classList.toggle('verify-fail', !ok);
+        result.append(
+          el('h3', {}, ok ? '✓ Captures converge' : '✕ Captures diverge'),
+          el('dl', {},
+            el('dt', {}, 'a_length'), el('dd', {}, String(report.a_length)),
+            el('dt', {}, 'b_length'), el('dd', {}, String(report.b_length)),
+            ok ? null : el('dt', {}, 'first_divergence_at'),
+            ok ? null : el('dd', {}, String(report.first_divergence_at)),
+          )
+        );
+        if (!ok) {
+          const tbl = el('table', { class: 'replay-table' },
+            el('thead', {}, el('tr', {},
+              el('th', {}, '#'),
+              el('th', {}, 'axis'),
+              el('th', {}, 'a'),
+              el('th', {}, 'b'),
+            ))
+          );
+          const tbody = el('tbody', {});
+          report.rows.forEach(r => {
+            tbody.append(el('tr', {},
+              el('td', { class: 'mono' }, String(r.index)),
+              el('td', { class: 'mono' }, r.axis),
+              el('td', { class: 'mono' }, r.a),
+              el('td', { class: 'mono' }, r.b),
+            ));
+          });
+          tbl.append(tbody);
+          result.append(tbl);
+        }
+      }
+    } catch (e) {
+      if (status) status.textContent = `Request failed: ${e.message ?? e}`;
+    }
+  });
+}
+
 // ─── 8. Health view ─────────────────────────────────────────────────────────
 
 const defaultInvariants = [
@@ -892,6 +968,7 @@ const commands = [
   { id: 'reload-logs',    label: 'Reload logs',                hint: '',   run: () => renderers.logs()   },
   { id: 'reload-analytics', label: 'Reload analytics',         hint: '',   run: () => renderers.analytics() },
   { id: 'reload-plugins', label: 'Reload plugins',             hint: '',   run: () => renderers.plugins() },
+  { id: 'view-replay',    label: 'Go to Replay diff',          hint: '',   run: () => switchView('replay') },
 ];
 
 const palette = {
@@ -993,6 +1070,7 @@ async function bootstrap() {
   wireLogsView();
   wireProfilesView();
   wirePluginsView();
+  wireReplayView();
   setConnection('warn', 'connecting');
 
   try {

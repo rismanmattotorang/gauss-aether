@@ -1279,6 +1279,133 @@ async fn handle_plugins_list(State(state): State<ServerState>) -> Json<Ok<Plugin
     }))
 }
 
+// ─── Sprint 8 §5 — Replay-corpus diff visualiser ───────────────────────────
+
+/// One turn-snapshot row in a replay capture.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReplayTurn {
+    /// 0-based turn index.
+    pub index: u64,
+    /// `user` / `assistant` / `tool`.
+    pub role: String,
+    /// Free-form body.
+    pub body: String,
+    /// Hex chain head digest after this turn was appended.
+    pub chain_head: String,
+}
+
+/// `POST /api/replay/diff` request body.
+#[derive(Debug, Deserialize)]
+struct ReplayDiffRequest {
+    a: Vec<ReplayTurn>,
+    b: Vec<ReplayTurn>,
+}
+
+/// One divergence row.
+#[derive(Debug, Serialize)]
+pub struct DiffRow {
+    /// Turn index this row references.
+    pub index: u64,
+    /// Field name that diverged (`role`, `body`, `chain_head`, or
+    /// `length` for the catch-all "one side ran out" case).
+    pub axis: &'static str,
+    /// Side-A value (or empty when A ran out).
+    pub a: String,
+    /// Side-B value (or empty when B ran out).
+    pub b: String,
+}
+
+/// `POST /api/replay/diff` response body.
+#[derive(Debug, Serialize)]
+pub struct ReplayDiffReport {
+    /// True iff every turn pair matches across all three axes
+    /// (role / body / chain_head).
+    pub convergent: bool,
+    /// First divergent turn index, when not convergent.
+    pub first_divergence_at: Option<u64>,
+    /// Capture A length.
+    pub a_length: u64,
+    /// Capture B length.
+    pub b_length: u64,
+    /// Per-axis divergence rows; sorted by `(index, axis)`.
+    pub rows: Vec<DiffRow>,
+}
+
+/// Compute the diff between two replay captures. Public so the
+/// conformance suite can drive it without the HTTP layer.
+#[must_use]
+pub fn diff_replay(a: &[ReplayTurn], b: &[ReplayTurn]) -> ReplayDiffReport {
+    let mut rows: Vec<DiffRow> = Vec::new();
+    let mut first: Option<u64> = None;
+    let len = a.len().max(b.len());
+    for i in 0..len {
+        let av = a.get(i);
+        let bv = b.get(i);
+        match (av, bv) {
+            (Some(x), Some(y)) => {
+                if x.role != y.role {
+                    rows.push(DiffRow {
+                        index: x.index,
+                        axis: "role",
+                        a: x.role.clone(),
+                        b: y.role.clone(),
+                    });
+                    first.get_or_insert(x.index);
+                }
+                if x.body != y.body {
+                    rows.push(DiffRow {
+                        index: x.index,
+                        axis: "body",
+                        a: x.body.clone(),
+                        b: y.body.clone(),
+                    });
+                    first.get_or_insert(x.index);
+                }
+                if x.chain_head != y.chain_head {
+                    rows.push(DiffRow {
+                        index: x.index,
+                        axis: "chain_head",
+                        a: x.chain_head.clone(),
+                        b: y.chain_head.clone(),
+                    });
+                    first.get_or_insert(x.index);
+                }
+            }
+            (Some(x), None) => {
+                rows.push(DiffRow {
+                    index: x.index,
+                    axis: "length",
+                    a: format!("turn {}", x.index),
+                    b: "(missing)".into(),
+                });
+                first.get_or_insert(x.index);
+            }
+            (None, Some(y)) => {
+                rows.push(DiffRow {
+                    index: y.index,
+                    axis: "length",
+                    a: "(missing)".into(),
+                    b: format!("turn {}", y.index),
+                });
+                first.get_or_insert(y.index);
+            }
+            (None, None) => unreachable!("loop bound is max(len_a, len_b)"),
+        }
+    }
+    ReplayDiffReport {
+        convergent: rows.is_empty(),
+        first_divergence_at: first,
+        a_length: a.len() as u64,
+        b_length: b.len() as u64,
+        rows,
+    }
+}
+
+#[axum::debug_handler]
+async fn handle_replay_diff(Json(body): Json<ReplayDiffRequest>) -> Json<Ok<ReplayDiffReport>> {
+    Json(Ok::new(diff_replay(&body.a, &body.b)))
+}
+
 /// Lower-case hex encode.
 fn hex_lower(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
@@ -1399,6 +1526,7 @@ pub fn router(state: ServerState) -> Router {
         .route("/api/profiles", get(handle_profiles_list))
         .route("/api/analytics/summary", get(handle_analytics_summary))
         .route("/api/plugins", get(handle_plugins_list))
+        .route("/api/replay/diff", axum::routing::post(handle_replay_diff))
         .route("/api/chat/ws", get(handle_chat_ws))
         // Frontend
         .route("/", get(handle_root))
@@ -2164,5 +2292,92 @@ taint = "trusted"
         assert_eq!(rows[0]["name"], "alpha");
         assert_eq!(rows[0]["kind"], "standalone");
         assert!(!rows[0]["provenance"].as_str().unwrap().is_empty());
+    }
+
+    // ─── Sprint 8 §5 — Replay diff ──────────────────────────────────────
+
+    fn mk_turn(i: u64, role: &str, body: &str, head: &str) -> ReplayTurn {
+        ReplayTurn {
+            index: i,
+            role: role.into(),
+            body: body.into(),
+            chain_head: head.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn replay_diff_returns_convergent_for_identical_captures() {
+        let a = vec![
+            mk_turn(0, "user", "hello", "aaaa"),
+            mk_turn(1, "assistant", "hi", "bbbb"),
+        ];
+        let report = diff_replay(&a, &a);
+        assert!(report.convergent);
+        assert!(report.first_divergence_at.is_none());
+        assert_eq!(report.a_length, 2);
+        assert_eq!(report.b_length, 2);
+        assert!(report.rows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn replay_diff_finds_body_divergence() {
+        let a = vec![mk_turn(0, "user", "hello", "aaaa")];
+        let b = vec![mk_turn(0, "user", "world", "aaaa")];
+        let report = diff_replay(&a, &b);
+        assert!(!report.convergent);
+        assert_eq!(report.first_divergence_at, Some(0));
+        assert_eq!(report.rows.len(), 1);
+        assert_eq!(report.rows[0].axis, "body");
+    }
+
+    #[tokio::test]
+    async fn replay_diff_finds_chain_head_divergence() {
+        let a = vec![
+            mk_turn(0, "user", "x", "aaaa"),
+            mk_turn(1, "assistant", "y", "bbbb"),
+        ];
+        let b = vec![
+            mk_turn(0, "user", "x", "aaaa"),
+            mk_turn(1, "assistant", "y", "cccc"),
+        ];
+        let report = diff_replay(&a, &b);
+        assert!(!report.convergent);
+        assert_eq!(report.first_divergence_at, Some(1));
+        assert_eq!(report.rows[0].axis, "chain_head");
+    }
+
+    #[tokio::test]
+    async fn replay_diff_reports_length_mismatch() {
+        let a = vec![mk_turn(0, "user", "x", "aaaa")];
+        let b: Vec<ReplayTurn> = vec![];
+        let report = diff_replay(&a, &b);
+        assert!(!report.convergent);
+        assert_eq!(report.first_divergence_at, Some(0));
+        assert_eq!(report.rows[0].axis, "length");
+    }
+
+    #[tokio::test]
+    async fn replay_diff_endpoint_round_trips() {
+        let body = serde_json::json!({
+            "a": [{"index": 0, "role": "user", "body": "x", "chain_head": "aa"}],
+            "b": [{"index": 0, "role": "user", "body": "y", "chain_head": "aa"}],
+        });
+        let (status, resp) = post_json("/api/replay/diff", body).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(resp["data"]["convergent"], false);
+        assert_eq!(resp["data"]["first_divergence_at"], 0);
+        let rows = resp["data"]["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["axis"], "body");
+    }
+
+    #[tokio::test]
+    async fn replay_diff_endpoint_handles_empty_inputs() {
+        let body = serde_json::json!({"a": [], "b": []});
+        let (status, resp) = post_json("/api/replay/diff", body).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(resp["data"]["convergent"], true);
+        assert_eq!(resp["data"]["a_length"], 0);
+        assert_eq!(resp["data"]["b_length"], 0);
     }
 }

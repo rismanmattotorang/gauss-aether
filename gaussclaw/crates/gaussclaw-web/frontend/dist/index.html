@@ -65,6 +65,10 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 2v6h6V2M3 11l6 0v6H3zM15 11h6v6h-6z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
         Plugins
       </button>
+      <button class="nav-item" role="tab" data-view="replay"   aria-selected="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h6m6 0h6M9 6l-6 6 6 6m6-12l6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/></svg>
+        Replay
+      </button>
       <button class="nav-item" role="tab" data-view="health"   aria-selected="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/></svg>
         Health
@@ -387,6 +391,36 @@ max_string_len = 65536'></textarea>
       <div class="card-list" id="plugins-list">
         <div class="card placeholder">Loading plugins…</div>
       </div>
+    </section>
+
+    <!-- ───────────── Replay ───────────── -->
+    <section class="view" id="view-replay">
+      <header class="view-head">
+        <h1>Replay diff</h1>
+        <p class="muted">Paste two trajectory captures (JSON arrays of
+          <code>{index, role, body, chain_head}</code> turns) to compare them.
+          Returns the first divergent turn + per-axis differences.
+          Hermes ships no replay-diff tool — its session store has no
+          chain to compare against.</p>
+      </header>
+
+      <div class="replay-grid">
+        <div class="replay-pane">
+          <label class="muted small" for="replay-a">Capture A (JSON)</label>
+          <textarea id="replay-a" rows="14" spellcheck="false"
+                    placeholder='[{"index":0,"role":"user","body":"hello","chain_head":"aaaa"}]'></textarea>
+        </div>
+        <div class="replay-pane">
+          <label class="muted small" for="replay-b">Capture B (JSON)</label>
+          <textarea id="replay-b" rows="14" spellcheck="false"
+                    placeholder='[{"index":0,"role":"user","body":"world","chain_head":"aaaa"}]'></textarea>
+        </div>
+      </div>
+      <div class="replay-foot">
+        <span class="muted small" id="replay-status">Paste both captures and click Diff.</span>
+        <button class="btn-primary" id="replay-run">Diff</button>
+      </div>
+      <div id="replay-result" class="replay-result hidden"></div>
     </section>
 
     <!-- ───────────── Health ───────────── -->

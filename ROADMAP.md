@@ -764,7 +764,13 @@ Deliverables:
 4. Hardware attestation backends (`gauss-attest`) — SGX / SEV-SNP /
    TDX leaf impls so a remote verifier can prove a turn ran inside a
    real enclave.
-5. Replay-corpus diff visualiser in the dashboard.
+5. ✅ Replay-corpus diff visualiser in the dashboard. *New
+   `POST /api/replay/diff` endpoint compares two trajectory
+   captures across role / body / chain_head and reports the
+   first divergent turn + per-axis diff rows. Dashboard ships a
+   Replay tab with two-pane textarea + result table. 6 unit tests.
+   Hermes ships no replay-diff tool — its session store has no
+   chain to compare against.*
 6. ✅ `gaussclaw-acp` (new) — ACP editor protocol server. *Typed
    JSON-RPC 2.0 surface with the 5-method catalogue (`initialize`,
    `agent/new_session`, `agent/send_message`, `agent/cancel`,
