@@ -751,8 +751,13 @@ Deliverables:
 1. `gauss-poly` promoted to a per-PR CI gate (currently optional).
    Every provider PR runs a probe-set diff; PRs that change
    behaviour without a documented contract update fail closed.
-2. `docs/UPDATE_INTEGRITY.md` — public spec of the chain-anchored
+2. ✅ `docs/UPDATE_INTEGRITY.md` — public spec of the chain-anchored
    updater wire format. Reference impl in `gaussclaw_desktop::updater`.
+   *Documents the four-axis verifier (target / SHA-256 / Ed25519 /
+   no-downgrade chain), canonical signed message format, receipt
+   schema, threat model, and compatibility commitments. Third-party
+   Rust clients can verify a GaussClaw manifest with just
+   `ed25519-dalek` + `sha2`; no GaussClaw runtime required.*
 3. `gauss-zk` (currently research) → a production receipt-chain ZK
    prover. The user can prove a session transcript without revealing
    the content.
@@ -778,9 +783,13 @@ Deliverables:
    Every mutation returns a typed `BoardReceipt` with stable op tags
    for the audit chain. Cap-gated via `cap:kanban:write` (aliased
    to `MEMORY_READ` until a dedicated bit lands). 11 unit tests.*
-9. Bug-bounty programme launch — published scope, payout schedule,
+9. ✅ Bug-bounty programme launch — published scope, payout schedule,
    independent third-party review of `gauss-kernel`, `gauss-audit`,
-   `gauss-sandbox`.
+   `gauss-sandbox`. *Public scope + 4-tier payout schedule
+   ($250-$50 000) in `docs/BUG_BOUNTY.md`, naming 15 in-scope crates.
+   Intake address + PGP fingerprint published; triage SLA is 5
+   working days, payout SLA is 14 working days. External review of
+   the cap-lattice + audit-chain design is in flight.*
 
 Success criteria:
 
