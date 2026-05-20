@@ -136,8 +136,8 @@ pub use shell::ShellTool;
 pub use spawners::{composite_sandboxed, noop_sandboxed, unsandboxed};
 pub use sprint9_tools::{
     extract_pdf_text, strip_html, McpInvokeTool, McpServerRegistry, MessageSink, MockMessageSink,
-    MockSearchProvider, PdfExtractTool, SearchProvider, SearchResult, SendMessageTool,
-    WebFetchTool, WebSearchTool,
+    MockPtyBackend, MockSearchProvider, PdfExtractTool, PtyBackend, PtyResult, SearchProvider,
+    SearchResult, SendMessageTool, TerminalTool, WebFetchTool, WebSearchTool,
 };
 pub use subagent::{
     DelegateTool, MixtureOfAgentsTool, MockDispatcher, SubAgentDispatcher, SubAgentRequest,

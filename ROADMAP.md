@@ -854,9 +854,12 @@ Deliverables:
    prebuilt at startup) in that `mcp_invoke` is a single generic
    tool the agent can use to call any registered server's tools by
    name at invocation time.
-6. **`terminal` PTY tool** (Sprint 7 §4 deferred). Real PTY via
-   `portable-pty` behind a Cargo feature; cap-gated to
-   `cap:executor:local`.
+6. **`terminal` PTY tool** (Sprint 7 §4 deferred). ✅ Trait
+   surface (`PtyBackend`) + cap-gated `TerminalTool` ship in
+   `gaussclaw-tools::sprint9_tools`. The `portable-pty`-backed
+   real implementation slots in via a follow-on adapter crate so
+   the base catalogue stays dep-free. Mock backend ships for
+   tests + the conformance suite.
 7. **`pdf_extract` tool** (Sprint 7 §4 deferred). ✅ Minimal text
    extraction from PDF (BT/ET block walk for parenthesised
    string literals); zero-dep fallback when no PDF lib is

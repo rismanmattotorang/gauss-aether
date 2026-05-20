@@ -1,5 +1,5 @@
 //! Sprint 9 deferred tools — `web_fetch`, `web_search`,
-//! `send_message`, `pdf_extract`, `mcp_invoke`.
+//! `send_message`, `pdf_extract`, `mcp_invoke`, `terminal`.
 //!
 //! Each tool follows the existing `ToolTrait` pattern. Together they
 //! close most of the Sprint 7 §4 deferred list:
@@ -18,8 +18,12 @@
 //!   discovery-based [`crate::mcp::McpBridge`] which pre-builds one
 //!   tool per remote-server-tool at startup; `mcp_invoke` is the
 //!   late-binding sibling.
+//! - [`TerminalTool`] — PTY-backed interactive shell tool. Defines
+//!   a [`PtyBackend`] trait; a `portable-pty`-backed real impl slots
+//!   in via a follow-on crate (the trait surface stays
+//!   compositional / feature-flag-free in this base catalogue).
 //!
-//! All five follow GaussClaw's structural pattern (cap-gated,
+//! All six follow GaussClaw's structural pattern (cap-gated,
 //! adversarial-taint by default on network inbound, schema-guarded
 //! output).
 
@@ -619,6 +623,155 @@ impl ToolTrait for McpInvokeTool {
     }
 }
 
+// ─── terminal (PTY) ────────────────────────────────────────────────────────
+
+const TERMINAL_MANIFEST: &str = r#"
+name        = "terminal"
+description = "Run a command in a PTY-backed shell and return its captured output."
+usage       = "Args: {command: string, timeout_ms?: uint}. Returns {exit_code, stdout, stderr, duration_ms}."
+caps        = ["executor:local"]
+taint       = "user"
+reversible  = false
+persistent  = false
+
+[guards]
+no_instruction_substrings = true
+max_string_len            = 65536
+
+[schema]
+type = "object"
+"#;
+
+/// One PTY session result.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PtyResult {
+    /// Exit status (`None` if the command was killed by signal or
+    /// the backend cannot report it).
+    pub exit_code: Option<i32>,
+    /// Captured stdout (subject to the policy's `max_string_len`).
+    pub stdout: String,
+    /// Captured stderr.
+    pub stderr: String,
+    /// Wall-clock duration in milliseconds.
+    pub duration_ms: u64,
+}
+
+/// PTY transport. Production wires this through `portable-pty`; tests
+/// use the in-process [`MockPtyBackend`]. The trait stays
+/// dependency-free so the base tools crate doesn't drag a PTY library
+/// into every consumer.
+#[async_trait]
+pub trait PtyBackend: Send + Sync {
+    /// Run `command` in a PTY and return the captured result. The
+    /// backend is responsible for enforcing `timeout_ms`; it should
+    /// kill the child process and return whatever output was
+    /// captured if the timeout fires.
+    async fn run(&self, command: &str, timeout_ms: u64) -> Result<PtyResult, String>;
+}
+
+/// Deterministic mock backend keyed on the command string. Tests
+/// register canned `(command, result)` pairs; an unmatched command
+/// returns a default error.
+pub struct MockPtyBackend {
+    canned: std::sync::Mutex<std::collections::BTreeMap<String, PtyResult>>,
+}
+
+impl MockPtyBackend {
+    /// Build an empty mock.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            canned: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+        }
+    }
+
+    /// Register a canned response for `command`.
+    pub fn expect(&self, command: impl Into<String>, result: PtyResult) {
+        self.canned
+            .lock()
+            .expect("poisoned")
+            .insert(command.into(), result);
+    }
+}
+
+impl Default for MockPtyBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl PtyBackend for MockPtyBackend {
+    async fn run(&self, command: &str, _timeout_ms: u64) -> Result<PtyResult, String> {
+        let g = self.canned.lock().expect("poisoned");
+        g.get(command)
+            .cloned()
+            .ok_or_else(|| format!("no canned response for command `{command}`"))
+    }
+}
+
+/// `terminal` tool — PTY-backed shell command execution.
+pub struct TerminalTool {
+    manifest: ToolManifest,
+    backend: Arc<dyn PtyBackend>,
+    default_timeout_ms: u64,
+}
+
+impl TerminalTool {
+    /// Build a tool over a PTY backend with a 30s default timeout.
+    ///
+    /// # Panics
+    /// Build-time only.
+    #[must_use]
+    pub fn new(backend: Arc<dyn PtyBackend>) -> Self {
+        let skill = SkillManifest::from_toml(TERMINAL_MANIFEST).expect("toml");
+        let manifest = skill.compile(ToolId("terminal".into())).expect("compile");
+        Self {
+            manifest,
+            backend,
+            default_timeout_ms: 30_000,
+        }
+    }
+
+    /// Override the default timeout (used when args do not specify
+    /// `timeout_ms`).
+    #[must_use]
+    pub fn with_default_timeout_ms(mut self, ms: u64) -> Self {
+        self.default_timeout_ms = ms;
+        self
+    }
+}
+
+#[async_trait]
+impl ToolTrait for TerminalTool {
+    fn manifest(&self) -> &ToolManifest {
+        &self.manifest
+    }
+
+    async fn invoke_raw(&self, args: serde_json::Value) -> GaussResult<serde_json::Value> {
+        let command = args
+            .get("command")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| GaussError::Internal("missing string field `command`".into()))?;
+        let timeout_ms = args
+            .get("timeout_ms")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(self.default_timeout_ms);
+        let result = self
+            .backend
+            .run(command, timeout_ms)
+            .await
+            .map_err(|e| GaussError::Internal(format!("pty: {e}")))?;
+        Ok(serde_json::json!({
+            "kind":        "terminal_result",
+            "exit_code":   result.exit_code,
+            "stdout":      result.stdout,
+            "stderr":      result.stderr,
+            "duration_ms": result.duration_ms,
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -897,5 +1050,71 @@ mod tests {
         let names = registry.server_names();
         assert_eq!(names.len(), 1);
         assert_eq!(names[0], "alpha");
+    }
+
+    // ─── terminal ─────────────────────────────────────────────────
+
+    fn canned_pty(stdout: &str, exit: i32) -> PtyResult {
+        PtyResult {
+            exit_code: Some(exit),
+            stdout: stdout.into(),
+            stderr: String::new(),
+            duration_ms: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_runs_through_backend() {
+        let backend = MockPtyBackend::new();
+        backend.expect("echo hi", canned_pty("hi\n", 0));
+        let t = TerminalTool::new(Arc::new(backend));
+        let out = t
+            .invoke_raw(serde_json::json!({"command": "echo hi"}))
+            .await
+            .unwrap();
+        assert_eq!(out["kind"], "terminal_result");
+        assert_eq!(out["exit_code"], 0);
+        assert_eq!(out["stdout"], "hi\n");
+    }
+
+    #[tokio::test]
+    async fn terminal_propagates_nonzero_exit() {
+        let backend = MockPtyBackend::new();
+        backend.expect("false", canned_pty("", 1));
+        let t = TerminalTool::new(Arc::new(backend));
+        let out = t
+            .invoke_raw(serde_json::json!({"command": "false"}))
+            .await
+            .unwrap();
+        assert_eq!(out["exit_code"], 1);
+    }
+
+    #[tokio::test]
+    async fn terminal_rejects_missing_command() {
+        let t = TerminalTool::new(Arc::new(MockPtyBackend::new()));
+        let err = t.invoke_raw(serde_json::json!({})).await.unwrap_err();
+        assert!(matches!(err, GaussError::Internal(_)));
+    }
+
+    #[tokio::test]
+    async fn terminal_propagates_backend_error() {
+        let t = TerminalTool::new(Arc::new(MockPtyBackend::new()));
+        let err = t
+            .invoke_raw(serde_json::json!({"command": "unknown"}))
+            .await
+            .unwrap_err();
+        match err {
+            GaussError::Internal(m) => assert!(m.contains("pty:")),
+            other => panic!("expected Internal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn terminal_manifest_demands_executor_local_cap() {
+        let t = TerminalTool::new(Arc::new(MockPtyBackend::new()));
+        assert_eq!(
+            t.manifest().cap_required.bits(),
+            gauss_core::CapToken::EXECUTOR_LOCAL.bits()
+        );
     }
 }
