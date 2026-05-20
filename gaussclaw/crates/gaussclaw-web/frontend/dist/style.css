@@ -1166,3 +1166,23 @@ code {
   color: var(--muted);
   word-break: break-all;
 }
+
+/* ─── Plugins view ─────────────────────────────────────────────────── */
+
+.plugin-card {
+  padding: 0.85rem 1rem;
+}
+
+.plugin-card .card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+
+.plugin-desc {
+  margin: 0.4rem 0;
+  font-size: 0.86rem;
+  color: var(--muted);
+}

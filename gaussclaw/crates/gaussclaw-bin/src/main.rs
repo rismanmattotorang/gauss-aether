@@ -86,7 +86,8 @@ fn run_web(
         ));
         let state = gaussclaw_web::ServerState::new(cfg, source)
             .with_store(store)
-            .with_cron(cron);
+            .with_cron(cron)
+            .with_plugin_roots(gaussclaw_plugins::default_discovery_roots());
         gaussclaw_web::serve(addr, state).await
     })
 }

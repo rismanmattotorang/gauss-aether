@@ -680,7 +680,12 @@ Deliverables:
    `install` validates the manifest + prints the provenance digest
    so an operator can audit before persisting (full install-to-disk
    lands with Sprint 7 §7).
-3. Web view: a new `PluginsPage` mirroring Hermes.
+3. ✅ Web view: a new `PluginsPage` mirroring Hermes. *Shipping
+   `GET /api/plugins` (walks the discovery roots, returns the
+   loaded set + per-file failures). Dashboard adds a Plugins sidebar
+   tab with cards showing kind, version, enabled state, declared
+   caps, BLAKE3 provenance, manifest path. The Web bin attaches
+   `gaussclaw_plugins::default_discovery_roots()` automatically.*
 4. 🟡 **15 new tools** for inventory parity. Shipping batch 1 in this
    sprint: ✅ `memory_read`, ✅ `memory_write` (over the cross-session
    store), ✅ `todo` (in-memory CRUD), ✅ `markdown_render` (zero-dep

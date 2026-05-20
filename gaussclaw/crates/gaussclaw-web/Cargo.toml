@@ -14,6 +14,7 @@ workspace = true
 [dependencies]
 gauss-core       = { workspace = true }
 gauss-cron       = { workspace = true }
+gaussclaw-plugins = { workspace = true }
 gaussclaw-agent  = { workspace = true }
 gaussclaw-config = { workspace = true }
 gaussclaw-export = { workspace = true }
@@ -32,6 +33,7 @@ tracing          = { workspace = true }
 futures-util     = { workspace = true }
 
 [dev-dependencies]
-tokio           = { workspace = true, features = ["test-util", "macros"] }
+tokio           = { workspace = true, features = ["test-util", "macros", "fs"] }
 gaussclaw-store = { workspace = true }
 gauss-core      = { workspace = true }
+tempfile        = { workspace = true }

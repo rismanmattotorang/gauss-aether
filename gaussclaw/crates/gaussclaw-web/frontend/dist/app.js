@@ -108,6 +108,7 @@ const api = {
   logs:       (limit = 50) => api.get(`/api/logs?limit=${limit}`),
   profiles:   () => api.get('/api/profiles'),
   analytics:  () => api.get('/api/analytics/summary'),
+  plugins:    () => api.get('/api/plugins'),
 };
 
 // Augment the API client with a generic POST helper.
@@ -757,6 +758,57 @@ function wireProfilesView() {
   if (r) r.addEventListener('click', () => renderers.profiles());
 }
 
+// ─── 7f. Plugins view ───────────────────────────────────────────────────────
+
+renderers.plugins = async () => {
+  const list = $('#plugins-list');
+  if (!list) return;
+  list.innerHTML = '';
+  let data = null;
+  try { data = await api.plugins(); } catch { data = null; }
+  if (!data) {
+    list.append(el('div', { class: 'card placeholder' }, 'Could not load plugins.'));
+    return;
+  }
+  const rows = data.plugins ?? [];
+  if (rows.length === 0) {
+    list.append(el('div', { class: 'card placeholder' },
+      'No plugins discovered. Drop a `plugin.toml` under `$XDG_DATA_HOME/gaussclaw/plugins/<name>/` or the project-local `./.gaussclaw/plugins/<name>/`.'));
+  }
+  rows.forEach(p => {
+    const capsLine = (p.caps && p.caps.length) ? p.caps.join(', ') : '(no caps)';
+    list.append(
+      el('article', { class: 'card plugin-card' },
+        el('header', { class: 'card-head' },
+          el('strong', {}, p.name),
+          el('span', { class: 'badge' }, p.kind),
+          el('span', { class: 'badge' }, `v${p.version}`),
+          p.enabled
+            ? el('span', { class: 'badge badge-ok' }, 'enabled')
+            : el('span', { class: 'badge' }, 'disabled'),
+        ),
+        p.description
+          ? el('p', { class: 'plugin-desc' }, p.description)
+          : null,
+        el('div', { class: 'kv' }, el('span', {}, 'caps'), el('code', {}, capsLine)),
+        el('div', { class: 'kv' }, el('span', {}, 'provenance'), el('code', {}, shortHex(p.provenance, 32))),
+        p.manifest_path
+          ? el('div', { class: 'kv' }, el('span', {}, 'manifest'), el('code', {}, p.manifest_path))
+          : null,
+      )
+    );
+  });
+  if (data.failures && data.failures.length) {
+    list.append(el('div', { class: 'card placeholder' },
+      `${data.failures.length} manifest(s) skipped — first: ${data.failures[0].reason}`));
+  }
+};
+
+function wirePluginsView() {
+  const r = $('#plugins-refresh');
+  if (r) r.addEventListener('click', () => renderers.plugins());
+}
+
 // ─── 8. Health view ─────────────────────────────────────────────────────────
 
 const defaultInvariants = [
@@ -830,6 +882,7 @@ const commands = [
   { id: 'view-logs',      label: 'Go to Logs',      hint: '⌘7', run: () => switchView('logs')     },
   { id: 'view-profiles',  label: 'Go to Profiles',  hint: '⌘8', run: () => switchView('profiles') },
   { id: 'view-health',    label: 'Go to Health',    hint: '⌘9', run: () => switchView('health')   },
+  { id: 'view-plugins',   label: 'Go to Plugins',   hint: '',   run: () => switchView('plugins')  },
   { id: 'view-settings',  label: 'Go to Settings',  hint: '',   run: () => switchView('settings') },
   { id: 'new-session',    label: 'Start a new chat session',   hint: '',   run: () => $('#chat-new').click() },
   { id: 'copy-receipt',   label: 'Copy chain head digest',     hint: '',   run: () => $('#receipt-copy')?.click() },
@@ -838,6 +891,7 @@ const commands = [
   { id: 'reload-cron',    label: 'Reload scheduled jobs',      hint: '',   run: () => renderers.cron()   },
   { id: 'reload-logs',    label: 'Reload logs',                hint: '',   run: () => renderers.logs()   },
   { id: 'reload-analytics', label: 'Reload analytics',         hint: '',   run: () => renderers.analytics() },
+  { id: 'reload-plugins', label: 'Reload plugins',             hint: '',   run: () => renderers.plugins() },
 ];
 
 const palette = {
@@ -938,6 +992,7 @@ async function bootstrap() {
   wireAnalyticsView();
   wireLogsView();
   wireProfilesView();
+  wirePluginsView();
   setConnection('warn', 'connecting');
 
   try {

@@ -304,6 +304,9 @@ pub struct ServerState {
     store: Option<Arc<SessionStore>>,
     cron: Option<Arc<CronScheduler>>,
     logs: Arc<LogBuffer>,
+    /// Sprint 7 §3 — plugin discovery roots; the dashboard's
+    /// `/api/plugins` endpoint walks them on demand.
+    plugin_roots: Vec<std::path::PathBuf>,
 }
 
 impl ServerState {
@@ -343,6 +346,7 @@ impl ServerState {
             store: None,
             cron: None,
             logs: Arc::new(LogBuffer::with_capacity(200)),
+            plugin_roots: Vec::new(),
         }
     }
 
@@ -378,6 +382,13 @@ impl ServerState {
     #[must_use]
     pub fn with_cron(mut self, cron: Arc<CronScheduler>) -> Self {
         self.cron = Some(cron);
+        self
+    }
+
+    /// Attach plugin discovery roots — Sprint 7 §3.
+    #[must_use]
+    pub fn with_plugin_roots(mut self, roots: Vec<std::path::PathBuf>) -> Self {
+        self.plugin_roots = roots;
         self
     }
 
@@ -1201,6 +1212,73 @@ async fn handle_analytics_summary(State(state): State<ServerState>) -> Json<Ok<A
     }))
 }
 
+// ─── Sprint 7 §3 — Plugins page ────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct PluginRow {
+    name: String,
+    kind: String,
+    version: String,
+    description: String,
+    caps: Vec<String>,
+    provenance: String,
+    enabled: bool,
+    manifest_path: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PluginsListPayload {
+    plugins: Vec<PluginRow>,
+    /// Per-root failure descriptions surfaced to the operator.
+    failures: Vec<PluginFailure>,
+    /// Discovery roots that were walked.
+    roots: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PluginFailure {
+    path: String,
+    reason: String,
+}
+
+#[axum::debug_handler]
+async fn handle_plugins_list(State(state): State<ServerState>) -> Json<Ok<PluginsListPayload>> {
+    let mut plugins: Vec<PluginRow> = Vec::new();
+    let mut failures: Vec<PluginFailure> = Vec::new();
+    let roots: Vec<std::path::PathBuf> = if state.plugin_roots.is_empty() {
+        gaussclaw_plugins::default_discovery_roots()
+    } else {
+        state.plugin_roots.clone()
+    };
+    for r in &roots {
+        if let Result::Ok(report) = gaussclaw_plugins::PluginLoader::discover_in(r).await {
+            for p in report.found {
+                plugins.push(PluginRow {
+                    name: p.manifest.name,
+                    kind: p.manifest.kind.as_str().into(),
+                    version: p.manifest.version,
+                    description: p.manifest.description,
+                    caps: p.manifest.caps,
+                    provenance: p.provenance,
+                    enabled: p.enabled,
+                    manifest_path: p.manifest_path.map(|x| x.display().to_string()),
+                });
+            }
+            for (path, reason) in report.failures {
+                failures.push(PluginFailure {
+                    path: path.display().to_string(),
+                    reason,
+                });
+            }
+        }
+    }
+    Json(Ok::new(PluginsListPayload {
+        plugins,
+        failures,
+        roots: roots.iter().map(|r| r.display().to_string()).collect(),
+    }))
+}
+
 /// Lower-case hex encode.
 fn hex_lower(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
@@ -1320,6 +1398,7 @@ pub fn router(state: ServerState) -> Router {
         .route("/api/logs", get(handle_logs_list))
         .route("/api/profiles", get(handle_profiles_list))
         .route("/api/analytics/summary", get(handle_analytics_summary))
+        .route("/api/plugins", get(handle_plugins_list))
         .route("/api/chat/ws", get(handle_chat_ws))
         // Frontend
         .route("/", get(handle_root))
@@ -2031,5 +2110,59 @@ taint = "trusted"
         assert_eq!(body["data"]["turns_total"], 4);
         assert_eq!(body["data"]["distinct_models"], 2);
         assert!(body["data"]["receipts_total"].as_u64().unwrap() >= 4);
+    }
+
+    #[tokio::test]
+    async fn plugins_endpoint_returns_empty_for_missing_roots() {
+        let cfg = Config::default();
+        let state = ServerState::new(cfg, None).with_plugin_roots(vec!["/does/not/exist".into()]);
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/plugins")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(body["data"]["plugins"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn plugins_endpoint_discovers_plugins_under_supplied_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let plug = dir.path().join("alpha");
+        tokio::fs::create_dir(&plug).await.unwrap();
+        tokio::fs::write(
+            plug.join("plugin.toml"),
+            "name = \"alpha\"\nversion = \"0.1.0\"\nkind = \"standalone\"\ncaps = []\n",
+        )
+        .await
+        .unwrap();
+        let state = ServerState::new(Config::default(), None)
+            .with_plugin_roots(vec![dir.path().to_path_buf()]);
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/plugins")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let rows = body["data"]["plugins"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["name"], "alpha");
+        assert_eq!(rows[0]["kind"], "standalone");
+        assert!(!rows[0]["provenance"].as_str().unwrap().is_empty());
     }
 }

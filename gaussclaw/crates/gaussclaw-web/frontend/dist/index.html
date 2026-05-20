@@ -61,6 +61,10 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
         Profiles
       </button>
+      <button class="nav-item" role="tab" data-view="plugins"  aria-selected="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 2v6h6V2M3 11l6 0v6H3zM15 11h6v6h-6z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        Plugins
+      </button>
       <button class="nav-item" role="tab" data-view="health"   aria-selected="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/></svg>
         Health
@@ -365,6 +369,23 @@ max_string_len = 65536'></textarea>
       </header>
       <div class="card-list" id="profiles-list">
         <div class="card placeholder">Loading profiles…</div>
+      </div>
+    </section>
+
+    <!-- ───────────── Plugins ───────────── -->
+    <section class="view" id="view-plugins">
+      <header class="view-head">
+        <h1>Plugins</h1>
+        <p class="muted">Discovered plugins across the user + project discovery roots. Each plugin's
+          <code>caps</code> are declared in its <code>plugin.toml</code>; the kernel admit gate refuses
+          load if the session grant doesn't satisfy them. Hermes plugins inherit full process
+          credentials — ours don't.</p>
+        <div class="view-head-actions">
+          <button class="chip" id="plugins-refresh">↻ Refresh</button>
+        </div>
+      </header>
+      <div class="card-list" id="plugins-list">
+        <div class="card placeholder">Loading plugins…</div>
       </div>
     </section>
 
