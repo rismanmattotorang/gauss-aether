@@ -40,6 +40,8 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+pub mod wire;
+
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderValue, StatusCode};

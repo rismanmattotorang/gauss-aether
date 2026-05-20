@@ -2847,6 +2847,7 @@ dependencies = [
  "gauss-hwca",
  "gauss-kernel",
  "gauss-traits",
+ "gaussclaw-skill",
  "gaussclaw-store",
  "gaussclaw-tools",
  "serde",

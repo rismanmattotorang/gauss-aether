@@ -223,6 +223,13 @@ const chat = {
       if (payload.type === 'tool.start')    return chat.appendActivity(payload.tool, 'started');
       if (payload.type === 'tool.progress') return chat.appendActivity(payload.tool, payload.note ?? 'progress');
       if (payload.type === 'tool.complete') return chat.appendActivity(payload.tool, 'complete');
+      // OpenHarness-inspired lifecycle / compaction frames. Surfaced
+      // as activity rows so they remain visible without rewriting
+      // the chat transcript shape.
+      if (payload.type === 'tool.denied')   return chat.appendActivity(payload.tool, `denied: ${payload.reason ?? '(no reason)'}`);
+      if (payload.type === 'tool.warn')     return chat.appendActivity(payload.tool, `warn: ${payload.message ?? '(no message)'}`);
+      if (payload.type === 'compacted')     return chat.appendActivity('(auto-compaction)', `collapsed ${payload.collapsed ?? '?'} msgs · ${payload.before_chars ?? '?'}→${payload.after_chars ?? '?'} chars`);
+      if (payload.type === 'fallback')      return chat.appendActivity('(provider)', `fallback ${payload.from ?? '?'} → ${payload.to ?? '?'}: ${payload.reason ?? ''}`);
       if (payload.type === 'token')         return chat.appendStreamToken(payload.text);
       if (payload.type === 'assistant')     return chat.appendMessage('assistant', payload.text);
       if (payload.type === 'receipt')       return chat.handleReceipt(payload);
