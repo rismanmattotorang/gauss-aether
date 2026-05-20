@@ -64,8 +64,13 @@
 
 #![allow(clippy::doc_markdown)]
 
+pub mod context_file;
 pub mod markdown_skill;
 
+pub use context_file::{
+    join_context, ContextFile, ContextFileFinder, DEFAULT_MAX_BYTES, DEFAULT_MAX_DEPTH,
+    DEFAULT_NAMES,
+};
 pub use markdown_skill::MarkdownSkill;
 
 use gauss_core::{CapToken, TaintLabel, ToolId};
