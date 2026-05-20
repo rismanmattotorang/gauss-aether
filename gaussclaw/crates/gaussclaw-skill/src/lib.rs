@@ -66,6 +66,9 @@
 
 pub mod context_file;
 pub mod markdown_skill;
+pub mod memory_md;
+
+pub use memory_md::{MemoryFile, MemorySection, DEFAULT_MEMORY_CAP};
 
 pub use context_file::{
     join_context, ContextFile, ContextFileFinder, DEFAULT_MAX_BYTES, DEFAULT_MAX_DEPTH,
