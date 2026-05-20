@@ -2811,6 +2811,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gaussclaw-acp"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "gauss-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "gaussclaw-agent"
 version = "0.0.1"
 dependencies = [
@@ -2992,6 +3005,31 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "gaussclaw-kanban"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "gauss-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "gaussclaw-lsp-client"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "gauss-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

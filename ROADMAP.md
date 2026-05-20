@@ -760,12 +760,24 @@ Deliverables:
    TDX leaf impls so a remote verifier can prove a turn ran inside a
    real enclave.
 5. Replay-corpus diff visualiser in the dashboard.
-6. `gaussclaw-acp` (new) — ACP editor protocol server. `hermes acp`
-   parity.
-7. `gaussclaw-lsp-client` (new) — language-server client subsystem
-   parity.
-8. `gaussclaw-kanban` (new) — opt-in CRUD task board with cap-gated
-   write tool. Lower priority than the others.
+6. ✅ `gaussclaw-acp` (new) — ACP editor protocol server. *Typed
+   JSON-RPC 2.0 surface with the 5-method catalogue (`initialize`,
+   `agent/new_session`, `agent/send_message`, `agent/cancel`,
+   `agent/close`). Every method declares its required `CapToken`;
+   the server refuses dispatch when the grant doesn't satisfy.
+   12 unit tests. Hermes's `acp_adapter/` is untyped Python.*
+7. ✅ `gaussclaw-lsp-client` (new) — language-server client
+   subsystem parity. *Typed JSON-RPC 2.0 client over a pluggable
+   `Transport` trait. `LspMethod` enum + `LspRequest`/`LspResponse`/
+   `LspNotification`. Monotonic id allocator. Cap-gated by
+   `cap:network:http_post` (subprocess pipe = network-shaped). 8
+   unit tests.*
+8. ✅ `gaussclaw-kanban` (new) — opt-in CRUD task board with
+   cap-gated write tool. *Typed `Board { columns: [Column { cards }] }`
+   data model. `create_board` defaults to `todo`/`doing`/`done`.
+   Every mutation returns a typed `BoardReceipt` with stable op tags
+   for the audit chain. Cap-gated via `cap:kanban:write` (aliased
+   to `MEMORY_READ` until a dedicated bit lands). 11 unit tests.*
 9. Bug-bounty programme launch — published scope, payout schedule,
    independent third-party review of `gauss-kernel`, `gauss-audit`,
    `gauss-sandbox`.
