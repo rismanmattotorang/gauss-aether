@@ -18,7 +18,7 @@ serde       = { workspace = true }
 serde_json  = { workspace = true }
 thiserror   = { workspace = true }
 time        = { workspace = true, features = ["parsing"] }
-tokio       = { workspace = true, features = ["sync", "time", "rt"] }
+tokio       = { workspace = true, features = ["sync", "time", "rt", "fs", "io-util"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros", "rt", "rt-multi-thread"] }

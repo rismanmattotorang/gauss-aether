@@ -860,9 +860,12 @@ Deliverables:
    `gaussclaw-tools::sprint9_tools::PdfExtractTool`.
 8. **`gauss-poly` probe-set baseline** (Sprint 8 §1 follow-on).
    Real committed snapshots that the CI gate compares against.
-9. **Trinity-backed cron JobStore** (Sprint 5 §1 follow-on).
-   Persist cron jobs through `gaussclaw-store::cron_jobs` so they
-   survive process restarts.
+9. **Trinity-backed cron JobStore** (Sprint 5 §1 follow-on). ✅
+   Persist cron jobs across restarts. First slice lands as
+   `gauss-cron::FileBackedJobStore` — append-only JSONL log with
+   replay on open. The chain-protected Trinity table layer is a
+   follow-on; the durability gap (cron jobs lost on restart) closes
+   here.
 10. **Real Modal HTTP client** (Sprint 6 §1.3 follow-on). Wire
     `gaussclaw-providers` into `gauss-exec::ModalExecutor` once
     Modal's HTTP API stability lands.

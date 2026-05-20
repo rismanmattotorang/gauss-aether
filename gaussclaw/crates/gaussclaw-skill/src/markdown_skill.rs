@@ -216,7 +216,10 @@ impl MarkdownSkill {
 /// frontmatter is empty and the body is the entire input.
 fn split_frontmatter(raw: &str) -> (BTreeMap<String, String>, &str) {
     let mut map = BTreeMap::new();
-    let Some(rest) = raw.strip_prefix("---\n").or_else(|| raw.strip_prefix("---\r\n")) else {
+    let Some(rest) = raw
+        .strip_prefix("---\n")
+        .or_else(|| raw.strip_prefix("---\r\n"))
+    else {
         return (map, raw);
     };
     // Find the closing fence.
@@ -285,10 +288,7 @@ No frontmatter; the whole thing is body.
     fn frontmatter_parses() {
         let s = MarkdownSkill::from_str("web", PathBuf::from("test"), SKILL_WITH_FRONT);
         assert_eq!(s.frontmatter.get("name").unwrap(), "web-research");
-        assert_eq!(
-            s.description(),
-            Some("Search and summarise web pages.")
-        );
+        assert_eq!(s.description(), Some("Search and summarise web pages."));
         assert!(s.body.contains("When to use this skill"));
         assert!(!s.body.starts_with("---"));
     }
