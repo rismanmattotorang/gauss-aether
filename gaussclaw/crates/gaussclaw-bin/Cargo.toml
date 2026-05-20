@@ -30,6 +30,7 @@ blake3             = { workspace = true }
 directories        = { workspace = true }
 gaussclaw-export   = { workspace = true }
 gaussclaw-agent    = { workspace = true }
+gaussclaw-providers = { workspace = true }
 gaussclaw-tools    = { workspace = true }
 gauss-core         = { workspace = true }
 gauss-cron         = { workspace = true }

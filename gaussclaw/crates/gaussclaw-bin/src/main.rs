@@ -85,12 +85,30 @@ fn run_web(
             gauss_cron::SystemClock,
         ));
         // Build the AgentLoop that drives /api/chat/ws (Sprint 11).
-        // The EchoProvider is the Phase 1 placeholder until vendor
-        // drivers from `gaussclaw-providers` land at the bin level.
-        // Auto-Compaction is on by default at the production budget.
+        // Sprint 13 §2: vendor codec is now selected from
+        // `cfg.provider.name`. Until a real `reqwest`-backed
+        // HttpBackend lands, the picker wraps the chosen codec around
+        // `UnconfiguredBackend`, which fails every send with a clean
+        // transport error — the dashboard renders this as an `error`
+        // frame rather than silently echoing.
         let kernel = gaussclaw_agent::KernelHandle::permissive();
-        let provider: std::sync::Arc<dyn gaussclaw_agent::ProviderHandle> =
-            std::sync::Arc::new(gaussclaw_agent::EchoProvider::default());
+        // API key sourced from a vendor-specific env var. The bin is
+        // tolerant of unset env: an empty key still passes through to
+        // the codec (it will surface as a 401 from the upstream when
+        // a real backend is plumbed).
+        let env_key = match cfg.provider.name.to_ascii_lowercase().as_str() {
+            "anthropic" => std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+            "openai" => std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+            _ => String::new(),
+        };
+        let choice = gaussclaw_providers::ProviderChoice::new(cfg.provider.name.clone())
+            .with_api_key(env_key);
+        let (provider, picked) = gaussclaw_providers::pick_provider(&choice);
+        tracing::info!(
+            target: "gaussclaw_bin::serve",
+            "vendor codec selected: {}",
+            picked.as_str()
+        );
         let audit = gaussclaw_agent::AuditTrace::new();
         let policy = gaussclaw_agent::TurnPolicy::new(kernel.clone(), provider)
             .with_audit(audit.clone());
