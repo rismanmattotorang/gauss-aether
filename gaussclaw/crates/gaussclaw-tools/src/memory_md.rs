@@ -169,7 +169,10 @@ impl ToolTrait for MemoryMdWriteTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| GaussError::Internal("missing string field `section`".into()))?
             .to_owned();
-        let mode = args.get("mode").and_then(|v| v.as_str()).unwrap_or("upsert");
+        let mode = args
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("upsert");
         let body = args
             .get("body")
             .and_then(|v| v.as_str())

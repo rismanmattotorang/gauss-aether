@@ -67,10 +67,12 @@
 )]
 #![allow(rustdoc::broken_intra_doc_links)]
 
+pub mod cron_store;
 pub mod embed;
 pub mod store;
 pub mod types;
 
+pub use cron_store::{ChainCronRecord, TrinityCronJobStore};
 pub use embed::{mock_embed, EMBED_DIM};
 pub use store::{SessionStore, StoreError, StoreResult};
 pub use types::{
