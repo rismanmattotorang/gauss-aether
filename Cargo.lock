@@ -2882,6 +2882,7 @@ dependencies = [
  "gaussclaw-export",
  "gaussclaw-migrate",
  "gaussclaw-plugins",
+ "gaussclaw-providers",
  "gaussclaw-proxy",
  "gaussclaw-skill",
  "gaussclaw-store",
