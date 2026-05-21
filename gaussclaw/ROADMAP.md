@@ -87,13 +87,22 @@ crates/
 
 ## Phase Overview
 
-| Phase | Weeks | Title | Milestone | Headline Deliverable |
-|-------|-------|-------|-----------|----------------------|
-| **P1** | 1–4   | Surface and Channel Routing | **M1** | All Hermes surfaces re-routed through Gauss Gateway in shim regime; 1,000-turn byte-identical replay |
-| **P2** | 4–10  | Memory, Receipts, and Lineage | **M2** | SQLite/FTS5 → Trinity over SurrealDB; Ed25519 chain; 2-week dual-write parity |
-| **P3** | 10–16 | Tools and Sandbox | **M3** | Every `@tool` lifted into HWCA + Composite Sandbox; IPI ≤ 2.19 %; spawn p99 ≤ 15 ms |
-| **P4** | 16–20 | Provider Plane and Meta-Routers | **M4** | 20 leaf + OpenRouter + NotDiamond under polyhedral / router-transparency contracts |
-| **P5** | 20–24 | Trajectory Export and GA | **GA** | Cryptographic Envelope + Taint-Aware Filter + Federated Pool + 15-axis scorecard |
+| Phase | Weeks | Title | Milestone | Headline Deliverable | Status |
+|-------|-------|-------|-----------|----------------------|--------|
+| **P1** | 1–4   | Surface and Channel Routing | **M1** | All Hermes surfaces re-routed through Gauss Gateway in shim regime; 1,000-turn byte-identical replay | ✅ Shipped |
+| **P2** | 4–10  | Memory, Receipts, and Lineage | **M2** | SQLite/FTS5 → Trinity over SurrealDB; Ed25519 chain; 2-week dual-write parity | ✅ Shipped |
+| **P3** | 10–16 | Tools and Sandbox | **M3** | Every `@tool` lifted into HWCA + Composite Sandbox; IPI ≤ 2.19 %; spawn p99 ≤ 15 ms | ✅ Shipped |
+| **P4** | 16–20 | Provider Plane and Meta-Routers | **M4** | 20 leaf + OpenRouter + NotDiamond under polyhedral / router-transparency contracts | ✅ Shipped (vendor codec selection config-driven; HTTP backend wiring is the P6 §1 follow-on) |
+| **P5** | 20–24 | Trajectory Export | **M5** | Cryptographic Envelope + Taint-Aware Filter + Federated Pool + 15-axis scorecard | ✅ Shipped |
+| **P6** | 24–32 | Production wiring + GA | **GA** | Provider HTTP backend wired live; multi-agent coordinator; signed/notarised desktop artefacts; public bug bounty | 🟡 In flight (see §"Phase 6 — Production Wiring + GA" below) |
+
+> **Implementation status as of 2026-05.** The workspace ships **26
+> `gaussclaw-*` crates** (~46.6K LOC, 883 tests) on top of **28
+> `gauss-*` crates** at the Gauss-Aether 1.0 line. Phases 1 → 5 are
+> closed; Phase 6 is the production-GA push tracked in the parent
+> `/ROADMAP.md` as Sprint 14 → 17 and recapped in this file's
+> Phase 6 section below. The OpenHarness parity matrix in
+> `/docs/OPENHARNESS_PARITY.md` is the authoritative subsystem map.
 
 Each milestone produces a shippable binary. Phase N+1 validates against Phase N's artefact.
 
@@ -772,6 +781,188 @@ Out of scope for the 24-week port; tracked in `docs/V2_HORIZON.md` after GA:
 - **Learnt Φ.** Adaptive autonomy gradient trained on operator approval decisions stored in the receipt chain (cf. `gauss-learnt`).
 - **Mechanised proofs of T1–T12.** Coq / Lean kernel core with extraction.
 - **AgentDojo-style adversarial benchmark.** Empirical calibration of the T9 worst-case IPI bound against deployment-specific declass maps.
+
+---
+
+## Phase 6 — Production Wiring + GA (Weeks 24–32) → GA
+
+> **Mirror of the parent `/ROADMAP.md` Sprint 14 → 17.** Phase 6 is
+> the production push that turns the agent — already complete in
+> code — into a release operators can deploy and depend on. It
+> closes the four remaining "Known gaps" entries in
+> `docs/OPENHARNESS_PARITY.md` and ships the GA artefacts the
+> earlier phases were structurally ready for but hadn't yet cut.
+
+### Status snapshot (entering Phase 6)
+
+| Surface | State on entry to Phase 6 |
+|---|---|
+| Agent loop | ✅ Production-wired through `gaussclaw serve`; streams via WebSocket; Ctrl+C / WS-close mid-turn cancel |
+| Vendor codec selection | ✅ Config-driven (`anthropic` / `openai` / `echo`); env-sourced API keys |
+| Provider HTTP backend | 🟡 `UnconfiguredBackend` fail-loud default — real `reqwest`-backed adapter is Phase 6 §1 |
+| MCP transports | ✅ HTTP + stdio; real-server interop test pending (Phase 6 §4) |
+| Plugin slash dispatch | 🟡 Discovery + `/commands` works; typed dispatch is Phase 6 §3 |
+| Multi-agent coordinator | 🟡 One-shot `DelegateTool` + `MixtureOfAgentsTool` ship; team registry + persistent identities are Phase 6 §9 |
+| Desktop installers | 🟡 Tauri 2 shell + IPC ship; code-signing pipelines are Phase 6 §10 |
+
+### Tasks (P6-A — operator-visible production wiring, weeks 24–27)
+
+1. **Provider HTTP backend.** New `gaussclaw-providers-http`
+   crate (`reqwest` + `rustls-native-certs`) implementing the
+   `gaussclaw_providers::HttpBackend` trait. Plumbed through
+   `ProviderChoice::with_backend` in the bin so `gaussclaw serve`
+   reaches `api.anthropic.com` / `api.openai.com` with no extra
+   config. The existing `gaussclaw-http` crate covers the tools
+   side; this crate is the providers side. They share a private
+   `reqwest::Client` helper so the TLS / DNS / proxy stories are
+   single-sourced.
+2. **Live-network smoke test.** `#[ignore]`-gated +
+   `live-network` cargo-feature-gated test runs one
+   `AgentLoop::run` against the real Anthropic Messages API.
+   Stays off by default; the `release` workflow runs it on a
+   protected runner with an org-scoped key. Asserts one signed
+   receipt + one chain head verify via the public verifier.
+3. **Plugin-registered slash dispatch.** `PluginRegistry::
+   slash_handlers()` returns `&[(name, fn(&mut Repl, &str) ->
+   SlashOutcome)]`. The TUI's `dispatch_slash` consults the
+   registry before falling back to the hand-written match;
+   "did you mean?" already works through the existing slash
+   registry.
+4. **MCP HTTP transport — real server interop.** The
+   reference MCP echo server runs in CI under docker-in-docker;
+   the `live-network` lane runs an end-to-end test that bridges
+   through `McpHttpClient` and asserts tool dispatch round-trips
+   bit-for-bit against the canonical schema gate output.
+5. **Native streaming overrides.** Three `complete_streaming`
+   overrides in `gaussclaw-providers` (Anthropic SSE, OpenAI
+   `chat/completions/stream`, Ollama line-delimited JSON). A new
+   polyhedral test asserts streaming and non-streaming paths
+   produce byte-equal canonical completions on a shared probe
+   set so the receipt chain stays invariant under streaming
+   swap.
+6. **`gaussclaw-pty`** (`portable-pty`-backed `PtyBackend`).
+   Cap-gated to `EXECUTOR_LOCAL`; wall-clock timeout kills the
+   child; partial output surfaces through the existing
+   `PtyResult` shape.
+7. **`gaussclaw-modal-http`** (`reqwest`-backed
+   `ModalHttpClient`). Bearer-token auth, retry with jitter,
+   per-call cost cap pre-checked from `ModalConfig::
+   max_cost_dollars`.
+8. **Search adapter crates** — `gaussclaw-search-tavily`,
+   `gaussclaw-search-serpapi`, `gaussclaw-search-brave`. Each
+   sits behind the existing `SearchProvider` trait; one
+   canonical `SearchResult` shape.
+
+### Tasks (P6-B — multi-agent + observability, weeks 27–29)
+
+9. **Team registry + persistent agent identities.** New
+   `gaussclaw-coordinator` crate. `Team = bundle of AgentIdentity {
+   id, capabilities, persona, default_model } + TeamPolicy
+   (parallel / sequential / consensus)`. Identities persist in
+   the Trinity store; coordinator restart resumes mid-conversation.
+   New `cap:coordinator:dispatch` bit.
+10. **Headless worker subprocesses.** Each non-trivial team
+    member runs as a `gaussclaw worker` subprocess speaking
+    JSON-RPC over UDS / named pipes. Receipts chain per-worker;
+    the coordinator's chain anchors each worker's head digest
+    so the parent chain stays forgery-resistant.
+11. **`gaussclaw teams {list, run, attach, kill, logs}`** CLI
+    surface + a `TeamsPage` (the 10th dashboard view).
+12. **OpenTelemetry exporter.** New `gaussclaw-otel` crate
+    exporting `LoopEvent`, `AuditEntry`, kernel admit decisions,
+    and per-tool span metrics over OTLP/gRPC. Operators get
+    Grafana / Datadog with zero in-house instrumentation work.
+13. **Prometheus metrics endpoint.** `/metrics` on the
+    dashboard exposes turn rate, fallback rate, IPI defence
+    hits, sandbox layer counts, audit-chain depth, plugin load
+    count. Locked names + labels in `docs/METRICS.md`.
+14. **Structured logging policy.** `tracing` subscriber emits
+    JSON in production by default; the existing
+    `gaussclaw-redact` policy applies to every span so secrets
+    cannot leak.
+
+### Tasks (P6-C — desktop GA + release engineering, weeks 29–31)
+
+15. **macOS:** universal `.dmg` signed with Apple Developer ID,
+    notarized, stapled. CI signing workflow uses OIDC-scoped
+    secrets; build reproducible from the tagged commit.
+16. **Windows:** `.msi` + `.exe` Authenticode-signed (EV cert
+    in HSM). `winget` manifest auto-PR'd to `microsoft/winget-
+    pkgs` on tag.
+17. **Linux:** `.AppImage`, `.deb`, `.rpm` GPG-signed; Flathub
+    manifest PR'd on tag.
+18. **Tauri-plugin-updater integration.** Every release manifest
+    Ed25519-signed; every binary's SHA-256 anchored in the
+    public receipt chain via `gauss-attest`. The four-axis
+    verifier from `docs/UPDATE_INTEGRITY.md` is the canonical
+    wire format.
+19. **Footprint CI gates.** Per-OS asserts: installer ≤ 20 MB,
+    on-disk ≤ 50 MB, RAM idle ≤ 80 MB, cold start ≤ 500 ms. A
+    release blocks if any axis regresses.
+20. **WebdriverIO + tauri-driver smoke matrix.** macOS /
+    Windows / Linux runners drive all 12 Hermes-parity screens
+    + the 5 additive screens, exercising tray / hotkey /
+    notifications / deep links; the IPC payload schema is
+    asserted against the same OpenAPI-style contract the Axum
+    backend serves.
+21. **Package channels.** Cargo crate publishing to crates.io;
+    docs.rs builds clean. Homebrew tap; apt/yum repos.
+
+### Tasks (P6-D — bug bounty + GA launch, weeks 31–32)
+
+22. **2-week public bug bounty.** Scope as published in
+    `docs/BUG_BOUNTY.md` (15 in-scope crates, four-tier payout
+    schedule). An external security firm runs an independent
+    audit of the cap-lattice + audit-chain design; their
+    report ships as a public PDF.
+23. **Co-deployment.** Hermes co-deployed throughout the
+    bounty window so any GA-blocking regression has a clear
+    fallback (the shim regime).
+24. **Migration runbook.** `gaussclaw import hermes
+    ~/.hermes/config.toml` validated end-to-end on three real
+    operator deployments; `docs/MIGRATION.md` reflects what we
+    actually saw, not what we projected.
+25. **GA scorecard.** Re-run the 15-axis Pareto-dominance
+    scorecard from `gauss-bench` against Hermes, OpenFang,
+    OpenClaw, ZeroClaw. Ship as `docs/GA_SCORECARD.md`. The
+    release blocks if the scorecard regresses on any axis from
+    the 1.0 baseline.
+26. **`v1.0.0` tag.** Cut from `main`. Crates published. Desktop
+    artefacts published. Website live in English + Simplified
+    Chinese with the migration guide and the verifier walk-
+    through.
+
+### Exit criteria (GA)
+
+- [ ] **All four remaining `docs/OPENHARNESS_PARITY.md` Known-gaps
+      entries closed.**
+  - [ ] Real HTTP backend wired into providers (§1).
+  - [ ] Live-network smoke test green on protected CI (§2).
+  - [ ] Plugin-registered slash commands dispatch through their
+        handlers (§3).
+  - [ ] MCP HTTP transport interop test green against the
+        reference server (§4).
+  - [ ] Multi-agent coordinator ships team registry + persistent
+        identities + headless worker subprocesses (§9–§11).
+- [ ] Code-signed, notarised desktop installers on all three major
+      OSes; footprint CI gates green.
+- [ ] Cargo crates published; docs.rs green; Homebrew / apt / yum
+      / winget / Flathub accept the tagged release.
+- [ ] Public bug-bounty window closes without GA-blocking findings;
+      external security firm signs off.
+- [ ] 15-axis scorecard re-affirms Pareto dominance over Hermes /
+      OpenFang / OpenClaw / ZeroClaw.
+- [ ] `v1.0.0` tag cut; announcement post anchors every shipped
+      binary's SHA-256 in the public receipt chain.
+
+### Rollback
+
+GA is gated by the bounty window; failure to meet criteria
+triggers rollback to the most recent passing milestone. The
+Hermes deployment is co-deployed throughout the window. Any
+in-flight subsystem can be reverted to its Phase-5 state without
+losing the engine's correctness invariants — the cap-lattice
+and audit-chain don't depend on the production wiring.
 
 ---
 

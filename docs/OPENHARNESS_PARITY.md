@@ -1,5 +1,9 @@
 # OpenHarness Parity Matrix
 
+*Last reviewed: 2026-05-21. Current state: Sprint 13 closed.
+Known-gaps are owned by Sprint 14 → 15 (`/ROADMAP.md`) and Phase 6
+(`/gaussclaw/ROADMAP.md`).*
+
 This document maps every [OpenHarness](https://github.com/HKUDS/OpenHarness)
 subsystem to its GaussClaw / Gauss-Aether equivalent. For each row:
 
@@ -214,34 +218,47 @@ frame rather than silently returning a stub echo.
 
 ## Known gaps
 
-These are honest known gaps as of sprint 13. Each is a candidate for
-the next sprint or a future one.
+These are honest known gaps as of sprint 13 (last reviewed
+2026-05-21). Each is a candidate for the production-GA wave —
+they're all owned by Sprint 14 → 15 in `/ROADMAP.md` and
+Phase 6 §1, §3, §4, §9–§11 in `/gaussclaw/ROADMAP.md`.
 
-1. **No real HTTP backend ships in the workspace.** Vendor codecs are
-   reachable through `pick_provider` and demonstrated end-to-end
-   against `MockHttpBackend`, but until a `reqwest` (or similar)
-   backed `HttpBackend` lands, `gaussclaw serve` against
-   `api.anthropic.com` fails at the transport layer. Plumbing one
-   means: add `reqwest` to a new `gaussclaw-providers-http`
-   crate (or behind a feature flag), implement `HttpBackend` over
-   it, pass it through `ProviderChoice::with_backend`.
+1. **No real HTTP backend ships for providers.** ✅ for the *tools*
+   side via `gaussclaw-http::ReqwestHttpClient` (Sprint 10 §1
+   landed); ❌ for the *providers* side — `gaussclaw_providers`
+   has its own internal `HttpBackend` trait and only ships
+   `UnconfiguredBackend` today. Vendor codecs are reachable
+   through `pick_provider` and demonstrated end-to-end against
+   `MockHttpBackend`, but `gaussclaw serve` against
+   `api.anthropic.com` still fails at the providers transport
+   layer. **Owned by Sprint 14 §1**: new `gaussclaw-providers-http`
+   crate sharing the existing `gaussclaw-http` TLS / client stack
+   under the providers `HttpBackend` trait.
 2. **No live-network smoke test.** End-to-end coverage is against
    `MockHttpBackend` only. A live-network test against the real
    Anthropic Messages API needs `ANTHROPIC_API_KEY` and a CI
    environment that allows outbound HTTPS; out of scope for
-   `cargo test` today. The recipe is: set the env var, build the
-   binary, run `gaussclaw serve`, open the dashboard, watch the
-   loop streaming via WebSocket.
+   `cargo test` today. **Owned by Sprint 14 §2**: `#[ignore]` +
+   `live-network` cargo-feature-gated test, run only on the
+   protected release runner.
 3. **Plugin-registered slash commands surface in `/commands` but
    dispatch through a placeholder message.** Real wiring requires
    plumbing the plugin's command handler into the TUI's
-   `dispatch_slash` match.
+   `dispatch_slash` match. **Owned by Sprint 14 §3.**
 4. **MCP HTTP transport untested against a real MCP server.** Works
-   against `ScriptedHttp` end-to-end; no `cargo test` exercises an
-   actual remote server.
+   against `ScriptedHttp` end-to-end (HTTP); the stdio transport
+   ships via `StdioMcpClient` (Sprint 10 §9). No `cargo test`
+   exercises an actual remote MCP server. **Owned by Sprint 14
+   §4**: reference MCP echo server running in CI under
+   docker-in-docker; live-network lane exercises round-trip.
 5. **Multi-agent Coordinator stays one-shot.** OpenHarness's team
    registry + persistent agent identities + headless worker
-   subprocesses are not built.
+   subprocesses are not built — only `DelegateTool` and
+   `MixtureOfAgentsTool` (one-shot dispatches) ship today.
+   **Owned by Sprint 15 §1–§3**: new `gaussclaw-coordinator`
+   crate with `Team` / `AgentIdentity` / `TeamPolicy`,
+   `gaussclaw worker` subprocess + UDS JSON-RPC, `TeamsPage` in
+   the dashboard.
 
 ---
 

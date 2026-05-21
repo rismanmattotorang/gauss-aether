@@ -1,10 +1,21 @@
 # GaussClaw vs. Hermes — Capability Matrix & Forward Roadmap
 
-> *Last updated: 2026-05.*
+> *Last updated: 2026-05-21.*
 > Companion to [`STRATEGY.md`](./STRATEGY.md). Where STRATEGY.md is
 > the historical sprint log, this document is the forward-looking
 > capability matrix and the new sprint plan that closes the residual
 > gaps and extends the structural lead.
+>
+> **Current state of `main`:** Sprints 4 → 13 have all landed. The
+> agent loop is production-wired through `gaussclaw serve`, vendor
+> codec selection is config-driven, the dashboard streams via
+> WebSocket with mid-turn cancel, the cron store is chain-protected
+> through Trinity, and the OpenHarness parity matrix (`docs/
+> OPENHARNESS_PARITY.md`) records the canonical subsystem map. The
+> workspace ships **26 `gaussclaw-*` crates** at ~46.6K LOC with
+> **883 tests** green, on top of **28 `gauss-*` crates** at the
+> Gauss-Aether 1.0 line. Sprint 14 → 17 (this document, §6) is the
+> production-GA plan.
 
 ---
 
@@ -1033,6 +1044,311 @@ When Sprint 10 closes, the codebase has:
   overrides preserve canonical-bytes equivalence with their
   non-streaming counterparts.
 
+**Sprint 10 actuals (post-merge audit):** §1, §5, §7, §8, §9, §10
+shipped to `main`. §2 (`gaussclaw-pty`), §3 (`gaussclaw-modal-http`),
+§4 (vendor search providers), §6 (native streaming overrides for
+Anthropic / OpenAI / Ollama) remain queued behind real-API credential
+availability — the trait surfaces from Sprint 9 are stable, so each
+slot in additively. They are reabsorbed into Sprint 14 §1 below as
+the first wave of the production wiring sprint.
+
+### Sprint 11 — OpenHarness-inspired enhancements (size: M) — ✅
+
+**Goal:** absorb the structural ideas behind
+[OpenHarness](https://github.com/HKUDS/OpenHarness) (hooks, MCP,
+typed skills, runtime slash registry) into the GaussClaw surface
+without giving up the cap-lattice / receipt-chain invariants.
+
+**Delivered:**
+
+- `gauss-hooks` — typed PreToolUse / PostToolUse lifecycle bus with
+  cap-gated `Warn` / `Deny` verdicts. Args hashed (BLAKE3) before
+  audit so secrets cannot leak via the receipt chain. Plumbed into
+  `AgentLoop::with_hooks(HookBus)` + `AgentLoop::with_audit(...)`
+  so denied/warned hooks land on the chain as `AuditEntry::{HookDeny,
+  HookWarn}`.
+- `gaussclaw_skill::MarkdownSkill` — Anthropic-compatible `SKILL.md`
+  format (YAML frontmatter), `from_dir` / `discover_in` loaders,
+  frontmatter caps bridge → `CapToken`, symlink-leaf refused at load.
+- `MemoryFile` (`MEMORY.md`) — sectioned parse, atomic write-then-
+  rename, 256 KiB byte cap with oldest-first eviction. The new
+  `MemoryFileEnricher` injects the rendered body as the leading
+  system message; `memory_md_read` / `memory_md_write` tools let
+  the agent curate its own memory.
+- `PromptEnricher` trait — composable prompt enrichment with
+  leading-system preservation by the compactor. `MarkdownSkillEnricher`,
+  `MemoryFileEnricher`, `ContextFileEnricher` ship as built-ins.
+- `ContextFileFinder` — `CLAUDE.md` ancestor walk with depth cap +
+  `.gaussclaw/STOP` short-circuit + symlink-leaf refusal.
+- Auto-Compaction with audit witness — `Compactor` trait +
+  `WindowedCompactor` default. Compaction events land on the chain.
+- `gaussclaw_cli::slash` — data-driven slash-command registry; the
+  TUI consults it for `/commands` listing and Levenshtein-distance-2
+  "did you mean?" suggestions.
+- `gaussclaw_tools::mcp` + `mcp_http` — typed MCP bridge (JSON-RPC
+  2.0 `tools/list` + `tools/call`) so external MCP servers can be
+  surfaced as first-class tools through the schema gate.
+- `gaussclaw_tools::subagent` — `DelegateTool`, `MixtureOfAgentsTool`
+  (one-shot subagent dispatch; the team-registry expansion is
+  Sprint 17).
+
+### Sprint 12 — integration sprint (size: M) — ✅
+
+**Goal:** finish wiring Sprint 4 → 11 surfaces into the shipping
+binary so what's reachable from `gaussclaw serve` matches what's
+reachable from `cargo test`.
+
+**Delivered:**
+
+- `gaussclaw-bin::run_web` instantiates a real `AgentLoop` and the
+  dashboard's `chat_socket` forwards `LoopEvent` frames over the
+  WebSocket end-to-end (no more echo-only path).
+- `DefaultHookFactory` + `ChainedHookFactory` — built-in hook ids
+  (`dry-run-preview`, `shell-guard`, `audit-log`) resolve at plugin
+  registration time via the typed `HookFactory` trait.
+- `gauss-curator::cross_session` + `gauss-curator::review` wired
+  into the bin so the per-turn autosave + skill-consolidation loop
+  runs without operator intervention.
+- `docs/OPENHARNESS_PARITY.md` — authoritative subsystem map; every
+  row carries a cited demo test so the doc cannot drift past
+  reality without a CI failure.
+- `/api/status` reports `agent_attached: true` once the bin has
+  attached a `LoopSink` — the smoke gate against "looks complete
+  in code, not reachable from the bin".
+
+### Sprint 13 — vendor codec wiring (size: M) — ✅
+
+**Goal:** make the provider plane config-selectable end-to-end so
+swapping Anthropic ↔ OpenAI is a TOML edit, not a recompile.
+
+**Delivered:**
+
+- `gaussclaw_providers::pick_provider(cfg, api_key)` reads
+  `cfg.provider.name` and returns the matching codec (`anthropic`
+  → `AnthropicProvider`, `openai` → `OpenAIProvider`, empty /
+  unknown → `EchoProvider` fallback). `gaussclaw-bin::run_web`
+  calls it with the env-sourced API key (`ANTHROPIC_API_KEY`,
+  `OPENAI_API_KEY`).
+- `UnconfiguredBackend` — until a real HTTP backend is plumbed
+  through `ProviderChoice::with_backend`, the selected codec wraps
+  this and every send returns a clean `HttpError::Network("…not
+  configured…")` rather than silently returning a stub echo. The
+  dashboard surfaces that as an `error` frame so the operator
+  sees the gap immediately.
+- 6 e2e tests in `gaussclaw_providers::e2e_anthropic` —
+  `AnthropicProvider → MockHttpBackend → TurnPolicy →
+  AgentLoop::run` with canned Anthropic-shape responses,
+  audit-chain integration verified.
+
+### Sprint 14 — production wiring (size: L)
+
+**Goal:** close the four remaining "looks complete in code, not
+reachable from a real upstream" gaps recorded in
+`docs/OPENHARNESS_PARITY.md`. Sprint 14 is what turns the agent
+into something an operator can point at production credentials and
+trust.
+
+**Deliverables:**
+
+1. **Provider HTTP backend.** Ship `gaussclaw-providers-http` (new
+   crate) implementing the internal `gaussclaw_providers::HttpBackend`
+   trait over `reqwest` + `rustls-native-certs`. Wire it through
+   `ProviderChoice::with_backend(Arc<dyn HttpBackend>)` in the bin
+   so `gaussclaw serve` against `api.anthropic.com` /
+   `api.openai.com` succeeds out of the box. *Reuses the
+   `gaussclaw-http` crate where the trait shapes align; otherwise
+   they share a private `reqwest::Client` helper to keep the TLS
+   story single-sourced.*
+2. **Live-network smoke test.** Add a `#[ignore]`-gated +
+   `live-network` cargo-feature-gated test that runs a one-turn
+   `AgentLoop::run` against the real Anthropic Messages API. CI
+   keeps it off by default; the `release` workflow runs it on a
+   protected runner with an org-scoped key. Output is one signed
+   receipt + one chain head; the test asserts both verify against
+   the public verifier.
+3. **Plugin-registered slash dispatch.** Replace the placeholder
+   response in `gaussclaw-tui::dispatch_slash` with a real plugin
+   command handler lookup. `PluginRegistry::slash_handlers()`
+   returns `&[(name, fn(&mut Repl, &str) -> SlashOutcome)]`;
+   `dispatch_slash` consults the registry before falling back to
+   the hand-written match. The `/commands` discovery path already
+   works.
+4. **MCP HTTP transport — real server interop.** Stand up the
+   reference MCP echo server (`modelcontextprotocol/typescript-sdk`)
+   in CI under docker-in-docker; the `live-network` lane runs an
+   end-to-end test that bridges through `McpHttpClient` and asserts
+   tool dispatch round-trips. Locks in the canonical bytes for the
+   schema gate.
+5. **Native streaming overrides** (Sprint 10 §6 follow-on). Three
+   `complete_streaming` overrides in `gaussclaw-providers` —
+   Anthropic SSE, OpenAI `chat/completions/stream`, Ollama
+   line-delimited JSON. Polyhedral test asserts the streaming and
+   non-streaming code paths produce byte-equal canonical
+   completions on a shared probe set.
+6. **`gaussclaw-pty` adapter** (Sprint 10 §2 follow-on).
+   `portable-pty`-backed `PtyBackend` impl, cap-gated to
+   `EXECUTOR_LOCAL`; wall-clock timeout kills the child; partial
+   output surfaces through the existing `PtyResult` shape.
+7. **`gaussclaw-modal-http` adapter** (Sprint 10 §3 follow-on).
+   `reqwest`-backed `ModalHttpClient` with bearer-token auth +
+   per-call cost-cap pre-check; degrades to a fully-built stub
+   if Modal's HTTP API is still in flux.
+8. **`gaussclaw-search-{tavily,serpapi,brave}`** (Sprint 10 §4
+   follow-on). Three vendor crates behind the Sprint 9 §3
+   `SearchProvider` trait; one canonical `SearchResult` shape.
+
+**Success criteria:**
+
+- The OpenHarness Parity matrix loses gaps #1, #3, #4 from its
+  "Known gaps" list; the `live-network` lane catches the day a
+  real upstream regresses.
+- `gaussclaw serve` on a fresh box, with `ANTHROPIC_API_KEY`
+  exported, talks to the real API and streams tokens to the
+  dashboard with no further config.
+- `cargo test --workspace --lib` stays green; the `live-network`
+  lane stays gated.
+
+### Sprint 15 — multi-agent coordinator + observability (size: L)
+
+**Goal:** close the last `docs/OPENHARNESS_PARITY.md` gap
+(#5 — multi-agent coordinator stays one-shot) and ship the
+operator-facing observability surface that turns "it works on my
+laptop" into "I can run this in prod".
+
+**Deliverables:**
+
+1. **Team registry + persistent agent identities.** New
+   `gaussclaw-coordinator` crate. A `Team` is a named bundle of
+   `AgentIdentity { id, capabilities, persona, default_model }`
+   plus a `TeamPolicy` (parallel / sequential / consensus
+   aggregator). Identities persist in the Trinity store so a
+   coordinator restart resumes mid-conversation. Cap-gated by a
+   new `cap:coordinator:dispatch` bit.
+2. **Headless worker subprocesses.** Each non-trivial team member
+   runs in its own `gaussclaw worker` subprocess, communicating
+   with the coordinator over UDS / named-pipe JSON-RPC. Receipts
+   chain per-worker; the coordinator's chain anchors each worker's
+   head digest so the parent chain remains forgery-resistant.
+3. **`gaussclaw teams {list, run, attach, kill, logs}`** CLI
+   subcommand surface + the dashboard's `TeamsPage` (the 10th
+   page).
+4. **OpenTelemetry exporter.** New `gaussclaw-otel` crate exporting
+   `LoopEvent`, `AuditEntry`, kernel admit decisions, and per-tool
+   span metrics over OTLP/gRPC. Operators get a Grafana / Datadog
+   view with no in-house instrumentation work.
+5. **Prometheus metrics endpoint.** `/metrics` on the dashboard
+   bin exposes turn rate, fallback rate, IPI defence hits, sandbox
+   layer counts, audit-chain depth, plugin load count. Locked
+   metric names + labels documented in `docs/METRICS.md`.
+6. **Structured logging policy.** `tracing` subscriber emits
+   line-delimited JSON in production by default; receipts /
+   secrets / API keys never appear in spans (the existing
+   `gaussclaw-redact` policy applies). `RUST_LOG=gaussclaw=info`
+   is the operator-facing knob.
+
+**Success criteria:**
+
+- Two GaussClaw workers — one driving a research task, one
+  driving infra cleanup — share a `Team` definition and a common
+  audit chain head, each verifiable with the public verifier.
+- The dashboard's TeamsPage shows live worker status without
+  polling the underlying subprocesses; the OTLP exporter forwards
+  per-turn metrics to a recipient operator's collector.
+
+### Sprint 16 — desktop GA + release engineering (size: L)
+
+**Goal:** produce the GA-ready, code-signed, notarised desktop
+artefacts the README and `gaussclaw/ROADMAP.md` already promise.
+
+**Deliverables:**
+
+1. **macOS:** universal `.dmg` signed with Apple Developer ID,
+   notarized by Apple, stapled. CI signing workflow stores
+   credentials in OIDC-scoped GitHub secrets; the build is
+   reproducible from the tagged commit.
+2. **Windows:** `.msi` + `.exe` signed with Authenticode (EV
+   certificate stored in an HSM). `winget` manifest auto-PR'd to
+   `microsoft/winget-pkgs` on tag.
+3. **Linux:** `.AppImage`, `.deb`, `.rpm` GPG-signed. Flathub
+   manifest PR'd on tag. Snap is non-goal for v1.0.
+4. **Tauri-plugin-updater integration.** Every release manifest is
+   Ed25519-signed; every binary's SHA-256 anchored in the public
+   receipt chain via `gauss-attest`. The four-axis verifier from
+   `docs/UPDATE_INTEGRITY.md` is the canonical wire format.
+5. **Footprint gates in CI.** Per-OS asserts: installer ≤ 20 MB,
+   on-disk ≤ 50 MB, RAM idle ≤ 80 MB, cold start ≤ 500 ms. A
+   release blocks if any axis regresses.
+6. **WebdriverIO + tauri-driver smoke matrix.** Boots the desktop
+   shell on macOS / Windows / Linux runners, drives the 12
+   Hermes-parity screens + the 5 additive screens, exercises tray
+   / hotkey / notifications / deep links, asserts the IPC payload
+   schema against the same OpenAPI-style contract the Axum
+   backend serves.
+7. **Public release channels.** Cargo crate publishing
+   (`gauss-aether-*` engine crates, `gaussclaw-*` agent crates
+   that have stable APIs) under MIT to crates.io. Docs.rs build
+   green. Homebrew tap. apt/yum repos for Debian/Fedora.
+
+**Success criteria:**
+
+- A first-time user on macOS / Windows / Linux can install via
+  the OS-native package manager and reach a working chat session
+  in under 60 seconds.
+- The release tag's notes link to a public receipt for every
+  shipped binary's SHA-256; any downstream can re-verify the
+  binary against the chain head with one `gaussclaw receipt
+  verify` invocation.
+
+### Sprint 17 — bug bounty + GA launch (size: M)
+
+**Goal:** the public bug bounty window described in
+`docs/BUG_BOUNTY.md` runs in earnest; GA ships when it closes
+without GA-blocking regressions.
+
+**Deliverables:**
+
+1. **2-week public bug bounty.** Scope as already published
+   (15 in-scope crates, four-tier payout schedule). External
+   security firm engaged for an independent audit of the
+   cap-lattice + audit-chain design; their report ships as a
+   public PDF.
+2. **Co-deployment.** Hermes stays co-deployed throughout the
+   bounty window so any GA-blocking regression has a clear
+   fallback. The shim regime is the rollback surface.
+3. **Migration runbook.** `gaussclaw import hermes
+   ~/.hermes/config.toml` validated end-to-end on three real
+   operator deployments; the runbook in `docs/MIGRATION.md`
+   reflects what we actually saw.
+4. **GA scorecard.** Re-run the 15-axis Pareto-dominance
+   scorecard from `gauss-bench` against Hermes, OpenFang,
+   OpenClaw, ZeroClaw. Ship as `docs/GA_SCORECARD.md`. The
+   release blocks if the scorecard regresses on any axis from
+   the 1.0 baseline.
+5. **GA tag.** `v1.0.0` cut from `main`. Crates published.
+   Desktop artefacts published. Website live in English + Simplified
+   Chinese with the migration guide and the verifier walk-through.
+
+**Success criteria:**
+
+- The bounty window closes with all findings resolved.
+- The scorecard ships; nobody's reading these docs and finding
+  they're wrong about reality.
+- The `v1.0.0` tag's announcement post links to a chain head
+  that anchors every shipped binary's SHA-256.
+
+### Sprint 17 — wrap-up: production GA shipped
+
+When Sprint 17 closes, the codebase has:
+
+- Zero `docs/OPENHARNESS_PARITY.md` "Known gaps" entries.
+- Code-signed, notarised desktop installers on all three major
+  OSes plus the universal `gaussclaw` static binary.
+- A public receipt chain that anchors every shipped artefact.
+- A clean external pen-test sign-off on the kernel + audit +
+  sandbox stack.
+- An interactive migration path from Hermes that real operators
+  have walked.
+
 ---
 
 ## 7. Resource estimates & risk
@@ -1044,6 +1360,15 @@ When Sprint 10 closes, the codebase has:
 | 6 | L (~4-6 weeks) | Docker / SSH security review; subagent receipt-chain isolation |
 | 7 | L (~4 weeks) | Plugin trust model (signed plugins); skill-install UX |
 | 8 | L (open-ended) | ZK prover performance; hardware attestation availability in CI |
+| 9 | L (~3 weeks) | Token-streaming + cancellation hookups across surfaces |
+| 10 | L (~4 weeks) | Vendor-specific adapter quirks (Anthropic SSE vs OpenAI vs Ollama framing) |
+| 11 | M (~2 weeks) | OpenHarness ABI drift — pin to a specific MCP/skill spec version |
+| 12 | M (~1-2 weeks) | Integration regressions surface late; smoke gate (`agent_attached`) is the canary |
+| 13 | M (~1-2 weeks) | Config-driven codec selection without recompile risks misconfig in the field — `UnconfiguredBackend` is the fail-loud guard |
+| 14 | L (~3 weeks) | Live-network credentials in CI (org-scoped key handling); reqwest TLS stack on niche targets |
+| 15 | L (~4 weeks) | Multi-process coordinator complexity; observability not blowing up the audit chain (one span per turn, not one per token) |
+| 16 | L (~3-4 weeks) | Code-signing certificate procurement (especially EV Authenticode); release artefact reproducibility |
+| 17 | M (~2 weeks) | Bug-bounty findings landing late in the window; co-deployment cost |
 
 The dominant risk across all sprints is **scope creep**. Each sprint
 deliverable is shipped behind a green workspace test count. If a

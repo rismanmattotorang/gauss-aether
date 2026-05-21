@@ -32,9 +32,12 @@
 | 9     | A2UI Canvas + Health + surfaces          | 6 weeks  | —              | T8              | Canvas (8 widgets) + SDHE (7 invariants) + Gateway wire types | ✅ Done |
 | 10    | Hardening, scale, attestation            | 6 weeks  | (V predicate)  | T6, T10 (L4)    | Consistent-hash ring + TEE simulator + chaos injectors + wasmtime feature | ✅ Done |
 | 11    | 1.0 release                              | 3 weeks  | All            | All             | Pareto-dominance scorecard + v2 horizon + MIT licence + comprehensive docs | ✅ Done |
-| v2    | zk audit, learnt Φ, DP exporter          | TBD      | —              | —               | Future-work line from paper §XVIII.E          |        |
+| **12** | **Post-1.0 production plugins**        | 6 weeks  | —              | —               | Hardware attest plugins · Anthropic/OpenAI provider plugins · `kv-tikv` cluster · `axum` gateway server · embedding model wiring · real RFC 3161 TSA client | 🟡 In flight |
+| v2    | zk audit, learnt Φ, DP exporter          | TBD      | —              | —               | Future-work line from paper §XVIII.E          | 🟡 Scaffolds shipped (Phase 11); production backends are Phase 12+ |
 
 Total to 1.0: **~14 months** assuming 4–6 engineers from Phase 2.
+Phase 12 is the post-1.0 production wave that lifts the deferred
+follow-ups from Phases 5 → 11 into shipping plugin crates.
 
 ---
 
@@ -356,6 +359,115 @@ CONF-A8-* green: SAG denial path returns `AutonomyDenied` and leaves no chain en
 - SurrealDB `kv-tikv` cluster backend.
 - External pen-test report.
 - Coq mirror of the Lean proof skeleton.
+
+> Note: most of these deferred items are already in flight at the
+> GaussClaw layer (which is a Gauss-Aether reference embedder). See
+> `/gaussclaw/ROADMAP.md` "Phase 6 — Production Wiring + GA" and
+> `/ROADMAP.md` Sprint 14 → 17 for the agent-side production plan.
+> The plan below (Phase 12) covers only the *engine-side* deferred
+> items that don't fit naturally in the agent layer.
+
+---
+
+## Phase 12 — Post-1.0 Production Plugins (~6 weeks) 🟡
+
+**Goal:** lift every "Deferred to Phase 12+" item above into a
+shipping plugin crate, without modifying the 1.0 trait surface. The
+trait surface is frozen by ADR-0014; the work here is additive.
+
+**Crate layout (every entry is a new workspace member):**
+
+```
+crates/
+├── gauss-provider-anthropic     # Anthropic Messages over reqwest
+├── gauss-provider-openai        # OpenAI Chat Completions over reqwest
+├── gauss-provider-gemini        # Google Gemini native
+├── gauss-provider-llamacpp      # llama.cpp HTTP transport
+├── gauss-channel-telegram       # ApprovalSurface impl over Telegram bot API
+├── gauss-channel-slack          # ApprovalSurface over Slack Web API
+├── gauss-channel-discord        # ApprovalSurface over Discord
+├── gauss-channel-matrix         # ApprovalSurface over Matrix client-server
+├── gauss-attest-sevsnp          # AMD SEV-SNP hardware attestation
+├── gauss-attest-tdx             # Intel TDX hardware attestation
+├── gauss-attest-armcca          # ARM CCA hardware attestation
+├── gauss-zk-groth16             # Groth16 SNARK prover behind the Statement trait
+├── gauss-zk-halo2               # Halo2 prover (alternative backend)
+├── gauss-tsa-rfc3161            # Real RFC 3161 HTTP TSA client
+├── gauss-tsa-opentimestamps     # OpenTimestamps Bitcoin-calendar client
+├── gauss-memory-tikv            # SurrealDB kv-tikv cluster backend
+├── gauss-server-axum            # axum HTTP server wrapping gauss-gateway wire types
+├── gauss-embed-st               # sentence-transformers / MiniLM embedding
+└── gauss-attest-real            # OS-keyring + cloud-KMS SigningBackend
+```
+
+**Deliverables (in priority order):**
+
+1. **Hardware attestation plugins** (Phase 10 §10 follow-on).
+   Each of `gauss-attest-{sevsnp, tdx, armcca}` wraps the existing
+   canonical pre-image + Ed25519 signing of `gauss-attest`'s
+   `Attestor` trait; the difference is the source of the
+   measurement (a real `/dev/sev`, `/dev/tdx_guest`, or CCA
+   driver vs. the `SoftwareSimAttestor`'s `OsRng`). Each plugin
+   crate is feature-gated by `gauss-availability` so it only
+   compiles where the kernel module + attestation service exist.
+2. **Provider plugin adapters** (Phase 8 §1 follow-on). One
+   crate per vendor; each implements `gauss_traits::Provider`
+   against the polyhedral probe set. The Phase-8 conformance
+   gate (`verify_provider_equivalence`) is the per-crate CI
+   check.
+3. **Channel plugin adapters** (Phase 7 §1 follow-on). One crate
+   per messaging surface, each implementing the Phase-7
+   `ApprovalSurface` trait. The CHANNEL adapters at the
+   GaussClaw layer are different (they're inbound ingress; these
+   are outbound approval surfaces); both layers ship.
+4. **`gauss-server-axum`** (Phase 9 §1 follow-on). The Phase 9
+   ship was wire types; this crate wraps them in an axum
+   server with `POST /v1/turn`, `GET /v1/health`, OpenAI-
+   compatible `POST /v1/chat/completions`, and an SSE
+   `StreamEvent` path. Embeddable in any binary that already
+   uses `axum`.
+5. **`gauss-memory-tikv`** (Phase 10 §X follow-on). SurrealDB
+   `kv-tikv` cluster backend. The existing `MemoryBackend` trait
+   is sufficient; the crate is just the SurrealDB connection
+   + cluster lifecycle. Conformance: the Phase-1 `SurrealMemory`
+   round-trip tests run against a TiKV-backed instance.
+6. **`gauss-tsa-rfc3161` + `gauss-tsa-opentimestamps`** (Phase 5
+   §4 follow-on). Replace the deterministic `SimulatorTsaClient`
+   with real upstream anchoring. The `TsaClient` trait stays
+   identical; the wire formats are already canonical.
+7. **Production ZK provers** (Phase 11 v2 follow-on).
+   `gauss-zk-groth16` and `gauss-zk-halo2` implement the
+   `Prover` trait surface from Phase 11. The verifier signature
+   stays identical; only the witness shape changes (from
+   cleartext to a succinct proof).
+8. **Real embedding model wiring** (Phase 6 follow-on).
+   `gauss-embed-st` wraps sentence-transformers / MiniLM
+   (CPU-only via `candle` or `tract` to preserve the
+   "no Python" invariant) and feeds the existing HNSW path.
+9. **OS-keyring + cloud-KMS signing backends** (Phase 5 §
+   follow-on). `SigningBackend` impls over macOS Keychain /
+   Linux Secret Service / Windows DPAPI / AWS KMS / GCP KMS /
+   Azure Key Vault. Production deployments stop using the
+   `Ed25519Signer` directly and route through a managed key
+   instead.
+10. **Coq mirror of the Lean proof skeleton.** Each Lean axiom
+    + theorem stub gets a Coq companion; the cross-check is
+    run in CI. Discharges the v2 "mechanised proofs" line.
+11. **External pen-test report.** Engage an external firm
+    (planned with the Tier-0 review track). The deliverable is
+    a public PDF + a tracked-issue burndown.
+
+**Exit gate:**
+
+- Every Phase 12 plugin crate ships with ≥ 5 tests + a
+  conformance gate (the polyhedral verifier for providers; the
+  ApprovalSurface contract for channels; the existing canonical
+  wire-format tests for TSA / attestation / ZK).
+- The 1.0 trait surface stays untouched — Phase 12 is additive,
+  never breaking. ADR-0014 enforces this.
+- The deployed-in-production matrix (provider × channel × attest
+  × TSA × cluster backend) has at least one working entry on each
+  axis.
 
 ---
 

@@ -198,10 +198,24 @@ suite — 299 tests, ~3 seconds — re-run on every PR.
 
 GaussClaw is the agent. **Gauss-Aether** is the engine.
 
-The repository ships both: 19 `gaussclaw-*` crates (the agent surfaces,
-channels, tools, providers, exporters) on top of 22 `gauss-*` crates
-(the kernel, the turn engine, the memory store, the audit chain, the
-sandbox, the verifier).
+The repository ships both: **26 `gaussclaw-*` crates** (the agent
+surfaces, channels, tools, providers, exporters; ~46.6K LOC,
+**883 tests**) on top of **28 `gauss-*` crates** (the kernel, the
+turn engine, the memory store, the audit chain, the sandbox, the
+verifier; **Gauss-Aether 1.0** at ~21K LOC with **299 tests**
+plus the v2 horizon scaffolds).
+
+Status is tracked in three roadmaps:
+
+- [`/ROADMAP.md`](ROADMAP.md) — the capability matrix and the
+  Sprint 4 → Sprint 17 plan that takes the agent through to
+  production GA.
+- [`gauss-aether/ROADMAP.md`](gauss-aether/ROADMAP.md) — the
+  axiom-driven engine phases (0 → 11 done; Phase 12 production
+  plugins in flight).
+- [`gaussclaw/ROADMAP.md`](gaussclaw/ROADMAP.md) — the
+  Hermes-to-Rust porting phases (M1 → M5 done; M6 production
+  wiring + GA in flight).
 
 If you want to know the agent's user-facing capabilities:
 **[`gaussclaw/README.md`](gaussclaw/README.md)**.

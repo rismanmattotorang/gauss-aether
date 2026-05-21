@@ -38,8 +38,10 @@ if you want to build something else.
 
 ## What's in the workspace
 
-Twenty-two single-responsibility crates under [`crates/`](./crates/),
-organised in seven layers:
+**Twenty-eight** single-responsibility crates under
+[`crates/`](./crates/), organised in seven layers (22 core
+production + 6 extended-implementation crates added across
+Sprints 5 → 10 of the reference agent):
 
 ```text
 ┌────────────────────────────────────────────────────────────────────┐

@@ -1,12 +1,12 @@
 # Strategic Plan — GaussClaw vs. Hermes
 
-> *Last updated: 2026-05*
+> *Last updated: 2026-05-21*
 >
 > 🧭 **Forward-looking work** lives in [`ROADMAP.md`](./ROADMAP.md) —
-> the capability matrix, Hermes parity gap analysis, and the Sprint 4
-> → Sprint 8 plan derived from a deep audit of both codebases. This
-> file is the historical log of Sprints 0 → 3 plus the
-> signed-installer follow-on; append, do not rewrite.
+> the capability matrix, Hermes parity gap analysis, and the
+> Sprint 4 → Sprint 17 plan derived from a deep audit of both
+> codebases. This file is the historical log of Sprints 0 → 13;
+> append, do not rewrite. See §8 below for Sprints 4 → 13.
 
 This document captures GaussClaw's competitive strategy against the
 upstream [Hermes agent](https://github.com/NousResearch/hermes-agent).
@@ -308,3 +308,141 @@ visible target.
 
 The credibility of GaussClaw's safety story rests on every claim being
 provable. We hold the product surface to the same standard.
+
+---
+
+## 8. Historical log — Sprints 4 → 13 (2026-05)
+
+This section appends to the Sprint 0–3 audit above. It records what
+actually landed on `main` between Sprint 4 (the agent-loop sprint)
+and Sprint 13 (the vendor-codec wiring sprint). Going forward,
+look to `/ROADMAP.md` Sprint 14 → 17 for the production-GA plan.
+
+### Sprint 4 — the loop
+
+- `gaussclaw-agent::agent_loop` driver, `LoopEvent` enum, `LoopSink`
+  trait, inline tool-call parsing for providers that don't emit
+  structured tool-calls.
+- `FallbackChain` wiring; `MEMORY_READ` + `APPROVAL_ASK` caps.
+- `ClarifyTool`, `SessionSearchTool`.
+- Token-streaming + cancel hookups deferred to Sprint 9/10.
+
+### Sprint 5 — operational subsystems
+
+- `gauss-cron` 60s-tick scheduler; cron CLI + dashboard view.
+- `gauss-curator` cross-session memory + background skill
+  consolidation.
+- `gauss-checkpoint` snapshot/rollback.
+- 5 new TUI overlays (model / session / agents / skills / todo).
+- `LogsPage` + `ProfilesPage` + `AnalyticsPage` in the dashboard.
+
+### Sprint 6 — execution backends + sandbox depth
+
+- `gauss-exec` with `LocalExecutor`, `DockerExecutor`,
+  `SshExecutor`, `ModalExecutor` — each cap-gated.
+- `DelegateTool`, `MixtureOfAgentsTool` (one-shot subagent
+  dispatch).
+- `CodeExecutionTool` on `WasmSandbox`, `tirith_security` scanner,
+  `osv_check` vulnerability scanner.
+- `gauss-worktree` per-session git worktrees.
+
+### Sprint 7 — catalogue parity + plugin loader
+
+- `gaussclaw-plugins` typed plugin loader (5 kinds, cap-declared
+  manifests, BLAKE3 provenance).
+- 5 new tools: `memory_read/write`, `todo`, `markdown_render`,
+  `path_security`.
+- 5 new channels: WhatsApp, Signal, Matrix, Mattermost, SMS
+  (Twilio).
+- `gaussclaw proxy` OAuth → OpenAI-compat proxy.
+- Skill installer; `gaussclaw-redact` sensitive-data redaction.
+
+### Sprint 8 — extend the lead
+
+- `gauss-poly` per-PR CI gate (`.github/workflows/poly-gate.yml`).
+- `docs/UPDATE_INTEGRITY.md` public spec.
+- `gauss-zk` Merkle prover (succinct inclusion proofs).
+- Hardware attestation backends (`HardwareLeaf` + mock SEV-SNP /
+  TDX / SGX / ARM CCA).
+- Replay-corpus diff visualiser.
+- `gaussclaw-acp` ACP editor protocol server.
+- `gaussclaw-lsp-client` LSP client.
+- `gaussclaw-kanban` opt-in CRUD task board.
+- `docs/BUG_BOUNTY.md` public programme launch.
+
+### Sprint 9 — production hardening + deferred follow-ons
+
+- `ProviderHandle::complete_streaming` + `LoopTokenBridge` (Sprint 4
+  §2 follow-on).
+- `CancelHandle` for mid-turn cancel (Sprint 4 §4 follow-on).
+- `WebFetchTool`, `WebSearchTool` (`SearchProvider` trait), `Send-
+  MessageTool` (`MessageSink` trait), `McpInvokeTool` +
+  `McpServerRegistry`, `TerminalTool` (`PtyBackend`), `PdfExtract-
+  Tool`.
+- `gauss-poly` canonical baseline (`src/snapshots/canonical.json`).
+- `FileBackedJobStore` for cron persistence across restarts.
+- `ModalHttpClient` trait + types + mock; real `reqwest` adapter
+  deferred to Sprint 10.
+
+### Sprint 10 — production wiring (partial)
+
+- §1 ✅ `gaussclaw-http` real `reqwest`-backed `HttpClient`.
+- §5 ✅ `ChannelMessageSink` bridging `SendMessageTool` through
+  `gaussclaw-channels::ChannelRegistry`.
+- §7 ✅ TUI Ctrl+C / Esc cancel-in-flight hookup.
+- §8 ✅ Dashboard WS-close flips `CancelHandle` mid-turn.
+- §9 ✅ `StdioMcpClient` (production MCP transport over
+  child-process stdio).
+- §10 ✅ `TrinityCronJobStore` (chain-protected cron persistence).
+- §2 (gaussclaw-pty), §3 (gaussclaw-modal-http), §4 (vendor search
+  providers), §6 (native streaming overrides) deferred to
+  Sprint 14 — credential-dependent and re-absorbed into the
+  production-GA wave.
+
+### Sprint 11 — OpenHarness-inspired enhancements
+
+- `gauss-hooks` typed PreToolUse / PostToolUse bus + audit trail.
+- `MarkdownSkill` (Anthropic SKILL.md), `MemoryFile`
+  (MEMORY.md), `PromptEnricher` composition, `ContextFileFinder`
+  (CLAUDE.md ancestor walk).
+- `Compactor` + `WindowedCompactor` Auto-Compaction with audit
+  witness.
+- `gaussclaw_cli::slash` data-driven slash registry +
+  Levenshtein-distance-2 "did you mean?".
+- `McpBridge` + `mcp_http` (HTTP MCP transport).
+
+### Sprint 12 — integration sprint
+
+- `gaussclaw-bin::run_web` end-to-end agent loop wiring; dashboard
+  `chat_socket` forwards `LoopEvent` over WebSocket.
+- `DefaultHookFactory` + `ChainedHookFactory` ship built-in hook
+  ids resolved at plugin registration.
+- `gauss-curator` cross-session + review loops wired into the bin.
+- `docs/OPENHARNESS_PARITY.md` authoritative subsystem map.
+- `/api/status` reports `agent_attached: true` smoke gate.
+
+### Sprint 13 — vendor codec wiring
+
+- `gaussclaw_providers::pick_provider(cfg, api_key)` config-driven
+  codec selection (`anthropic` / `openai` / `echo`).
+- `UnconfiguredBackend` fail-loud fallback — every send returns a
+  clean `HttpError::Network("…not configured…")` until a real
+  backend lands; the dashboard surfaces that as an error frame
+  so the gap is visible immediately.
+- 6 e2e tests in `gaussclaw_providers::e2e_anthropic` exercising
+  `AnthropicProvider → MockHttpBackend → TurnPolicy →
+  AgentLoop::run` against canned responses + audit-chain
+  integration.
+
+### Where we are after Sprint 13
+
+The agent runs end-to-end through `gaussclaw serve` against
+`MockHttpBackend` and produces signed receipts the public verifier
+accepts. The remaining gap to production is wiring a real
+`HttpBackend` into the providers (Sprint 14 §1), proving it under
+load (Sprint 14 §2), and finishing the multi-agent + observability
++ release-engineering work (Sprints 15 → 17).
+
+Workspace state: **26 `gaussclaw-*` crates**, **~46.6K LOC**,
+**883 tests** green. **Zero** `unimplemented!()` / `todo!()`
+markers anywhere in the tree.
