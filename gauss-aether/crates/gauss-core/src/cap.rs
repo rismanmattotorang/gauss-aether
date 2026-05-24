@@ -92,6 +92,18 @@ impl CapToken {
     /// `.git/worktrees` and a branch ref) the operator may want to
     /// grant independently of generic write access.
     pub const WORKTREE_WRITE: Self = Self(1 << 19);
+    /// Register an SOP (Standard Operating Procedure) with the engine
+    /// (Sprint 14 §1). The cap admits the *act of definition*; the
+    /// workflow's own caps are still re-checked at dispatch time, so
+    /// a sub-agent that defines an SOP cannot grant it privileges
+    /// the sub-agent didn't itself hold.
+    pub const SOP_DEFINE: Self = Self(1 << 20);
+    /// Fire a registered SOP — either via an incoming `TriggerEvent`
+    /// or via an operator-initiated `gaussclaw sop run` (Sprint 14
+    /// §1). Distinct from [`Self::SOP_DEFINE`] so an operator can
+    /// install an SOP catalogue under a tight grant and then run it
+    /// from a separate, narrower trigger surface.
+    pub const SOP_TRIGGER: Self = Self(1 << 21);
 
     /// Construct from a raw bitmask.
     #[inline]

@@ -2832,6 +2832,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gauss-sop"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "gauss-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "gauss-traits"
 version = "0.0.1"
 dependencies = [
