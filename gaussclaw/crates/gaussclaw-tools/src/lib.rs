@@ -156,8 +156,20 @@ pub use uuid::UuidTool;
 use std::sync::Arc;
 
 /// Build a registry with the default reference tool catalogue.
+///
+/// The HTTP family is wired to [`UnconfiguredHttpClient`]; deployments
+/// that want live HTTP should call [`registry_with_http_client`] (or
+/// register the HTTP tools manually with their own client) instead.
 #[must_use]
 pub fn default_registry() -> ToolRegistry {
+    registry_with_http_client(Arc::new(UnconfiguredHttpClient))
+}
+
+/// Build a registry with every default tool plus the HTTP family
+/// wired to `http_client`. The caller owns the lifetime of the client
+/// (typically `Arc<gaussclaw_http::ReqwestHttpClient>`).
+#[must_use]
+pub fn registry_with_http_client(http_client: Arc<dyn HttpClient>) -> ToolRegistry {
     let mut reg = ToolRegistry::new();
     reg.register(Arc::new(EchoTool::new()));
     reg.register(Arc::new(JsonGetTool::new()));
@@ -173,21 +185,10 @@ pub fn default_registry() -> ToolRegistry {
     reg.register(Arc::new(DatetimeTool::new()));
     reg.register(Arc::new(UuidTool::new()));
     reg.register(Arc::new(CsvParseTool::new()));
-    // EnvGetTool ships with an empty allowlist by default; operators
-    // populate it explicitly via [`EnvGetTool::with_allowlist`] when
-    // composing their own registry.
     reg.register(Arc::new(EnvGetTool::new()));
-    // The HTTP family ships with an `UnconfiguredHttpClient` so the
-    // registry is uniform. Production deployments inject a real client
-    // (e.g. `reqwest`-backed) via `HttpTool::get(client.clone())`.
-    let unconfigured = Arc::new(UnconfiguredHttpClient);
-    reg.register(Arc::new(HttpTool::get(unconfigured.clone())));
-    reg.register(Arc::new(HttpTool::post(unconfigured.clone())));
-    reg.register(Arc::new(HttpTool::head(unconfigured)));
-    // ClarifyTool ships in the default registry — every agent loop
-    // should be able to pause and ask. SessionSearchTool requires a
-    // SessionStore, so callers register it explicitly via
-    // `reg.register(Arc::new(SessionSearchTool::new(store)))`.
+    reg.register(Arc::new(HttpTool::get(http_client.clone())));
+    reg.register(Arc::new(HttpTool::post(http_client.clone())));
+    reg.register(Arc::new(HttpTool::head(http_client)));
     reg.register(Arc::new(ClarifyTool::new()));
     reg
 }

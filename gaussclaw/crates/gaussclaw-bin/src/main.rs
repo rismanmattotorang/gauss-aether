@@ -132,9 +132,42 @@ fn run_web(
         // assistant completion into the persistent chain. Without this
         // the `/api/sessions` endpoint is cosmetic and conversation
         // history is lost on restart.
+        //
+        // Sprint 2 §1: attach the default tool registry so the agent
+        // loop's tool dispatch path can actually invoke a tool when
+        // the model emits a tool call. Without this the loop logs the
+        // tool call and replies with "tools not configured" — the same
+        // shape of stub the dashboard was emitting before.
+        //
+        // Sprint 2 §2: wire the HTTP family to the production
+        // reqwest-backed client when it builds (rustls + redirect cap
+        // + body cap + identifying UA). When client construction fails
+        // we fall back to UnconfiguredHttpClient so http_* tools
+        // surface a clean "not configured" error rather than crashing
+        // the bin.
+        let http_client: std::sync::Arc<dyn gaussclaw_tools::HttpClient> =
+            match gaussclaw_http::ReqwestHttpClient::new() {
+                Ok(c) => {
+                    tracing::info!(
+                        target: "gaussclaw_bin::serve",
+                        "http_* tools wired to reqwest backend"
+                    );
+                    std::sync::Arc::new(c)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "gaussclaw_bin::serve",
+                        "reqwest HTTP client unavailable: {e}; http_* tools will error at invoke"
+                    );
+                    std::sync::Arc::new(gaussclaw_tools::UnconfiguredHttpClient)
+                }
+            };
+        let tools =
+            std::sync::Arc::new(gaussclaw_tools::registry_with_http_client(http_client));
         let policy = gaussclaw_agent::TurnPolicy::new(kernel.clone(), provider)
             .with_audit(audit.clone())
-            .with_store(store.clone());
+            .with_store(store.clone())
+            .with_tools(tools);
         let compactor: std::sync::Arc<dyn gaussclaw_agent::Compactor> =
             std::sync::Arc::new(gaussclaw_agent::WindowedCompactor::defaults());
         let agent = std::sync::Arc::new(
@@ -185,11 +218,9 @@ fn dispatch(
         Command::Tools(sub) => match sub {
             ToolsCmd::List => run_tools_list(),
             ToolsCmd::Show { tool } => run_tools_show(&tool),
-            ToolsCmd::Enable { .. } => {
-                stub("tools enable", 3, "gaussclaw-skill + gaussclaw-config")
-            }
-            ToolsCmd::Disable { .. } => {
-                stub("tools disable", 3, "gaussclaw-skill + gaussclaw-config")
+            ToolsCmd::Enable { tool } => run_tools_toggle(&tool, true, cfg_source.as_deref(), &cfg),
+            ToolsCmd::Disable { tool } => {
+                run_tools_toggle(&tool, false, cfg_source.as_deref(), &cfg)
             }
         },
         Command::Config(sub) => match sub {
@@ -205,7 +236,7 @@ fn dispatch(
             GatewayCmd::Stop => stub("gateway stop", 1, "gaussclaw-channels"),
             GatewayCmd::Status => run_gateway_status(&cfg),
         },
-        Command::Setup(_) => stub("setup", 1, "gaussclaw-config + gaussclaw-migrate"),
+        Command::Setup(args) => run_setup(args, cfg_source.as_deref()),
         Command::Update(_) => stub("update", 5, "gaussclaw-desktop updater + gauss-attest"),
         Command::Doctor(args) => run_doctor(args),
         Command::Import(args) => run_import(args),
@@ -467,6 +498,39 @@ fn run_tools_show(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn run_tools_toggle(
+    name: &str,
+    enabled: bool,
+    cfg_path: Option<&std::path::Path>,
+    cfg: &gaussclaw_config::Config,
+) -> anyhow::Result<()> {
+    // Sprint 2 §3: real implementation of `tools enable/disable` —
+    // mutates `[tools.<name>] enabled = …` in gaussclaw.toml so the
+    // setting persists across runs. Refuses to toggle an unknown
+    // tool so a typo doesn't silently write dead config.
+    let reg = gaussclaw_tools::default_registry();
+    if reg.get(name).is_none() {
+        let known: Vec<&str> = reg.ids();
+        return Err(anyhow::anyhow!(
+            "unknown tool: {name}\n  known tools: {}",
+            known.join(", ")
+        ));
+    }
+    let path = cfg_path.ok_or_else(|| {
+        anyhow::anyhow!(
+            "no config file loaded — run `gaussclaw config path` to see search paths, \
+             or create one with `gaussclaw setup`"
+        )
+    })?;
+    let mut new_cfg = cfg.clone();
+    let entry = new_cfg.tools.entry(name.to_string()).or_default();
+    entry.enabled = enabled;
+    gaussclaw_config::save(&new_cfg, path)?;
+    let verb = if enabled { "enabled" } else { "disabled" };
+    println!("{verb} tool `{name}` (persisted to {})", path.display());
+    Ok(())
+}
+
 // ─── config ────────────────────────────────────────────────────────────────
 
 fn run_config_list(cfg: &gaussclaw_config::Config) -> anyhow::Result<()> {
@@ -547,6 +611,57 @@ fn run_config_path(cfg_path: Option<&std::path::Path>) -> anyhow::Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+// ─── setup ─────────────────────────────────────────────────────────────────
+
+fn run_setup(
+    args: gaussclaw_cli::SetupArgs,
+    cfg_path: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    // Sprint 2 §4: minimum-viable setup. Either writes a default
+    // `gaussclaw.toml` to the first user search-path candidate (if
+    // none exists) or reports the active config path (if one is
+    // already loaded). Interactive provider/model picking lives in a
+    // follow-up; the goal here is to stop announcing a future phase.
+    if let Some(p) = cfg_path {
+        println!("gaussclaw.toml already loaded from: {}", p.display());
+        println!("(edit it with your $EDITOR, or use `gaussclaw config set …`)");
+        return Ok(());
+    }
+    let search = gaussclaw_config::search_path();
+    let target = search
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("no candidate config path on this platform"))?;
+    if target.exists() && !args.non_interactive {
+        // Defensive: don't clobber a file the loader rejected for
+        // some other reason (parse error, permissions). Tell the
+        // user what to do.
+        return Err(anyhow::anyhow!(
+            "candidate config exists but isn't loadable: {}\n  inspect the file or move it aside, \
+             then re-run `gaussclaw setup`",
+            target.display()
+        ));
+    }
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut cfg = gaussclaw_config::Config::default();
+    // Sensible defaults: the EchoProvider works without an API key,
+    // so first-run users get a binary that round-trips before they
+    // pick a vendor.
+    cfg.provider.name = "echo".into();
+    cfg.provider.model = "echo".into();
+    gaussclaw_config::save(&cfg, &target)?;
+    println!("wrote starter config to: {}", target.display());
+    println!();
+    println!("next:");
+    println!("  gaussclaw config set provider.name anthropic");
+    println!("  gaussclaw config set provider.model claude-3.5-sonnet");
+    println!("  export ANTHROPIC_API_KEY=…");
+    println!("  gaussclaw chat -m \"hello\"");
     Ok(())
 }
 

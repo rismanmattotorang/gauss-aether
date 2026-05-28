@@ -417,13 +417,27 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Phase-2 placeholder for external-effect commit. Replaced by the composite
-/// sandbox executor in Phase 3 and by HWCA worker spawn in Phase 4.
+/// External-effect commit hook.
+///
+/// `TurnEngine` is the SPECS-grade academic engine that drives the
+/// `gauss-conformance` proof harness (Axioms A1–A9, Theorems T1–T12);
+/// the production user path lives in `gaussclaw-agent::AgentLoop`,
+/// which carries its own `dispatch_tool` route through
+/// `gauss_hwca::WorkerSpawner` (sandboxed, schema-gated, taint-joined).
+///
+/// Embedders that want the engine itself to drive tools at the
+/// turn-commit moment should call `TurnEngine::with_executor` (Phase 4
+/// follow-on) and wire the same HWCA spawner. This local hook only
+/// observes the commit for audit/log purposes — it must not mutate
+/// state, because the chain digest at this point is already final.
 fn apply_actions_locally(actions: &[Action]) {
     for a in actions {
         match a {
             Action::Text(t) => tracing::debug!(text.len = t.body.len(), "text emit"),
-            Action::Tool(t) => tracing::debug!(tool = %t.tool.0, "tool invocation (stub)"),
+            Action::Tool(t) => tracing::debug!(
+                tool = %t.tool.0,
+                "engine observed tool action; dispatch happens in AgentLoop or via an embedder-supplied executor"
+            ),
             _ => tracing::warn!("unknown Action variant skipped at apply"),
         }
     }

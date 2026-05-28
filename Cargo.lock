@@ -2945,6 +2945,7 @@ dependencies = [
  "gaussclaw-cli",
  "gaussclaw-config",
  "gaussclaw-export",
+ "gaussclaw-http",
  "gaussclaw-migrate",
  "gaussclaw-plugins",
  "gaussclaw-providers",

@@ -2824,4 +2824,69 @@ taint = "trusted"
         let state = ServerState::new(Config::default(), None);
         assert!(state.agent().is_none());
     }
+
+    // ─── Sprint "Wire the Loop" §3 — dashboard catalogue endpoints ─────
+
+    #[tokio::test]
+    async fn providers_endpoint_lists_known_vendors_with_active_flag() {
+        let (status, body) = get_json("/api/providers").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["ok"], true);
+        let rows = body["data"].as_array().expect("providers array");
+        assert!(!rows.is_empty(), "expected non-empty provider list");
+        let ids: Vec<&str> = rows.iter().filter_map(|r| r["id"].as_str()).collect();
+        assert!(ids.contains(&"anthropic"));
+        assert!(ids.contains(&"openai"));
+        assert!(ids.contains(&"echo"));
+        let active: Vec<&serde_json::Value> = rows
+            .iter()
+            .filter(|r| r["active"] == serde_json::Value::Bool(true))
+            .collect();
+        // test_state() sets provider.name = "anthropic"
+        assert_eq!(active.len(), 1, "exactly one active provider");
+        assert_eq!(active[0]["id"], "anthropic");
+        assert_eq!(active[0]["model"], "claude-3.5-sonnet");
+    }
+
+    #[tokio::test]
+    async fn tools_endpoint_lists_default_registry_with_caps() {
+        let (status, body) = get_json("/api/tools").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["ok"], true);
+        let rows = body["data"].as_array().expect("tools array");
+        // The default registry ships at least the echo, file_read,
+        // file_write, shell, datetime, http_get tools — assert a few
+        // of those are present so a future stub regression is caught.
+        let ids: Vec<&str> = rows.iter().filter_map(|r| r["id"].as_str()).collect();
+        for expected in ["echo", "file_read", "file_write", "shell", "http_get"] {
+            assert!(
+                ids.contains(&expected),
+                "expected tool {expected} in registry; got {ids:?}"
+            );
+        }
+        // Every row carries the capability + reversibility metadata
+        // the dashboard renders as badges.
+        for row in rows {
+            assert!(row["id"].is_string());
+            assert!(row["cap_required"].is_string());
+            assert!(row["reversible"].is_boolean());
+        }
+    }
+
+    #[tokio::test]
+    async fn config_schema_emits_real_json_schema_not_stub() {
+        let (status, body) = get_json("/api/config/schema").await;
+        assert_eq!(status, StatusCode::OK);
+        let schema = &body["data"];
+        assert_eq!(
+            schema["$schema"], "https://json-schema.org/draft/2020-12/schema",
+            "schema endpoint must emit a real JSON Schema 2020-12 document"
+        );
+        assert!(
+            schema.get("x-stub").is_none(),
+            "x-stub must not appear in the schema once wired"
+        );
+        assert!(schema["properties"]["provider"]["properties"]["name"].is_object());
+        assert!(schema["properties"]["provider"]["properties"]["model"].is_object());
+    }
 }

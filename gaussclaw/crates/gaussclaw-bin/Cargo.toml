@@ -32,6 +32,7 @@ gaussclaw-export   = { workspace = true }
 gaussclaw-agent    = { workspace = true }
 gaussclaw-providers = { workspace = true }
 gaussclaw-tools    = { workspace = true }
+gaussclaw-http     = { workspace = true }
 gauss-core         = { workspace = true }
 gauss-cron         = { workspace = true }
 gauss-checkpoint   = { workspace = true }
