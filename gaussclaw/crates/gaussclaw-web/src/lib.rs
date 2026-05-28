@@ -329,6 +329,15 @@ pub struct ServerState {
     /// `/api/metrics` (Prometheus text format). Atomic so handler
     /// updates don't need to lock.
     metrics: Arc<Metrics>,
+    /// Sprint 5 — optional [`ChannelGateway`] driving the webhook
+    /// ingress endpoints (`/webhook/slack`, `/webhook/discord`,
+    /// `/webhook/telegram`). When `None`, the endpoints return 503
+    /// so the dashboard still loads against a gateway-less binary.
+    gateway: Option<Arc<gaussclaw_channels::ChannelGateway>>,
+    /// Sprint 5 — per-channel signed-secret handles for HMAC
+    /// verification. Loaded once from `gaussclaw.toml`; the webhook
+    /// handlers look up the right secret by channel id.
+    channel_secrets: Arc<gaussclaw_channels::InMemorySecretStore>,
 }
 
 /// Process-lifetime counters. Surfaced at `/api/metrics` in
@@ -449,6 +458,8 @@ impl ServerState {
             plugin_roots: Vec::new(),
             agent: None,
             metrics: Metrics::new(),
+            gateway: None,
+            channel_secrets: Arc::new(gaussclaw_channels::InMemorySecretStore::default()),
         }
     }
 
@@ -475,6 +486,32 @@ impl ServerState {
     #[must_use]
     pub fn metrics(&self) -> &Arc<Metrics> {
         &self.metrics
+    }
+
+    /// Attach a Sprint-5 channel gateway. With one attached, the
+    /// webhook ingress routes (`/webhook/{slack,discord,telegram}`)
+    /// HMAC-verify the inbound, dispatch through the agent, and
+    /// POST the reply back through the registered outbox transport.
+    #[must_use]
+    pub fn with_gateway(
+        mut self,
+        gateway: Arc<gaussclaw_channels::ChannelGateway>,
+    ) -> Self {
+        self.gateway = Some(gateway);
+        self
+    }
+
+    /// Register a channel secret (e.g. Slack signing secret) by
+    /// handle. The bin loads these from `gaussclaw.toml`'s
+    /// `[channels.<name>].secret_env` env vars at startup.
+    pub fn insert_channel_secret(&self, handle: impl Into<String>, value: impl Into<Vec<u8>>) {
+        self.channel_secrets.insert(handle, value);
+    }
+
+    /// Borrow the channel gateway, if any.
+    #[must_use]
+    pub fn gateway(&self) -> Option<Arc<gaussclaw_channels::ChannelGateway>> {
+        self.gateway.clone()
     }
 
     /// Push a structured log entry into the in-memory ring buffer.
@@ -671,6 +708,124 @@ async fn handle_sessions(State(state): State<ServerState>) -> Json<Ok<Vec<Sessio
         vec![]
     };
     Json(Ok::new(rows))
+}
+
+// ─── Sprint 5 — channel webhook ingress ────────────────────────────────────
+
+/// Slack `v0=` signed webhook. Headers: `X-Slack-Request-Timestamp`
+/// + `X-Slack-Signature`. Signing secret pulled from the in-memory
+/// secret store under the `SLACK_SIGNING_SECRET` handle.
+#[axum::debug_handler]
+async fn handle_webhook_slack(
+    State(state): State<ServerState>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let Some(gateway) = state.gateway.clone() else {
+        return gateway_unavailable();
+    };
+    let ts = header_str(&headers, "x-slack-request-timestamp");
+    let sig = header_str(&headers, "x-slack-signature");
+    let ch = gaussclaw_channels::SlackChannel::new(
+        state.channel_secrets.clone(),
+        state.kernel.clone(),
+        "SLACK_SIGNING_SECRET",
+    );
+    let inbound = match ch.handle_webhook(ts, sig, &body, "@slack-webhook").await {
+        Ok(m) => m,
+        Err(e) => return bad_signature(e),
+    };
+    audit_and_dispatch(&state, "slack", &body, inbound, gateway).await
+}
+
+/// Generic webhook fallback for channel kinds we haven't wired a
+/// vendor-specific verifier for yet. Looks up the channel in the
+/// (empty in the default build) registry; surfaces 404 otherwise.
+#[axum::debug_handler]
+async fn handle_webhook_unknown(
+    Path(channel): Path<String>,
+    State(_state): State<ServerState>,
+) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(Err::new(
+            "unknown_channel",
+            format!("no webhook handler registered for `{channel}`"),
+        )),
+    )
+        .into_response()
+}
+
+fn gateway_unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(Err::new(
+            "unavailable",
+            "no channel gateway attached on this binary",
+        )),
+    )
+        .into_response()
+}
+
+fn bad_signature(e: gaussclaw_channels::ChannelError) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(Err::new("bad_signature", format!("{e}"))),
+    )
+        .into_response()
+}
+
+fn header_str<'a>(headers: &'a axum::http::HeaderMap, name: &str) -> &'a str {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+}
+
+async fn audit_and_dispatch(
+    state: &ServerState,
+    channel_id: &str,
+    body: &[u8],
+    inbound: gaussclaw_channels::ChannelMessage,
+    gateway: Arc<gaussclaw_channels::ChannelGateway>,
+) -> Response {
+    let plane = state.kernel.plane_for(SurfaceRequest::Channel);
+    state
+        .audit
+        .record_inbound(channel_id, &inbound.sender, body, inbound.taint, plane)
+        .await;
+    match gateway.dispatch_inbound(&inbound).await {
+        Ok(reply) => Json(serde_json::json!({
+            "ok": true,
+            "data": { "delivered": true, "reply_chars": reply.chars().count() },
+        }))
+        .into_response(),
+        Err(gaussclaw_channels::GatewayError::UnknownChannel(c)) => (
+            StatusCode::NOT_FOUND,
+            Json(Err::new(
+                "unknown_channel",
+                format!("no outbox transport registered for `{c}`"),
+            )),
+        )
+            .into_response(),
+        Err(gaussclaw_channels::GatewayError::Agent(s)) => (
+            StatusCode::FORBIDDEN,
+            Json(Err::new("agent_denied", s)),
+        )
+            .into_response(),
+        Err(gaussclaw_channels::GatewayError::Delivery(s)) => (
+            StatusCode::BAD_GATEWAY,
+            Json(Err::new("delivery_failed", s)),
+        )
+            .into_response(),
+        // GatewayError is #[non_exhaustive] — surface any future
+        // variant as a generic 500 so the contract stays explicit.
+        Err(other) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(Err::new("gateway_error", format!("{other}"))),
+        )
+            .into_response(),
+    }
 }
 
 /// Sprint 4 §1 — Prometheus-format `/api/metrics` endpoint. Plain
@@ -1867,6 +2022,17 @@ pub fn router(state: ServerState) -> Router {
         // endpoint counting requests, WS connections, turns, tool
         // calls. The body is plain text per Prometheus text-exposition.
         .route("/api/metrics", get(handle_metrics))
+        // Sprint 5 — channel webhook ingress. Each route reads the
+        // vendor's signed-webhook headers, verifies HMAC via the
+        // matching channel adapter, audits the inbound, then
+        // dispatches through ChannelGateway → AgentLoop → outbox
+        // transport. 503 when no gateway is attached; 403 on
+        // signature failure; 502 on delivery failure.
+        .route("/webhook/slack", axum::routing::post(handle_webhook_slack))
+        .route(
+            "/webhook/{channel}",
+            axum::routing::post(handle_webhook_unknown),
+        )
         .route("/api/chat/ws", get(handle_chat_ws))
         // Frontend
         .route("/", get(handle_root))
@@ -3154,6 +3320,167 @@ taint = "trusted"
         assert!(
             after >= before + 3,
             "http_requests_total must advance by at least 3 (before={before}, after={after})"
+        );
+    }
+
+    // ─── Sprint 5 — channel webhook ingress ──────────────────────────────
+
+    #[tokio::test]
+    async fn slack_webhook_returns_503_without_gateway() {
+        let resp = router(test_state())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhook/slack")
+                    .header("x-slack-request-timestamp", "0")
+                    .header("x-slack-signature", "v0=deadbeef")
+                    .body(Body::from(""))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn unknown_channel_webhook_returns_404() {
+        let resp = router(test_state())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhook/whatsapp")
+                    .body(Body::from(""))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn slack_webhook_rejects_bad_signature_with_gateway_attached() {
+        use gaussclaw_agent::{AgentLoop, EchoProvider, KernelHandle, TurnPolicy};
+        use gaussclaw_channels::{ChannelGateway, OutboxTransport};
+        // No outbox needed — request should reject at HMAC verify.
+        struct NoopOutbox;
+        #[async_trait::async_trait]
+        impl OutboxTransport for NoopOutbox {
+            fn channel_id(&self) -> &str {
+                "slack"
+            }
+            async fn deliver(
+                &self,
+                _msg: &gaussclaw_channels::OutboundMessage,
+            ) -> gaussclaw_channels::ChannelResult<()> {
+                Ok(())
+            }
+        }
+        let provider = std::sync::Arc::new(EchoProvider::default());
+        let policy = TurnPolicy::new(KernelHandle::permissive(), provider);
+        let agent = std::sync::Arc::new(AgentLoop::new(policy));
+        let gateway = std::sync::Arc::new(
+            ChannelGateway::new(agent).with_outbox(std::sync::Arc::new(NoopOutbox)),
+        );
+        let state = test_state().with_gateway(gateway);
+        state.insert_channel_secret("SLACK_SIGNING_SECRET", b"shhh".to_vec());
+
+        let resp = router(state)
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhook/slack")
+                    .header("x-slack-request-timestamp", "0")
+                    .header("x-slack-signature", "v0=not-a-real-hex-digest")
+                    .body(Body::from(""))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"]["code"], "bad_signature");
+    }
+
+    #[tokio::test]
+    async fn slack_webhook_dispatches_through_gateway_on_valid_signature() {
+        use gaussclaw_agent::{AgentLoop, EchoProvider, KernelHandle, TurnPolicy};
+        use gaussclaw_channels::{ChannelGateway, OutboxTransport};
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        use std::sync::Mutex;
+
+        struct Capturing {
+            delivered: Mutex<Vec<gaussclaw_channels::OutboundMessage>>,
+        }
+        #[async_trait::async_trait]
+        impl OutboxTransport for Capturing {
+            fn channel_id(&self) -> &str {
+                "slack"
+            }
+            async fn deliver(
+                &self,
+                msg: &gaussclaw_channels::OutboundMessage,
+            ) -> gaussclaw_channels::ChannelResult<()> {
+                self.delivered.lock().unwrap().push(msg.clone());
+                Ok(())
+            }
+        }
+        let outbox = std::sync::Arc::new(Capturing {
+            delivered: Mutex::new(Vec::new()),
+        });
+        let provider = std::sync::Arc::new(EchoProvider::default());
+        let policy = TurnPolicy::new(KernelHandle::permissive(), provider);
+        let agent = std::sync::Arc::new(AgentLoop::new(policy));
+        let gateway = std::sync::Arc::new(
+            ChannelGateway::new(agent).with_outbox(outbox.clone()),
+        );
+        let state = test_state().with_gateway(gateway);
+        state.insert_channel_secret("SLACK_SIGNING_SECRET", b"shhh".to_vec());
+
+        // Build a valid v0 signature with a fresh (in-skew) timestamp.
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .to_string();
+        let body = br#"{"event":"hello"}"#.to_vec();
+        let mut mac = Hmac::<Sha256>::new_from_slice(b"shhh").unwrap();
+        mac.update(b"v0:");
+        mac.update(ts.as_bytes());
+        mac.update(b":");
+        mac.update(&body);
+        let bytes = mac.finalize().into_bytes();
+        let sig = format!(
+            "v0={}",
+            bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        );
+
+        let resp = router(state)
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhook/slack")
+                    .header("x-slack-request-timestamp", &ts)
+                    .header("x-slack-signature", &sig)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Slack adapter taints inbound as Web → permissive kernel
+        // admits → EchoProvider replies → outbox captures one message.
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "expected dispatch to succeed; response: {resp:?}"
+        );
+        let delivered = outbox.delivered.lock().unwrap();
+        assert_eq!(delivered.len(), 1, "exactly one reply should land");
+        assert_eq!(delivered[0].recipient, "@slack-webhook");
+        assert!(
+            !delivered[0].body.is_empty(),
+            "the reply body must not be empty"
         );
     }
 

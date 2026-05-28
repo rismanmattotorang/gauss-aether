@@ -21,6 +21,7 @@ gaussclaw-export = { workspace = true }
 gaussclaw-skill  = { workspace = true }
 gaussclaw-store  = { workspace = true }
 gaussclaw-tools  = { workspace = true }
+gaussclaw-channels = { workspace = true }
 anyhow           = { workspace = true }
 axum             = { workspace = true }
 tokio            = { workspace = true }
@@ -40,3 +41,5 @@ gaussclaw-store = { workspace = true }
 gauss-core      = { workspace = true }
 gauss-hooks     = { workspace = true }
 tempfile        = { workspace = true }
+hmac            = { workspace = true }
+sha2            = { workspace = true }

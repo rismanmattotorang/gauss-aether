@@ -176,13 +176,111 @@ fn run_web(
                 .with_audit(audit.clone()),
         );
 
-        let state = gaussclaw_web::ServerState::new(cfg, source)
+        // Sprint 5: build the optional ChannelGateway. We only attach
+        // one when at least one declared `[channels.<name>]` entry is
+        // both enabled and matches a wired outbox transport
+        // (slack/discord/telegram) with a webhook URL in the
+        // adapter-specific options key.
+        let (gateway, channel_secrets) = build_channel_gateway(&cfg, agent.clone());
+
+        let mut state = gaussclaw_web::ServerState::new(cfg, source)
             .with_store(store)
             .with_cron(cron)
             .with_plugin_roots(gaussclaw_plugins::default_discovery_roots())
             .with_agent(agent);
+        if let Some(g) = gateway {
+            state = state.with_gateway(g);
+            for (handle, secret) in channel_secrets {
+                state.insert_channel_secret(handle, secret);
+            }
+        }
         gaussclaw_web::serve(addr, state).await
     })
+}
+
+/// Build a [`gaussclaw_channels::ChannelGateway`] from the loaded
+/// config. Each `[channels.<name>]` entry is inspected: if its `name`
+/// matches a wired outbox kind (slack / discord / telegram) and the
+/// required options key is present, the transport is registered. The
+/// signing secret is read from the env var named in `secret_env` and
+/// returned alongside the gateway so the bin can stuff it into the
+/// `ServerState`'s in-memory secret store.
+///
+/// Returns `(None, vec![])` when no enabled channel produces a viable
+/// transport — `/webhook/*` endpoints then return 503.
+fn build_channel_gateway(
+    cfg: &gaussclaw_config::Config,
+    agent: std::sync::Arc<gaussclaw_agent::AgentLoop>,
+) -> (
+    Option<std::sync::Arc<gaussclaw_channels::ChannelGateway>>,
+    Vec<(&'static str, Vec<u8>)>,
+) {
+    use gaussclaw_channels::{
+        ChannelGateway, DiscordOutbox, OutboxTransport, SlackOutbox, TelegramOutbox,
+    };
+    let http_client: std::sync::Arc<dyn gaussclaw_tools::HttpClient> =
+        match gaussclaw_http::ReqwestHttpClient::new() {
+            Ok(c) => std::sync::Arc::new(c),
+            Err(_) => std::sync::Arc::new(gaussclaw_tools::UnconfiguredHttpClient),
+        };
+    let mut gateway = ChannelGateway::new(agent).with_system_prelude(
+        "You're replying on a chat channel. Keep replies short, plain-text, and surface-appropriate. Do not run tools that require human review.",
+    );
+    let mut any = false;
+    let mut secrets: Vec<(&'static str, Vec<u8>)> = Vec::new();
+    for (name, ch) in &cfg.channels {
+        if !ch.enabled {
+            continue;
+        }
+        let lower = name.to_ascii_lowercase();
+        match lower.as_str() {
+            "slack" => {
+                if let Some(url) = ch.options.get("webhook_url").and_then(|v| v.as_str()) {
+                    let outbox: std::sync::Arc<dyn OutboxTransport> =
+                        std::sync::Arc::new(SlackOutbox::new(http_client.clone(), url));
+                    gateway = gateway.with_outbox(outbox);
+                    any = true;
+                    if let Some(env) = ch.secret_env.as_deref() {
+                        if let Ok(v) = std::env::var(env) {
+                            secrets.push(("SLACK_SIGNING_SECRET", v.into_bytes()));
+                        }
+                    }
+                }
+            }
+            "discord" => {
+                if let Some(url) = ch.options.get("webhook_url").and_then(|v| v.as_str()) {
+                    let outbox: std::sync::Arc<dyn OutboxTransport> =
+                        std::sync::Arc::new(DiscordOutbox::new(http_client.clone(), url));
+                    gateway = gateway.with_outbox(outbox);
+                    any = true;
+                    if let Some(env) = ch.secret_env.as_deref() {
+                        if let Ok(v) = std::env::var(env) {
+                            secrets.push(("DISCORD_PUBLIC_KEY", v.into_bytes()));
+                        }
+                    }
+                }
+            }
+            "telegram" => {
+                if let Some(token) = ch.options.get("bot_token").and_then(|v| v.as_str()) {
+                    let outbox: std::sync::Arc<dyn OutboxTransport> =
+                        std::sync::Arc::new(TelegramOutbox::new(http_client.clone(), token));
+                    gateway = gateway.with_outbox(outbox);
+                    any = true;
+                    if let Some(env) = ch.secret_env.as_deref() {
+                        if let Ok(v) = std::env::var(env) {
+                            secrets.push(("TELEGRAM_WEBHOOK_SECRET", v.into_bytes()));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if any {
+        (Some(std::sync::Arc::new(gateway)), secrets)
+    } else {
+        (None, vec![])
+    }
 }
 
 fn run_default_tui(cfg: &gaussclaw_config::Config) -> anyhow::Result<()> {

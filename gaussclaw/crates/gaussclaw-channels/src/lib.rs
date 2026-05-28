@@ -60,6 +60,7 @@
 
 pub mod discord;
 pub mod email;
+pub mod gateway;
 pub mod outbox_transport;
 pub mod sink_adapter;
 pub mod slack;
@@ -68,6 +69,7 @@ pub mod telegram;
 
 pub use discord::DiscordChannel;
 pub use email::{EmailChannel, ParsedEmail};
+pub use gateway::{ChannelGateway, GatewayError, GatewayResult};
 pub use outbox_transport::{DiscordOutbox, OutboxTransport, SlackOutbox, TelegramOutbox};
 pub use sink_adapter::ChannelMessageSink;
 pub use slack::SlackChannel;
