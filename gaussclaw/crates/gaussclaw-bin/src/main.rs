@@ -898,12 +898,22 @@ fn run_gateway_status(cfg: &gaussclaw_config::Config) -> anyhow::Result<()> {
             .secret_env
             .as_deref()
             .map_or("(no secret_env)", |s| s);
-        println!("  {name:<16}  {enabled:<8}  secret_env={secret}");
+        // Sprint 4 §1: surface which channels have an outbox transport
+        // implementation wired and ready to deliver. `gateway start` is
+        // still daemon-pending, but operators can see whether their
+        // declared channel id is one we can actually POST to.
+        let transport = match name.as_str() {
+            "slack" => "outbox: SlackOutbox (webhook URL)",
+            "discord" => "outbox: DiscordOutbox (webhook URL)",
+            "telegram" => "outbox: TelegramOutbox (bot token)",
+            _ => "outbox: not yet wired",
+        };
+        println!("  {name:<16}  {enabled:<8}  secret_env={secret:<32}  {transport}");
     }
     println!();
     println!(
-        "note: gateway daemon (`gateway start`) lands in Sprint 4; this status \
-         reflects config only, not a live process."
+        "note: gateway daemon (`gateway start`) lands in a follow-up; this status \
+         reflects config + available outbox transports, not a live process."
     );
     Ok(())
 }

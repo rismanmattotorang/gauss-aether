@@ -153,6 +153,10 @@ pub struct WireLoopSink {
     /// `true` even before the next outbound send fails. `None` keeps
     /// the legacy "cancel on failed send only" semantics.
     cancel: Option<CancelHandle>,
+    /// Sprint 4 §1 — optional Metrics handle the sink bumps as tool
+    /// lifecycle events flow through. `None` keeps the sink usable
+    /// from tests / embedders without a metrics fixture.
+    metrics: Option<Arc<crate::Metrics>>,
 }
 
 impl WireLoopSink {
@@ -163,6 +167,7 @@ impl WireLoopSink {
             outbox,
             closed: AtomicBool::new(false),
             cancel: None,
+            metrics: None,
         }
     }
 
@@ -175,6 +180,16 @@ impl WireLoopSink {
         self.cancel = Some(handle);
         self
     }
+
+    /// Attach a [`crate::Metrics`] handle. The sink bumps
+    /// `tool_calls_started_total` / `tool_calls_ok_total` /
+    /// `tool_calls_err_total` as the corresponding LoopEvents flow
+    /// through. Optional — without it the sink still works.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<crate::Metrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
 }
 
 #[async_trait::async_trait]
@@ -182,6 +197,25 @@ impl LoopSink for WireLoopSink {
     async fn emit(&self, event: LoopEvent) {
         if self.should_cancel() {
             return;
+        }
+        // Sprint 4 §1 — bump tool-call counters before the frame is
+        // emitted so the dashboard's counter view stays in sync with
+        // what it just received.
+        if let Some(m) = self.metrics.as_ref() {
+            use std::sync::atomic::Ordering::Relaxed;
+            match &event {
+                LoopEvent::ToolStart { .. } => {
+                    m.tool_calls_started_total.fetch_add(1, Relaxed);
+                }
+                LoopEvent::ToolComplete { ok, .. } => {
+                    if *ok {
+                        m.tool_calls_ok_total.fetch_add(1, Relaxed);
+                    } else {
+                        m.tool_calls_err_total.fetch_add(1, Relaxed);
+                    }
+                }
+                _ => {}
+            }
         }
         if let Some(frame) = loop_event_to_wire(&event) {
             // The dashboard already accepts both bare `{type: …}` envelopes

@@ -60,6 +60,7 @@
 
 pub mod discord;
 pub mod email;
+pub mod outbox_transport;
 pub mod sink_adapter;
 pub mod slack;
 pub mod sprint7_adapters;
@@ -67,6 +68,7 @@ pub mod telegram;
 
 pub use discord::DiscordChannel;
 pub use email::{EmailChannel, ParsedEmail};
+pub use outbox_transport::{DiscordOutbox, OutboxTransport, SlackOutbox, TelegramOutbox};
 pub use sink_adapter::ChannelMessageSink;
 pub use slack::SlackChannel;
 pub use sprint7_adapters::{

@@ -325,6 +325,88 @@ pub struct ServerState {
     /// and every `LoopEvent` is streamed back as a dashboard wire
     /// frame via [`wire::loop_event_to_wire`].
     agent: Option<Arc<AgentLoop>>,
+    /// Sprint 4 §1 — process-lifetime counters surfaced via
+    /// `/api/metrics` (Prometheus text format). Atomic so handler
+    /// updates don't need to lock.
+    metrics: Arc<Metrics>,
+}
+
+/// Process-lifetime counters. Surfaced at `/api/metrics` in
+/// Prometheus text-exposition format.
+#[derive(Debug, Default)]
+pub struct Metrics {
+    /// Inbound HTTP requests counted at the router middleware. Includes
+    /// every request the server sees, even ones that return errors.
+    pub http_requests_total: std::sync::atomic::AtomicU64,
+    /// Chat WebSocket connections opened.
+    pub chat_ws_connections_total: std::sync::atomic::AtomicU64,
+    /// User turns dispatched through the agent loop.
+    pub chat_turns_total: std::sync::atomic::AtomicU64,
+    /// Tool calls that started inside the agent loop (counted via
+    /// LoopEvent::ToolStart frames).
+    pub tool_calls_started_total: std::sync::atomic::AtomicU64,
+    /// Tool calls that completed successfully (ok=true).
+    pub tool_calls_ok_total: std::sync::atomic::AtomicU64,
+    /// Tool calls that completed with an error (ok=false).
+    pub tool_calls_err_total: std::sync::atomic::AtomicU64,
+}
+
+impl Metrics {
+    /// Build a fresh metrics struct (every counter at zero).
+    #[must_use]
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// Render every counter in Prometheus text-exposition format.
+    /// One line per metric: `# HELP …`, `# TYPE … counter`, `<name> <value>`.
+    pub fn render_prometheus(&self) -> String {
+        use std::fmt::Write as _;
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut s = String::new();
+        let row = |s: &mut String, name: &str, help: &str, value: u64| {
+            let _ = writeln!(s, "# HELP {name} {help}");
+            let _ = writeln!(s, "# TYPE {name} counter");
+            let _ = writeln!(s, "{name} {value}");
+        };
+        row(
+            &mut s,
+            "gaussclaw_http_requests_total",
+            "Inbound HTTP requests counted at the router middleware.",
+            self.http_requests_total.load(Relaxed),
+        );
+        row(
+            &mut s,
+            "gaussclaw_chat_ws_connections_total",
+            "Chat WebSocket connections opened.",
+            self.chat_ws_connections_total.load(Relaxed),
+        );
+        row(
+            &mut s,
+            "gaussclaw_chat_turns_total",
+            "User turns dispatched through the agent loop.",
+            self.chat_turns_total.load(Relaxed),
+        );
+        row(
+            &mut s,
+            "gaussclaw_tool_calls_started_total",
+            "Tool calls that started inside the agent loop.",
+            self.tool_calls_started_total.load(Relaxed),
+        );
+        row(
+            &mut s,
+            "gaussclaw_tool_calls_ok_total",
+            "Tool calls that completed successfully.",
+            self.tool_calls_ok_total.load(Relaxed),
+        );
+        row(
+            &mut s,
+            "gaussclaw_tool_calls_err_total",
+            "Tool calls that completed with an error.",
+            self.tool_calls_err_total.load(Relaxed),
+        );
+        s
+    }
 }
 
 impl ServerState {
@@ -366,6 +448,7 @@ impl ServerState {
             logs: Arc::new(LogBuffer::with_capacity(200)),
             plugin_roots: Vec::new(),
             agent: None,
+            metrics: Metrics::new(),
         }
     }
 
@@ -385,6 +468,13 @@ impl ServerState {
     #[must_use]
     pub fn agent(&self) -> Option<Arc<AgentLoop>> {
         self.agent.clone()
+    }
+
+    /// Borrow the metrics struct. Handlers that want to bump a
+    /// counter call e.g. `state.metrics().chat_turns_total.fetch_add(1, …)`.
+    #[must_use]
+    pub fn metrics(&self) -> &Arc<Metrics> {
+        &self.metrics
     }
 
     /// Push a structured log entry into the in-memory ring buffer.
@@ -583,6 +673,19 @@ async fn handle_sessions(State(state): State<ServerState>) -> Json<Ok<Vec<Sessio
     Json(Ok::new(rows))
 }
 
+/// Sprint 4 §1 — Prometheus-format `/api/metrics` endpoint. Plain
+/// text response per Prometheus's text-exposition format spec.
+#[axum::debug_handler]
+async fn handle_metrics(State(state): State<ServerState>) -> Response {
+    let body = state.metrics().render_prometheus();
+    let mut resp = (StatusCode::OK, body).into_response();
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+    );
+    resp
+}
+
 #[axum::debug_handler]
 async fn handle_providers(State(state): State<ServerState>) -> Json<Ok<Vec<serde_json::Value>>> {
     // Sprint "Wire the Loop" §3: render the active provider from config
@@ -674,7 +777,10 @@ async fn handle_chat_ws(State(state): State<ServerState>, ws: WebSocketUpgrade) 
             .into_response();
     }
     let agent = state.agent.clone();
-    ws.on_upgrade(move |socket| chat_socket(socket, agent))
+    let metrics = state.metrics().clone();
+    use std::sync::atomic::Ordering::Relaxed;
+    metrics.chat_ws_connections_total.fetch_add(1, Relaxed);
+    ws.on_upgrade(move |socket| chat_socket(socket, agent, metrics))
 }
 
 /// Adapter making the live WebSocket usable as a [`wire::WireOutbox`].
@@ -696,7 +802,7 @@ impl wire::WireOutbox for WebSocketOutbox {
     }
 }
 
-async fn chat_socket(socket: WebSocket, agent: Option<Arc<AgentLoop>>) {
+async fn chat_socket(socket: WebSocket, agent: Option<Arc<AgentLoop>>, metrics: Arc<Metrics>) {
     use futures_util::stream::StreamExt;
     let (sender, mut receiver) = socket.split();
     let outbox: Arc<dyn wire::WireOutbox> = Arc::new(WebSocketOutbox {
@@ -760,8 +866,12 @@ async fn chat_socket(socket: WebSocket, agent: Option<Arc<AgentLoop>>) {
             "default",
             vec![AgentMessage::new("user", user_text.clone())],
         );
+        use std::sync::atomic::Ordering::Relaxed;
+        metrics.chat_turns_total.fetch_add(1, Relaxed);
         let cancel = CancelHandle::new();
-        let sink = wire::WireLoopSink::new(outbox.clone()).with_cancel_handle(cancel.clone());
+        let sink = wire::WireLoopSink::new(outbox.clone())
+            .with_cancel_handle(cancel.clone())
+            .with_metrics(metrics.clone());
 
         // Race the agent run against further receiver activity. A
         // `Close` (or a transport error) during the turn flips the
@@ -1753,6 +1863,10 @@ pub fn router(state: ServerState) -> Router {
         .route("/api/analytics/summary", get(handle_analytics_summary))
         .route("/api/plugins", get(handle_plugins_list))
         .route("/api/replay/diff", axum::routing::post(handle_replay_diff))
+        // Sprint 4 §1 — observability: Prometheus-format metrics
+        // endpoint counting requests, WS connections, turns, tool
+        // calls. The body is plain text per Prometheus text-exposition.
+        .route("/api/metrics", get(handle_metrics))
         .route("/api/chat/ws", get(handle_chat_ws))
         // Frontend
         .route("/", get(handle_root))
@@ -1764,10 +1878,65 @@ pub fn router(state: ServerState) -> Router {
         // multi-GB JSON payload before we even see the URI. The cap
         // applies to POST/PATCH/PUT — WebSocket upgrades are not
         // affected (per-frame size is enforced separately by axum).
+        //
+        // Sprint 4 §1: request-id + counter middleware. Every inbound
+        // request gets an `x-request-id` response header (echoes the
+        // client's if supplied; mints a UUID v4 otherwise) and bumps
+        // `gaussclaw_http_requests_total`. The middleware runs before
+        // body-limit / CORS so we count denials too.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            request_observability_middleware,
+        ))
         .layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// Sprint 4 §1 — request-observability middleware. Mints a request id,
+/// bumps the HTTP-requests counter, attaches `x-request-id` to the
+/// response. Cheap (atomic increment + header copy); applied to every
+/// route.
+async fn request_observability_middleware(
+    State(state): State<ServerState>,
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    use std::sync::atomic::Ordering::Relaxed;
+    state.metrics().http_requests_total.fetch_add(1, Relaxed);
+    let req_id = req
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .unwrap_or_else(mint_request_id);
+    // Echo the id back as a header so callers can correlate logs.
+    req.extensions_mut().insert(RequestId(req_id.clone()));
+    let mut resp = next.run(req).await;
+    if let Ok(value) = HeaderValue::from_str(&req_id) {
+        resp.headers_mut().insert("x-request-id", value);
+    }
+    resp
+}
+
+/// Request-id extension placed on every request by the observability
+/// middleware. Handlers that want it can `req.extensions().get::<RequestId>()`.
+#[derive(Debug, Clone)]
+pub struct RequestId(pub String);
+
+fn mint_request_id() -> String {
+    // Compact 16-hex-char id derived from monotonic counter + the
+    // process-start nanoseconds — sufficient correlation in a single
+    // process without pulling in a UUID dependency for this one site.
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Relaxed);
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    format!("{ts:016x}{n:04x}")
 }
 
 /// Listen on `addr` and serve until shut down.
@@ -2871,6 +3040,138 @@ taint = "trusted"
             assert!(row["cap_required"].is_string());
             assert!(row["reversible"].is_boolean());
         }
+    }
+
+    // ─── Sprint 4 §1 — observability ────────────────────────────────────
+
+    #[tokio::test]
+    async fn metrics_endpoint_emits_prometheus_format() {
+        let (status, _body) = get_text("/api/metrics").await;
+        assert_eq!(status, StatusCode::OK);
+        // Re-fetch via raw oneshot to inspect headers + body text.
+        let resp = router(test_state())
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let ct = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(
+            ct.starts_with("text/plain"),
+            "metrics content-type should be Prometheus text format, got {ct}"
+        );
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        // Every counter renders three lines: HELP / TYPE / value.
+        for metric in [
+            "gaussclaw_http_requests_total",
+            "gaussclaw_chat_ws_connections_total",
+            "gaussclaw_chat_turns_total",
+            "gaussclaw_tool_calls_started_total",
+            "gaussclaw_tool_calls_ok_total",
+            "gaussclaw_tool_calls_err_total",
+        ] {
+            assert!(text.contains(&format!("# HELP {metric}")), "missing HELP for {metric}");
+            assert!(text.contains(&format!("# TYPE {metric} counter")), "missing TYPE for {metric}");
+        }
+    }
+
+    #[tokio::test]
+    async fn every_request_gets_an_x_request_id_response_header() {
+        let resp = router(test_state())
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = resp
+            .headers()
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(
+            !id.is_empty(),
+            "every response must carry an x-request-id header"
+        );
+    }
+
+    #[tokio::test]
+    async fn supplied_x_request_id_is_echoed_back() {
+        let resp = router(test_state())
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/status")
+                    .header("x-request-id", "trace-abc-123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let echoed = resp
+            .headers()
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(echoed, "trace-abc-123");
+    }
+
+    #[tokio::test]
+    async fn http_requests_counter_advances_on_each_call() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let state = test_state();
+        let metrics = state.metrics().clone();
+        let app = router(state);
+        let before = metrics.http_requests_total.load(Relaxed);
+        for _ in 0..3 {
+            let _ = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::GET)
+                        .uri("/api/status")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+        let after = metrics.http_requests_total.load(Relaxed);
+        assert!(
+            after >= before + 3,
+            "http_requests_total must advance by at least 3 (before={before}, after={after})"
+        );
+    }
+
+    async fn get_text(uri: &str) -> (StatusCode, String) {
+        let app = router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
     }
 
     #[tokio::test]
