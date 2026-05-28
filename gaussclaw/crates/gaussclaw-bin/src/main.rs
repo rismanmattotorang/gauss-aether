@@ -194,13 +194,227 @@ fn run_default_tui(cfg: &gaussclaw_config::Config) -> anyhow::Result<()> {
             format!("{}/{}", cfg.provider.name, cfg.provider.model)
         },
         turn: 0,
-        chain_head: "00000000".into(), // populated in Phase 2 once gaussclaw-store is wired
+        chain_head: "00000000".into(),
         taint_floor: "⊥".into(),
         caps: cfg.caps.as_ref().map_or(0, |c| {
             u32::try_from(c.default_grant.len()).unwrap_or(u32::MAX)
         }),
     };
-    gaussclaw_tui::run(status)
+
+    // Sprint 3 §1: build a real agent runtime on a tokio worker thread
+    // and attach it to the TUI via the TuiDispatcher / TuiEvent seam.
+    // When the configured provider is non-trivial (anthropic, openai, …
+    // — anything that's not the empty string), the TUI now dispatches
+    // every non-slash submit through the same wiring `gaussclaw web`
+    // uses; the user sees streamed assistant tokens, tool start /
+    // complete breadcrumbs, and a turn counter that actually advances.
+    let runtime = build_tui_runtime(cfg)?;
+    let cancel_handle = runtime.cancel_handle.clone();
+    gaussclaw_tui::run_with_dispatcher(
+        status,
+        runtime.dispatcher,
+        runtime.events_rx,
+        Some(Box::new(move || cancel_handle.request_cancel())),
+    )
+}
+
+/// Components plumbed into the TUI by [`build_tui_runtime`].
+struct TuiRuntime {
+    dispatcher: std::sync::Arc<dyn gaussclaw_tui::TuiDispatcher>,
+    events_rx: std::sync::mpsc::Receiver<gaussclaw_tui::TuiEvent>,
+    cancel_handle: gaussclaw_agent::CancelHandle,
+}
+
+fn build_tui_runtime(cfg: &gaussclaw_config::Config) -> anyhow::Result<TuiRuntime> {
+    use gaussclaw_tui::TuiEvent;
+    let (events_tx, events_rx) = std::sync::mpsc::channel::<TuiEvent>();
+    let (cmds_tx, cmds_rx) = std::sync::mpsc::channel::<String>();
+    let cancel_handle = gaussclaw_agent::CancelHandle::new();
+
+    // Build the same AgentLoop the web surface uses (provider with
+    // ReqwestBackend, tool registry with real http client, session
+    // store wired). When the configured vendor is empty, fall back to
+    // the EchoProvider — the user still gets a working round-trip.
+    let env_key = match cfg.provider.name.to_ascii_lowercase().as_str() {
+        "anthropic" => std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+        "openai" => std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+        _ => String::new(),
+    };
+    let mut choice =
+        gaussclaw_providers::ProviderChoice::new(cfg.provider.name.clone()).with_api_key(env_key);
+    if let Ok(backend) = gaussclaw_providers::ReqwestBackend::shared() {
+        choice = choice.with_backend(backend);
+    }
+    let (provider, _picked) = gaussclaw_providers::pick_provider(&choice);
+    let kernel = gaussclaw_agent::KernelHandle::permissive();
+    let audit = gaussclaw_agent::AuditTrace::new();
+    let http_client: std::sync::Arc<dyn gaussclaw_tools::HttpClient> =
+        match gaussclaw_http::ReqwestHttpClient::new() {
+            Ok(c) => std::sync::Arc::new(c),
+            Err(_) => std::sync::Arc::new(gaussclaw_tools::UnconfiguredHttpClient),
+        };
+    let tools = std::sync::Arc::new(gaussclaw_tools::registry_with_http_client(http_client));
+    let policy = gaussclaw_agent::TurnPolicy::new(kernel, provider)
+        .with_audit(audit)
+        .with_tools(tools);
+    let compactor: std::sync::Arc<dyn gaussclaw_agent::Compactor> =
+        std::sync::Arc::new(gaussclaw_agent::WindowedCompactor::defaults());
+    let agent = std::sync::Arc::new(gaussclaw_agent::AgentLoop::new(policy).with_compactor(compactor));
+
+    // Worker thread: owns a single-threaded tokio runtime, pulls user
+    // prompts off `cmds_rx`, drives the AgentLoop, translates each
+    // LoopEvent into a TuiEvent, pushes it to the TUI's events_tx.
+    let agent_clone = agent.clone();
+    let events_tx_clone = events_tx.clone();
+    let cancel_clone = cancel_handle.clone();
+    std::thread::Builder::new()
+        .name("gaussclaw-tui-agent".into())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    let _ = events_tx_clone
+                        .send(TuiEvent::Error(format!("tokio runtime: {e}")));
+                    return;
+                }
+            };
+            rt.block_on(async move {
+                while let Ok(body) = cmds_rx.recv() {
+                    let _ = events_tx_clone.send(TuiEvent::TurnStarted);
+                    let prompt = gaussclaw_agent::Prompt::new(
+                        "default",
+                        vec![gaussclaw_agent::Message::new("user", body)],
+                    );
+                    let sink = std::sync::Arc::new(TuiBridgeSink {
+                        events_tx: std::sync::Mutex::new(events_tx_clone.clone()),
+                        cancel: cancel_clone.clone(),
+                    });
+                    let outcome = agent_clone
+                        .run(
+                            prompt,
+                            gauss_core::TaintLabel::User,
+                            None,
+                            sink.as_ref(),
+                        )
+                        .await;
+                    // Always emit AssistantComplete so the TUI flushes
+                    // any pending assistant text and unmarks the turn
+                    // as in-flight even on error paths.
+                    if let Err(e) = outcome {
+                        let _ = events_tx_clone
+                            .send(TuiEvent::Error(format!("{e:?}")));
+                    }
+                    let _ = events_tx_clone.send(TuiEvent::AssistantComplete);
+                    // Reset cancellation so the next turn isn't
+                    // pre-cancelled by a stale flip.
+                    cancel_clone.reset();
+                }
+            });
+        })?;
+
+    let dispatcher: std::sync::Arc<dyn gaussclaw_tui::TuiDispatcher> =
+        std::sync::Arc::new(TuiCommandDispatcher {
+            sender: std::sync::Mutex::new(cmds_tx),
+        });
+    Ok(TuiRuntime {
+        dispatcher,
+        events_rx,
+        cancel_handle,
+    })
+}
+
+/// Trivial dispatcher that forwards every user message to the
+/// agent-driving worker thread via [`std::sync::mpsc`]. Holding the
+/// sender behind a `Mutex` is what gives the struct `Sync`.
+struct TuiCommandDispatcher {
+    sender: std::sync::Mutex<std::sync::mpsc::Sender<String>>,
+}
+
+impl gaussclaw_tui::TuiDispatcher for TuiCommandDispatcher {
+    fn dispatch(&self, body: String) {
+        if let Ok(tx) = self.sender.lock() {
+            // If the worker is gone the send fails silently — the TUI
+            // will appear unresponsive but won't panic. A future sprint
+            // can surface this via a TuiEvent::Error from the dropped
+            // worker handle.
+            let _ = tx.send(body);
+        }
+    }
+}
+
+/// LoopSink that translates [`LoopEvent`] → [`TuiEvent`] and pushes
+/// the result onto the TUI's event channel. Honours the shared
+/// CancelHandle so Ctrl+C / Esc cancels the in-flight loop at the
+/// next iteration boundary.
+struct TuiBridgeSink {
+    events_tx: std::sync::Mutex<std::sync::mpsc::Sender<gaussclaw_tui::TuiEvent>>,
+    cancel: gaussclaw_agent::CancelHandle,
+}
+
+impl TuiBridgeSink {
+    fn send(&self, evt: gaussclaw_tui::TuiEvent) {
+        if let Ok(tx) = self.events_tx.lock() {
+            let _ = tx.send(evt);
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl gaussclaw_agent::LoopSink for TuiBridgeSink {
+    async fn emit(&self, event: gaussclaw_agent::LoopEvent) {
+        use gaussclaw_agent::LoopEvent as L;
+        use gaussclaw_tui::TuiEvent as T;
+        match event {
+            L::UserSubmitted { .. } => {}
+            L::Token { text, .. } => self.send(T::AssistantToken(text)),
+            L::Assistant { text, .. } => {
+                // Many providers stream tokens AND emit Assistant at
+                // the end. Treat the final Assistant text as the
+                // authoritative copy when no Token events fired; if
+                // tokens did fire, AssistantComplete (sent by the
+                // worker loop) handles flushing.
+                self.send(T::AssistantToken(text));
+            }
+            L::ToolStart { name, .. } => self.send(T::ToolStarted { name }),
+            L::ToolComplete { name, ok, .. } => self.send(T::ToolComplete { name, ok }),
+            L::ToolDenied { name, reason, .. } => {
+                self.send(T::System(format!("tool denied: {name} ({reason})")));
+            }
+            L::ToolWarn { name, message, .. } => {
+                self.send(T::System(format!("tool warn: {name}: {message}")));
+            }
+            L::FallbackAttempt {
+                from_provider,
+                to_provider,
+                reason,
+            } => {
+                self.send(T::System(format!(
+                    "fallback: {from_provider} → {to_provider} ({reason})"
+                )));
+            }
+            L::Compacted {
+                collapsed, retained, ..
+            } => {
+                self.send(T::System(format!(
+                    "auto-compacted {collapsed} message(s); retained {retained}"
+                )));
+            }
+            L::Done { stop_reason, .. } => {
+                self.send(T::System(format!("done: {stop_reason}")));
+            }
+            // `LoopEvent` is `#[non_exhaustive]` — any variant added in
+            // a future sprint surfaces as a generic system breadcrumb
+            // so the TUI doesn't silently drop new event classes.
+            _ => self.send(T::System("(unknown loop event)".into())),
+        }
+    }
+
+    fn should_cancel(&self) -> bool {
+        self.cancel.is_cancelled()
+    }
 }
 
 fn dispatch(

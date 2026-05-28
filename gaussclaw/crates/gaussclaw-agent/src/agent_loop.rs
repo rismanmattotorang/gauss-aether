@@ -287,6 +287,14 @@ impl CancelHandle {
     pub fn is_cancelled(&self) -> bool {
         self.inner.load(std::sync::atomic::Ordering::SeqCst)
     }
+
+    /// Clear the cancel flag. Used by long-lived runtimes (the TUI
+    /// agent worker) that need to re-use the same handle across many
+    /// turns so a fresh Ctrl+C cancels the current run rather than
+    /// being shadowed by the previous turn's flip.
+    pub fn reset(&self) {
+        self.inner.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// In-memory sink that retains every event. Used by tests and the

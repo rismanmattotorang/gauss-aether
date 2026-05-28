@@ -1,6 +1,6 @@
 ---
 source: gaussclaw/crates/gaussclaw-tui/src/lib.rs
-assertion_line: 1064
+assertion_line: 1255
 expression: buffer_text(&buf)
 ---
  GaussClaw  v0.0.1  — Hermes port on Gauss-Aether                               
@@ -9,7 +9,7 @@ expression: buffer_text(&buf)
  · Welcome to GaussClaw. Type a message, or `/help` for a tour of slash         
 commands.                                                                       
  › hello world                                                                  
- ◀ TUI is offline-only today. For live chat against                             
+ ◀ TUI is offline-only in this build. For live chat against                     
 `anthropic/claude-3.5-sonnet`, run:                                             
 ────────────────────────────────────────────────────────────────────────────────
 ┌ input ───────────────────────────────────────────────────────────────────────┐

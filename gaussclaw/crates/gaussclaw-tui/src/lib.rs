@@ -143,6 +143,71 @@ pub enum Tick {
 /// `App` owns it for its lifetime.
 pub type CancelCallback = Box<dyn Fn() + Send + Sync>;
 
+/// Async dispatcher attached by a runtime that wants the TUI to drive
+/// a real provider. When `submit_current` runs on non-slash input, the
+/// dispatcher's `dispatch(body)` is invoked; the runtime owns the
+/// AgentLoop and streams events back via the [`TuiEvent`] receiver
+/// passed to [`run_with_dispatcher`].
+///
+/// Sprint 3 of "Wire the Loop" — closes the daily-driver TUI gap. The
+/// trait stays narrow so test runtimes can attach a synchronous mock.
+pub trait TuiDispatcher: Send + Sync + 'static {
+    /// Dispatch a user message body. Returns immediately — the runtime
+    /// processes the request asynchronously and pumps events back
+    /// through the [`TuiEvent`] channel.
+    fn dispatch(&self, body: String);
+}
+
+impl<F> TuiDispatcher for F
+where
+    F: Fn(String) + Send + Sync + 'static,
+{
+    fn dispatch(&self, body: String) {
+        (self)(body);
+    }
+}
+
+/// Event the runtime pumps back into the TUI from outside the render
+/// thread. Drained per tick by [`run_event_loop`] and applied to
+/// [`App`] state.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum TuiEvent {
+    /// A user turn has been accepted and dispatched. The TUI marks
+    /// itself "turn in flight" so cancel keys behave correctly.
+    TurnStarted,
+    /// Append text to the in-progress assistant entry. Multiple
+    /// `AssistantToken`s coalesce into a single entry; the TUI emits
+    /// one new `Entry::Assistant` on the first token and appends to
+    /// it on subsequent tokens.
+    AssistantToken(String),
+    /// The assistant entry is complete — the runtime is no longer
+    /// streaming tokens. The TUI flushes the in-progress entry and
+    /// marks itself "turn not in flight".
+    AssistantComplete,
+    /// A tool started executing. Shown as a system-class breadcrumb.
+    ToolStarted {
+        /// Tool id (matches the [`gaussclaw_tools::ToolRegistry`] key).
+        name: String,
+    },
+    /// A tool finished. `ok=false` typically renders red.
+    ToolComplete {
+        /// Tool id (matches the [`gaussclaw_tools::ToolRegistry`] key).
+        name: String,
+        /// True when the tool returned a schema-validated value.
+        ok: bool,
+    },
+    /// A system-class notice (e.g. provider transport error, kernel
+    /// admit denial). Equivalent to `App::push(Entry::System(...))`.
+    System(String),
+    /// The runtime hit a fatal-to-this-turn error. Marks the turn as
+    /// finished and shows the message in the history pane.
+    Error(String),
+    /// Refresh the status bar (chain head, turn counter, taint floor
+    /// have moved).
+    Status(StatusInfo),
+}
+
 // ─── the app ────────────────────────────────────────────────────────────────
 
 /// The TUI state machine.
@@ -175,6 +240,16 @@ pub struct App<'a> {
     /// "Ctrl+C quits the TUI hard" behaviour for runtimes that don't
     /// drive an agent loop.
     on_cancel: Option<CancelCallback>,
+    /// Async dispatcher set by a runtime that drives a real
+    /// [`gaussclaw_agent::AgentLoop`]. When `Some`, non-slash submits
+    /// call `dispatcher.dispatch(body)` instead of generating the
+    /// "TUI offline-only" stub message.
+    dispatcher: Option<std::sync::Arc<dyn TuiDispatcher>>,
+    /// In-progress assistant entry being accumulated from streaming
+    /// tokens. Coalesced into [`Entry::Assistant`] on
+    /// [`TuiEvent::AssistantComplete`] (or on the next user turn if
+    /// the stream is interrupted).
+    pending_assistant: Option<String>,
 }
 
 impl App<'_> {
@@ -209,6 +284,69 @@ impl App<'_> {
             slash_registry: gaussclaw_cli::slash::SlashRegistry::with_defaults(),
             turn_in_flight: false,
             on_cancel: None,
+            dispatcher: None,
+            pending_assistant: None,
+        }
+    }
+
+    /// Attach an async dispatcher. With one set, non-slash submits go
+    /// through `dispatcher.dispatch(body)` instead of the offline-only
+    /// stub message. The runtime is responsible for marking the turn
+    /// in flight (via [`TuiEvent::TurnStarted`]) and streaming events
+    /// back through the receiver passed to [`run_with_dispatcher`].
+    #[must_use]
+    pub fn with_dispatcher(mut self, dispatcher: std::sync::Arc<dyn TuiDispatcher>) -> Self {
+        self.dispatcher = Some(dispatcher);
+        self
+    }
+
+    /// True iff an async dispatcher is attached.
+    #[must_use]
+    pub fn has_dispatcher(&self) -> bool {
+        self.dispatcher.is_some()
+    }
+
+    /// Apply a runtime-emitted [`TuiEvent`] to the App state. Called
+    /// by [`run_event_loop`] when draining the runtime → TUI channel.
+    pub fn apply_event(&mut self, evt: TuiEvent) {
+        match evt {
+            TuiEvent::TurnStarted => self.mark_turn_in_flight(true),
+            TuiEvent::AssistantToken(t) => {
+                self.pending_assistant.get_or_insert_with(String::new).push_str(&t);
+            }
+            TuiEvent::AssistantComplete => {
+                if let Some(text) = self.pending_assistant.take() {
+                    if !text.is_empty() {
+                        self.last_assistant = Some(text.clone());
+                        self.history.push(Entry::Assistant(text));
+                    }
+                }
+                self.mark_turn_in_flight(false);
+                self.status.turn = self.status.turn.saturating_add(1);
+            }
+            TuiEvent::ToolStarted { name } => {
+                self.history
+                    .push(Entry::System(format!("⏵ tool: {name}")));
+            }
+            TuiEvent::ToolComplete { name, ok } => {
+                let marker = if ok { "✓" } else { "✗" };
+                self.history
+                    .push(Entry::System(format!("{marker} tool: {name}")));
+            }
+            TuiEvent::System(msg) => self.history.push(Entry::System(msg)),
+            TuiEvent::Error(msg) => {
+                // Flush any in-progress assistant text into the history
+                // first so the error appears after it in the transcript.
+                if let Some(text) = self.pending_assistant.take() {
+                    if !text.is_empty() {
+                        self.history.push(Entry::Assistant(text));
+                    }
+                }
+                self.history
+                    .push(Entry::System(format!("error: {msg}")));
+                self.mark_turn_in_flight(false);
+            }
+            TuiEvent::Status(s) => self.status = s,
         }
     }
 
@@ -411,15 +549,30 @@ impl App<'_> {
             return;
         }
 
-        // Echo the user turn. Real provider dispatch from the TUI needs
-        // a tokio runtime + channel-based AgentLoop wiring (the TUI is a
-        // sync ratatui app; AgentLoop is async). Until that surgery
-        // lands, the TUI directs the user to `gaussclaw web` where
-        // the dashboard is wired end-to-end against the configured
-        // provider (Sprint "Wire the Loop" §1).
-        self.history.push(Entry::User(body));
+        // Always echo the user turn so the transcript reflects what
+        // was submitted before the (possibly slow) provider replies.
+        self.history.push(Entry::User(body.clone()));
+
+        // Sprint 3 §1: when a runtime attaches an async dispatcher,
+        // route the user message through it. The runtime drives the
+        // AgentLoop on its tokio thread and pumps TuiEvents back; this
+        // path stays purely sync so the ratatui render loop never
+        // blocks.
+        if let Some(dispatcher) = self.dispatcher.clone() {
+            // Mark in-flight up-front so Ctrl+C/Esc fire the cancel
+            // callback (if one is wired) rather than hard-quitting the
+            // TUI between the submit and the runtime's TurnStarted
+            // event arriving.
+            self.turn_in_flight = true;
+            dispatcher.dispatch(body);
+            return;
+        }
+
+        // Offline mode (no dispatcher attached): keep the previous
+        // "use gaussclaw web" guidance so binaries that ship without
+        // a runtime still surface working alternatives.
         let reply = format!(
-            "TUI is offline-only today. For live chat against `{model}`, run:\n\
+            "TUI is offline-only in this build. For live chat against `{model}`, run:\n\
              \n    gaussclaw web --port 8080\n\
              \nThe web dashboard at http://127.0.0.1:8080/ drives the same agent loop with the \
              configured provider, the receipt chain, and the session store. (Taint floor: {taint}.)",
@@ -805,6 +958,33 @@ pub fn buffer_text(buf: &Buffer) -> String {
 /// enables raw mode + bracketed paste, and restores them on exit (even
 /// on panic, via an internal Drop guard).
 pub fn run(initial: StatusInfo) -> Result<()> {
+    let app = App::new(initial);
+    run_with_app(app, None)
+}
+
+/// Entry point for runtimes that drive a real [`gaussclaw_agent::AgentLoop`].
+///
+/// `dispatcher` is invoked from `submit_current` on every non-slash user
+/// message; the runtime is responsible for streaming events back through
+/// `events`, which the render loop drains per tick and applies via
+/// [`App::apply_event`]. `cancel_callback` is wired into Ctrl+C / Esc so a
+/// long-running turn can be cancelled cleanly.
+///
+/// Sprint 3 of "Wire the Loop" — closes the daily-driver TUI gap.
+pub fn run_with_dispatcher(
+    initial: StatusInfo,
+    dispatcher: std::sync::Arc<dyn TuiDispatcher>,
+    events: std::sync::mpsc::Receiver<TuiEvent>,
+    cancel_callback: Option<CancelCallback>,
+) -> Result<()> {
+    let mut app = App::new(initial).with_dispatcher(dispatcher);
+    if let Some(cb) = cancel_callback {
+        app = app.with_cancel_callback(cb);
+    }
+    run_with_app(app, Some(events))
+}
+
+fn run_with_app(mut app: App<'_>, events: Option<std::sync::mpsc::Receiver<TuiEvent>>) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
@@ -812,7 +992,6 @@ pub fn run(initial: StatusInfo) -> Result<()> {
 
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
-    let mut app = App::new(initial);
 
     // Surface where we'll be persisting input history so operators know
     // exactly which file to grep or revoke.
@@ -824,14 +1003,26 @@ pub fn run(initial: StatusInfo) -> Result<()> {
         )));
     }
 
-    run_event_loop(&mut terminal, &mut app)?;
+    run_event_loop(&mut terminal, &mut app, events.as_ref())?;
     Ok(())
 }
 
-fn run_event_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App<'_>) -> Result<()> {
+fn run_event_loop<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App<'_>,
+    events: Option<&std::sync::mpsc::Receiver<TuiEvent>>,
+) -> Result<()> {
     loop {
+        // Drain any pending runtime events before rendering so a fast
+        // stream of tokens still shows up at native ratatui frame rate
+        // rather than one event per 250 ms poll tick.
+        if let Some(rx) = events {
+            while let Ok(evt) = rx.try_recv() {
+                app.apply_event(evt);
+            }
+        }
         terminal.draw(|f| app.render(f))?;
-        if crossterm::event::poll(Duration::from_millis(250))? {
+        if crossterm::event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = crossterm::event::read()? {
                 match app.on_key(key) {
                     Tick::Quit => {
@@ -1142,5 +1333,130 @@ mod tests {
         assert!(app.is_turn_in_flight());
         app.mark_turn_in_flight(false);
         assert!(!app.is_turn_in_flight());
+    }
+
+    // ─── Sprint 3 §1 — TuiDispatcher + TuiEvent wiring ────────────────────
+
+    /// When a dispatcher is attached, non-slash submits go through it
+    /// (no offline-only stub message lands in the history) and the App
+    /// pre-emptively marks the turn in flight so the cancel keys work
+    /// while waiting for the runtime's `TurnStarted` event.
+    #[test]
+    fn submit_routes_to_dispatcher_when_attached() {
+        use std::sync::{Arc, Mutex};
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen_clone = seen.clone();
+        let dispatcher: Arc<dyn TuiDispatcher> = Arc::new(move |body: String| {
+            seen_clone.lock().unwrap().push(body);
+        });
+        let mut app = App::new(StatusInfo::default()).with_dispatcher(dispatcher);
+        assert!(app.has_dispatcher());
+        type_str(&mut app, "hello");
+        app.on_key(enter());
+        // The user line is in history; no stub assistant reply.
+        let assistant_entries: Vec<&Entry> = app
+            .history
+            .iter()
+            .filter(|e| matches!(e, Entry::Assistant(_)))
+            .collect();
+        assert!(
+            assistant_entries.is_empty(),
+            "no assistant reply should land before the runtime emits one"
+        );
+        // The dispatcher saw the body once.
+        let v = seen.lock().unwrap();
+        assert_eq!(v.as_slice(), &["hello".to_string()]);
+        // App optimistically marked the turn in flight so cancel keys
+        // bind correctly until the runtime confirms TurnStarted.
+        assert!(app.is_turn_in_flight());
+    }
+
+    /// AssistantToken events accumulate; AssistantComplete flushes to
+    /// the history as a single Entry::Assistant, unmarks turn-in-flight,
+    /// and advances the turn counter.
+    #[test]
+    fn apply_event_streams_tokens_then_flushes_on_complete() {
+        let mut app = App::new(StatusInfo {
+            turn: 5,
+            ..StatusInfo::default()
+        });
+        app.apply_event(TuiEvent::TurnStarted);
+        assert!(app.is_turn_in_flight());
+        app.apply_event(TuiEvent::AssistantToken("hel".into()));
+        app.apply_event(TuiEvent::AssistantToken("lo ".into()));
+        app.apply_event(TuiEvent::AssistantToken("world".into()));
+        // No Assistant entry yet — still streaming.
+        assert!(!app
+            .history
+            .iter()
+            .any(|e| matches!(e, Entry::Assistant(_))));
+        app.apply_event(TuiEvent::AssistantComplete);
+        let assistants: Vec<&String> = app
+            .history
+            .iter()
+            .filter_map(|e| {
+                if let Entry::Assistant(t) = e {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(assistants.len(), 1, "single Assistant entry on complete");
+        assert_eq!(assistants[0], "hello world");
+        assert!(!app.is_turn_in_flight());
+        assert_eq!(app.status.turn, 6, "turn counter advances on complete");
+    }
+
+    /// Error events flush any in-progress assistant text before
+    /// pushing the error breadcrumb, and clear the turn-in-flight flag
+    /// so the next submit's cancel keys behave correctly.
+    #[test]
+    fn apply_event_error_flushes_partial_assistant_and_clears_in_flight() {
+        let mut app = App::new(StatusInfo::default());
+        app.apply_event(TuiEvent::TurnStarted);
+        app.apply_event(TuiEvent::AssistantToken("partial".into()));
+        app.apply_event(TuiEvent::Error("upstream 500".into()));
+        let kinds: Vec<&'static str> = app
+            .history
+            .iter()
+            .map(|e| match e {
+                Entry::User(_) => "user",
+                Entry::Assistant(_) => "assistant",
+                Entry::System(_) => "system",
+            })
+            .collect();
+        // Welcome banner + flushed assistant + error system row.
+        assert!(kinds.contains(&"assistant"));
+        assert!(kinds.contains(&"system"));
+        assert!(!app.is_turn_in_flight());
+    }
+
+    /// Tool events render as system-class breadcrumbs.
+    #[test]
+    fn apply_event_tool_lifecycle_renders_as_system_breadcrumbs() {
+        let mut app = App::new(StatusInfo::default());
+        app.apply_event(TuiEvent::ToolStarted {
+            name: "echo".into(),
+        });
+        app.apply_event(TuiEvent::ToolComplete {
+            name: "echo".into(),
+            ok: true,
+        });
+        let systems: Vec<&String> = app
+            .history
+            .iter()
+            .filter_map(|e| {
+                if let Entry::System(t) = e {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        // Welcome + 2 tool breadcrumbs.
+        assert_eq!(systems.len(), 3);
+        assert!(systems[1].contains("echo"));
+        assert!(systems[2].contains("echo"));
     }
 }
