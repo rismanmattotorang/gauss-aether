@@ -2748,6 +2748,8 @@ name = "gauss-memory"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "blake3",
+ "futures",
  "gauss-core",
  "gauss-traits",
  "parking_lot",
