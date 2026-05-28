@@ -1,6 +1,6 @@
 ---
 source: gaussclaw/crates/gaussclaw-tui/src/lib.rs
-assertion_line: 804
+assertion_line: 1064
 expression: buffer_text(&buf)
 ---
  GaussClaw  v0.0.1  — Hermes port on Gauss-Aether                               
@@ -9,8 +9,8 @@ expression: buffer_text(&buf)
  · Welcome to GaussClaw. Type a message, or `/help` for a tour of slash         
 commands.                                                                       
  › hello world                                                                  
- ◀ (stub) Real provider dispatch lands once `gaussclaw-agent::run_turn` is wired
-into the surface plane. Current model: anthropic/claude-3.5-sonnet, taint floor:
+ ◀ TUI is offline-only today. For live chat against                             
+`anthropic/claude-3.5-sonnet`, run:                                             
 ────────────────────────────────────────────────────────────────────────────────
 ┌ input ───────────────────────────────────────────────────────────────────────┐
 │ Type a message. Enter to submit · Shift+Enter to insert newline · /help for c│

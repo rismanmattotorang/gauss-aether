@@ -411,12 +411,18 @@ impl App<'_> {
             return;
         }
 
-        // Echo the user turn, then a stub assistant turn. Real dispatch lands
-        // once `gaussclaw-agent` exposes a `run_turn` API to the surface plane.
+        // Echo the user turn. Real provider dispatch from the TUI needs
+        // a tokio runtime + channel-based AgentLoop wiring (the TUI is a
+        // sync ratatui app; AgentLoop is async). Until that surgery
+        // lands, the TUI directs the user to `gaussclaw web` where
+        // the dashboard is wired end-to-end against the configured
+        // provider (Sprint "Wire the Loop" §1).
         self.history.push(Entry::User(body));
         let reply = format!(
-            "(stub) Real provider dispatch lands once `gaussclaw-agent::run_turn` is wired into the \
-             surface plane. Current model: {model}, taint floor: {taint}.",
+            "TUI is offline-only today. For live chat against `{model}`, run:\n\
+             \n    gaussclaw web --port 8080\n\
+             \nThe web dashboard at http://127.0.0.1:8080/ drives the same agent loop with the \
+             configured provider, the receipt chain, and the session store. (Taint floor: {taint}.)",
             model = self.status.model,
             taint = self.status.taint_floor,
         );

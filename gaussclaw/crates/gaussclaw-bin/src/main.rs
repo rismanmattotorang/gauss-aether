@@ -101,8 +101,25 @@ fn run_web(
             "openai" => std::env::var("OPENAI_API_KEY").unwrap_or_default(),
             _ => String::new(),
         };
-        let choice = gaussclaw_providers::ProviderChoice::new(cfg.provider.name.clone())
+        // Sprint "Wire the Loop" §1: attach a real reqwest-backed
+        // HttpBackend so the vendor codec actually reaches the
+        // upstream. If construction fails we surface a clean error and
+        // continue with the `UnconfiguredBackend` default — the
+        // dashboard renders that as an `error` frame.
+        let mut choice = gaussclaw_providers::ProviderChoice::new(cfg.provider.name.clone())
             .with_api_key(env_key);
+        match gaussclaw_providers::ReqwestBackend::shared() {
+            Ok(backend) => {
+                tracing::info!(target: "gaussclaw_bin::serve", "reqwest backend attached");
+                choice = choice.with_backend(backend);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "gaussclaw_bin::serve",
+                    "reqwest backend unavailable: {e}; falling back to UnconfiguredBackend"
+                );
+            }
+        }
         let (provider, picked) = gaussclaw_providers::pick_provider(&choice);
         tracing::info!(
             target: "gaussclaw_bin::serve",
@@ -110,8 +127,14 @@ fn run_web(
             picked.as_str()
         );
         let audit = gaussclaw_agent::AuditTrace::new();
-        let policy =
-            gaussclaw_agent::TurnPolicy::new(kernel.clone(), provider).with_audit(audit.clone());
+        // Sprint "Wire the Loop" §2: attach the SessionStore on the
+        // TurnPolicy so every turn writes the user message and the
+        // assistant completion into the persistent chain. Without this
+        // the `/api/sessions` endpoint is cosmetic and conversation
+        // history is lost on restart.
+        let policy = gaussclaw_agent::TurnPolicy::new(kernel.clone(), provider)
+            .with_audit(audit.clone())
+            .with_store(store.clone());
         let compactor: std::sync::Arc<dyn gaussclaw_agent::Compactor> =
             std::sync::Arc::new(gaussclaw_agent::WindowedCompactor::defaults());
         let agent = std::sync::Arc::new(
@@ -180,7 +203,7 @@ fn dispatch(
         Command::Gateway(sub) => match sub {
             GatewayCmd::Start => stub("gateway start", 1, "gaussclaw-channels + gauss-gateway"),
             GatewayCmd::Stop => stub("gateway stop", 1, "gaussclaw-channels"),
-            GatewayCmd::Status => stub("gateway status", 1, "gaussclaw-channels"),
+            GatewayCmd::Status => run_gateway_status(&cfg),
         },
         Command::Setup(_) => stub("setup", 1, "gaussclaw-config + gaussclaw-migrate"),
         Command::Update(_) => stub("update", 5, "gaussclaw-desktop updater + gauss-attest"),
@@ -313,7 +336,7 @@ fn run_import(args: ImportArgs) -> anyhow::Result<()> {
 
 fn run_chat(args: ChatArgs, cfg: &gaussclaw_config::Config) -> anyhow::Result<()> {
     use gauss_core::TaintLabel;
-    use gaussclaw_agent::{EchoProvider, KernelHandle, Message, Prompt, TurnPolicy};
+    use gaussclaw_agent::{KernelHandle, Message, Prompt, TurnPolicy};
     let Some(message) = args.message else {
         eprintln!(
             "gaussclaw chat: interactive mode is the TUI (`gaussclaw` with no args).\n  \
@@ -326,18 +349,25 @@ fn run_chat(args: ChatArgs, cfg: &gaussclaw_config::Config) -> anyhow::Result<()
     } else {
         format!("{}/{}", cfg.provider.name, cfg.provider.model)
     };
+    // Sprint "Wire the Loop" §1: route the CLI chat path through the
+    // same `pick_provider` + `ReqwestBackend` wiring the web surface
+    // uses, so `gaussclaw chat -m "hi"` actually reaches the upstream
+    // when `provider.name` is set in config.
+    let env_key = match cfg.provider.name.to_ascii_lowercase().as_str() {
+        "anthropic" => std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+        "openai" => std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+        _ => String::new(),
+    };
+    let mut choice = gaussclaw_providers::ProviderChoice::new(cfg.provider.name.clone())
+        .with_api_key(env_key);
+    if let Ok(backend) = gaussclaw_providers::ReqwestBackend::shared() {
+        choice = choice.with_backend(backend);
+    }
+    let (provider, picked) = gaussclaw_providers::pick_provider(&choice);
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let completion = rt.block_on(async move {
-        // The shipping binary's default chat path runs the EchoProvider —
-        // real vendor drivers in `gaussclaw-providers` ship behind the
-        // `chat` command once provider auth wiring lands (the crate is
-        // already present and tested; the binary's chat path is the last
-        // mile). Until then the EchoProvider gives the user a working
-        // round trip that exercises the kernel admit gate and the audit
-        // chain.
-        let provider = std::sync::Arc::new(EchoProvider::default());
         let tp = TurnPolicy::new(KernelHandle::permissive(), provider);
         let prompt = Prompt::new(model, vec![Message::new("user", message.clone())]);
         tp.run(prompt, TaintLabel::User).await
@@ -345,6 +375,9 @@ fn run_chat(args: ChatArgs, cfg: &gaussclaw_config::Config) -> anyhow::Result<()
     let completion = completion.map_err(|e| anyhow::anyhow!("turn: {e:?}"))?;
     if let Some(sid) = args.session {
         println!("session: {sid}");
+    }
+    if std::env::var("GAUSSCLAW_VERBOSE").is_ok() {
+        eprintln!("provider: {}", picked.as_str());
     }
     println!("{}", completion.text);
     Ok(())
@@ -514,6 +547,35 @@ fn run_config_path(cfg_path: Option<&std::path::Path>) -> anyhow::Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+// ─── gateway status ────────────────────────────────────────────────────────
+
+fn run_gateway_status(cfg: &gaussclaw_config::Config) -> anyhow::Result<()> {
+    // Sprint "Wire the Loop" §4: replace the phase-X stub with a real
+    // read of the channel configuration. Listing each declared channel
+    // (and its enabled/configured state) is enough to give operators a
+    // clear "what would `gateway start` do?" answer. The actual
+    // start/stop daemon plane lands in Sprint 4.
+    if cfg.channels.is_empty() {
+        println!("(no channels configured in gaussclaw.toml; add a [channels.<name>] block)");
+        return Ok(());
+    }
+    println!("declared channels:");
+    for (name, ch) in &cfg.channels {
+        let enabled = if ch.enabled { "enabled" } else { "disabled" };
+        let secret = ch
+            .secret_env
+            .as_deref()
+            .map_or("(no secret_env)", |s| s);
+        println!("  {name:<16}  {enabled:<8}  secret_env={secret}");
+    }
+    println!();
+    println!(
+        "note: gateway daemon (`gateway start`) lands in Sprint 4; this status \
+         reflects config only, not a live process."
+    );
     Ok(())
 }
 

@@ -54,6 +54,11 @@ impl ToolRegistry {
         self.tools.keys().map(String::as_str).collect()
     }
 
+    /// Iterate `(id, ToolTrait)` pairs in lexicographic order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &Arc<dyn ToolTrait>)> {
+        self.tools.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
     /// Number of registered tools.
     #[must_use]
     pub fn len(&self) -> usize {

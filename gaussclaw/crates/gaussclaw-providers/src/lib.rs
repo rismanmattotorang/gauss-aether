@@ -77,6 +77,7 @@ pub mod openai;
 pub mod openai_compat;
 pub mod postconditions;
 pub mod replicate;
+pub mod reqwest_backend;
 pub mod router;
 pub mod select;
 
@@ -101,5 +102,6 @@ pub use openai_compat::{
 };
 pub use postconditions::{check_postconditions, PostconditionError};
 pub use replicate::ReplicateProvider;
+pub use reqwest_backend::{ReqwestBackend, DEFAULT_BODY_CAP, DEFAULT_TIMEOUT};
 pub use router::{RoutedCompletion, RouterProvider, RouterTransparencyError};
 pub use select::{pick_provider, PickedProvider, ProviderChoice, UnconfiguredBackend};

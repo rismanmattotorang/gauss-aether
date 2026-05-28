@@ -490,12 +490,61 @@ async fn handle_config_get(State(state): State<ServerState>) -> Json<Ok<ConfigPa
 
 #[axum::debug_handler]
 async fn handle_config_schema() -> Json<Ok<serde_json::Value>> {
-    // Phase 3 wires this to a real JSON Schema (used by the dashboard's
-    // dynamic ConfigPage). For now we emit a stub that names the work.
+    // Sprint "Wire the Loop" §3: emit a hand-written JSON Schema for
+    // the current `gaussclaw-config` surface. This is enough for the
+    // dashboard's dynamic ConfigPage to render every existing field
+    // with appropriate input types. A `schemars`-derived auto-schema
+    // for the full nested config tree is a follow-up.
     Json(Ok::new(serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://gauss-aether.dev/schemas/gaussclaw-config.json",
         "type": "object",
         "title": "GaussClawConfig",
-        "x-stub": "real schema lands when gaussclaw-skill ships JSON Schema 2020-12 derives (Phase 3)"
+        "additionalProperties": true,
+        "properties": {
+            "provider": {
+                "type": "object",
+                "title": "ProviderConfig",
+                "additionalProperties": true,
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Vendor id (anthropic, openai, …) or empty for echo.",
+                        "examples": ["anthropic", "openai", "ollama"]
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Vendor-specific model id."
+                    }
+                },
+                "required": ["name", "model"]
+            },
+            "terminal": {
+                "type": "object",
+                "title": "TerminalConfig",
+                "additionalProperties": true,
+                "properties": {
+                    "backend": {
+                        "type": "string",
+                        "enum": ["ratatui", "iterm2", "kitty", "tmux", "auto"],
+                        "description": "Preferred terminal backend for the TUI."
+                    }
+                }
+            },
+            "caps": {
+                "type": ["object", "null"],
+                "title": "CapabilityGrant",
+                "additionalProperties": true,
+                "properties": {
+                    "default_grant": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Capability tokens granted by default to every turn."
+                    }
+                }
+            }
+        },
+        "required": ["provider"]
     })))
 }
 
@@ -535,13 +584,58 @@ async fn handle_sessions(State(state): State<ServerState>) -> Json<Ok<Vec<Sessio
 }
 
 #[axum::debug_handler]
-async fn handle_providers() -> Json<Ok<Vec<serde_json::Value>>> {
-    Json(Ok::new(vec![]))
+async fn handle_providers(State(state): State<ServerState>) -> Json<Ok<Vec<serde_json::Value>>> {
+    // Sprint "Wire the Loop" §3: render the active provider from config
+    // and the static list of vendor codecs the binary can route to. The
+    // dashboard renders one row as "active" and the rest as switchable
+    // candidates. Full polyhedral-equivalence-verified swap lands in
+    // Phase 8 — here we just surface what's already wired.
+    let active = state.config.provider.name.clone();
+    let active_model = state.config.provider.model.clone();
+    let known = [
+        ("anthropic", "Anthropic Messages API"),
+        ("openai", "OpenAI Chat Completions"),
+        ("google", "Google Gemini"),
+        ("cohere", "Cohere"),
+        ("ollama", "Ollama (local)"),
+        ("llama_cpp", "llama.cpp (local)"),
+        ("huggingface", "HuggingFace Inference"),
+        ("replicate", "Replicate"),
+        ("echo", "EchoProvider (test)"),
+    ];
+    let rows: Vec<serde_json::Value> = known
+        .iter()
+        .map(|(id, label)| {
+            let is_active = id.eq_ignore_ascii_case(&active);
+            serde_json::json!({
+                "id": id,
+                "label": label,
+                "active": is_active,
+                "model": if is_active { active_model.clone() } else { String::new() },
+            })
+        })
+        .collect();
+    Json(Ok::new(rows))
 }
 
 #[axum::debug_handler]
 async fn handle_tools() -> Json<Ok<Vec<serde_json::Value>>> {
-    Json(Ok::new(vec![]))
+    // Sprint "Wire the Loop" §3: surface the default tool catalogue
+    // with id + capability + reversibility. Schema details land with
+    // the JSON Schema 2020-12 work (Phase 3).
+    let reg = gaussclaw_tools::default_registry();
+    let rows: Vec<serde_json::Value> = reg
+        .iter()
+        .map(|(id, t)| {
+            let m = t.manifest();
+            serde_json::json!({
+                "id": id,
+                "cap_required": format!("{:?}", m.cap_required),
+                "reversible": m.reversible,
+            })
+        })
+        .collect();
+    Json(Ok::new(rows))
 }
 
 #[axum::debug_handler]
@@ -1664,6 +1758,13 @@ pub fn router(state: ServerState) -> Router {
         .route("/", get(handle_root))
         .route("/{*path}", get(handle_asset))
         // Middleware
+        //
+        // Sprint "Wire the Loop" §3: cap inbound request bodies at 8 MiB
+        // so a hostile client cannot exhaust process memory with a
+        // multi-GB JSON payload before we even see the URI. The cap
+        // applies to POST/PATCH/PUT — WebSocket upgrades are not
+        // affected (per-frame size is enforced separately by axum).
+        .layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
