@@ -625,4 +625,74 @@ mod tests {
         let err = s.verify_chain().await.unwrap_err();
         assert!(matches!(err, StoreError::ChainDivergence { .. }));
     }
+
+    // ── persistent index restore (sessions survive restart) ──────────────────
+
+    /// After reopening a persistent store, the derived index is rebuilt
+    /// from the log: sessions, turns, and lineage come back, and the
+    /// reconstructed turn records re-hash to the same chain head
+    /// (`verify_chain` passes).
+    #[cfg(feature = "kv-surrealkv")]
+    #[tokio::test]
+    async fn persistent_store_restores_sessions_and_lineage_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store");
+
+        let session_id;
+        let (root_id, child_id);
+        {
+            let s = SessionStore::open_surrealkv(&path).await.unwrap();
+            let sess = s.create_session("tui", "anthropic/claude-3.5-sonnet").await;
+            session_id = sess.id.clone();
+            let (root, _) = s
+                .append_turn(&session_id, None, "user", "hello", TaintLabel::User)
+                .await
+                .unwrap();
+            root_id = root.id;
+            let (child, _) = s
+                .append_turn(
+                    &session_id,
+                    Some(root_id),
+                    "assistant",
+                    "hi there",
+                    TaintLabel::User,
+                )
+                .await
+                .unwrap();
+            child_id = child.id;
+            s.verify_chain().await.expect("chain verifies before reopen");
+        }
+
+        // Reopen: open_surrealkv restores the index from the log.
+        let s = SessionStore::open_surrealkv(&path).await.unwrap();
+
+        // Sessions came back.
+        let sessions = s.list_recent_sessions(10).await;
+        assert_eq!(sessions.len(), 1, "session restored");
+        assert_eq!(sessions[0].id, session_id);
+        assert_eq!(sessions[0].turn_count, 2, "turn count restored");
+        // Model recovered from the routed/actual cost is empty for a
+        // direct (non-routed) turn — that's expected; the session id and
+        // turn list are the load-bearing facts.
+
+        // Turns came back, in order.
+        let turns = s.list_session_turns(&session_id).await;
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].id, root_id);
+        assert_eq!(turns[1].id, child_id);
+        assert_eq!(turns[1].content, "hi there");
+
+        // The reconstructed turns re-hash to the live backend head.
+        s.verify_chain()
+            .await
+            .expect("chain verifies after reopen from restored index");
+
+        // A new turn extends the existing chain (next_turn_id restored).
+        let (next, _) = s
+            .append_turn(&session_id, Some(child_id), "user", "again", TaintLabel::User)
+            .await
+            .unwrap();
+        assert!(next.id > child_id, "turn id continues past restored max");
+        s.verify_chain().await.expect("chain still verifies after a fresh append");
+    }
 }

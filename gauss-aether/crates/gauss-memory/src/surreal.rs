@@ -168,6 +168,33 @@ impl SurrealMemory {
         Ok((cached_head, next_seq))
     }
 
+    /// Replay the entire append log in sequence order.
+    ///
+    /// Returns every persisted record (turn id, exact payload bytes,
+    /// taint, sequence, and the chain head immediately after the
+    /// record) so a higher layer can rebuild a *derived* in-memory
+    /// index — session lists, lineage edges — after reopening a
+    /// persistent store. The log itself is the canonical record; this is
+    /// the read side of that contract. O(n) and intended for startup,
+    /// not the hot path.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying scan query fails.
+    pub async fn replay(&self) -> GaussResult<Vec<ReplayRecord>> {
+        let mut resp = self
+            .db
+            .query(
+                "SELECT turn_id, payload, taint, seq, this_head \
+                 FROM turn_record ORDER BY seq ASC",
+            )
+            .await
+            .map_err(into_gauss_error)?
+            .check()
+            .map_err(into_gauss_error)?;
+        let rows: Vec<ReplayRow> = resp.take(0).map_err(into_gauss_error)?;
+        Ok(rows.into_iter().map(ReplayRow::into_record).collect())
+    }
+
     /// Internal helper: advance the chain head deterministically.
     fn next_head(prev: &ChainHeadSnapshot, payload: &[u8]) -> ChainHeadSnapshot {
         let mut hasher = Sha256::new();
@@ -201,6 +228,53 @@ struct DbInfo {
 struct ChainHeadRow {
     digest: Bytes,
     length: i64,
+}
+
+/// One record from [`SurrealMemory::replay`] — the canonical log row in
+/// a form a derived index can be rebuilt from.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct ReplayRecord {
+    /// The turn id this record was appended under.
+    pub turn_id: u128,
+    /// The exact payload bytes that were appended.
+    pub payload: Vec<u8>,
+    /// Information-flow taint recorded with the turn.
+    pub taint: TaintLabel,
+    /// 0-based append sequence.
+    pub seq: u64,
+    /// Chain head digest immediately after this record was appended.
+    pub this_head: [u8; 32],
+}
+
+/// Deserialisation row for [`SurrealMemory::replay`].
+#[derive(Debug, Deserialize)]
+struct ReplayRow {
+    turn_id: String,
+    #[serde(default)]
+    payload: Option<Bytes>,
+    taint: String,
+    seq: i64,
+    #[serde(default)]
+    this_head: Option<Bytes>,
+}
+
+impl ReplayRow {
+    fn into_record(self) -> ReplayRecord {
+        let mut this_head = [0u8; 32];
+        if let Some(b) = self.this_head {
+            let v = b.into_inner();
+            let n = v.len().min(32);
+            this_head[..n].copy_from_slice(&v[..n]);
+        }
+        ReplayRecord {
+            turn_id: self.turn_id.parse::<u128>().unwrap_or(0),
+            payload: self.payload.map(Bytes::into_inner).unwrap_or_default(),
+            taint: taint_from_str(&self.taint),
+            seq: u64::try_from(self.seq).unwrap_or(0),
+            this_head,
+        }
+    }
 }
 
 #[async_trait]

@@ -1375,23 +1375,23 @@ mod tests {
         assert_eq!(store.chain_head().await.unwrap().length, 0);
     }
 
-    /// The persistent backend keeps the receipt chain (the audit-
-    /// critical append log) across a restart: reopening the same
-    /// `[storage] path` restores the chain head so new turns extend the
-    /// existing chain rather than starting fresh.
+    /// End-to-end durability through `open_session_store`: across a
+    /// restart the chain head AND the derived session index survive, so
+    /// the dashboard's session list isn't empty after a reboot.
     #[cfg(feature = "kv-surrealkv")]
     #[tokio::test]
-    async fn open_session_store_persists_chain_across_reopen() {
+    async fn open_session_store_persists_chain_and_sessions_across_reopen() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store");
         let mut cfg = gaussclaw_config::Config::default();
         cfg.storage.path = path.to_string_lossy().into_owned();
 
         // First open: create a session, append a turn, then drop.
-        let (len_before, head_before);
+        let (len_before, head_before, session_id);
         {
             let store = open_session_store(&cfg).await.unwrap();
             let sess = store.create_session("tui", "echo").await;
+            session_id = sess.id.clone();
             store
                 .append_turn(sess.id, None, "user", "hello", gauss_core::TaintLabel::User)
                 .await
@@ -1401,10 +1401,15 @@ mod tests {
             head_before = head.digest_hex;
             assert_eq!(len_before, 1);
         }
-        // Reopen the same path: the chain head survived.
+        // Reopen the same path: chain head + session index both survive.
         let store = open_session_store(&cfg).await.unwrap();
         let reopened = store.chain_head().await.unwrap();
         assert_eq!(reopened.length, len_before, "chain length survives reopen");
         assert_eq!(reopened.digest_hex, head_before, "chain head survives reopen");
+
+        let sessions = store.list_recent_sessions(10).await;
+        assert_eq!(sessions.len(), 1, "session index restored after restart");
+        assert_eq!(sessions[0].id, session_id);
+        assert_eq!(sessions[0].turn_count, 1);
     }
 }
