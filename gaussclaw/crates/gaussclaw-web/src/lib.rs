@@ -614,9 +614,25 @@ async fn handle_search(
     Json(Ok::new(rows))
 }
 
+/// `GET /api/providers` — the first-party vendor drivers this build
+/// ships, flagging the one named in `[provider] name`. Reflects the
+/// canonical list in `gaussclaw_providers::supported_vendors()` so the
+/// dashboard's Providers tab matches what the agent can actually route
+/// to (rather than a stale client-side guess).
 #[axum::debug_handler]
-async fn handle_providers() -> Json<Ok<Vec<serde_json::Value>>> {
-    Json(Ok::new(vec![]))
+async fn handle_providers(State(state): State<ServerState>) -> Json<Ok<Vec<serde_json::Value>>> {
+    let active = state.config().provider.name.to_ascii_lowercase();
+    let rows = gaussclaw_providers::supported_vendors()
+        .iter()
+        .map(|v| {
+            serde_json::json!({
+                "id": v.id,
+                "name": v.display,
+                "active": v.id == active,
+            })
+        })
+        .collect();
+    Json(Ok::new(rows))
 }
 
 /// Decode a [`CapToken`] bitset into stable, human-readable capability
@@ -696,15 +712,17 @@ async fn handle_tools() -> Json<Ok<Vec<serde_json::Value>>> {
 /// GaussClaw agent. The body is mapped to an engine `Prompt`, run
 /// through the same `TurnPolicy` + provider the dashboard uses, and
 /// rendered back in the OpenAI response shape (with standard
-/// `prompt_tokens` / `completion_tokens` / `total_tokens`). Errors use
-/// the OpenAI `{ "error": {…} }` envelope.
+/// `prompt_tokens` / `completion_tokens` / `total_tokens`). With
+/// `stream: true` the reply is delivered as Server-Sent Events of
+/// `chat.completion.chunk` frames terminated by `data: [DONE]`. Errors
+/// use the OpenAI `{ "error": {…} }` envelope.
 #[axum::debug_handler]
 async fn handle_v1_chat_completions(
     State(state): State<ServerState>,
     Json(req): Json<gaussclaw_api_modes::ChatCompletionRequest>,
 ) -> Response {
     use gaussclaw_api_modes::{
-        prompt_from_request, response_from_completion, ApiError, RequestError,
+        prompt_from_request, response_from_completion, stream_chunks, ApiError,
     };
 
     // WAL-before-effect: record the inbound request before any work.
@@ -722,14 +740,11 @@ async fn handle_v1_chat_completions(
 
     let prompt = match prompt_from_request(&req) {
         std::result::Result::Ok(p) => p,
+        // NoMessages (and any future request-validation variant) is a
+        // client error.
         std::result::Result::Err(e) => {
-            let status = match e {
-                RequestError::StreamingUnsupported => StatusCode::NOT_IMPLEMENTED,
-                // NoMessages and any future request-validation variant
-                // are client errors.
-                _ => StatusCode::BAD_REQUEST,
-            };
-            return (status, Json(ApiError::from_request_error(&e))).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ApiError::from_request_error(&e)))
+                .into_response();
         }
     };
 
@@ -746,21 +761,40 @@ async fn handle_v1_chat_completions(
 
     // Single faithful turn through the live provider. The TurnPolicy
     // owns its own WAL + kernel admit for the model call.
-    match agent.policy.run(prompt, TaintLabel::User).await {
-        std::result::Result::Ok(completion) => {
-            let created = u64::try_from(now_unix_seconds()).unwrap_or(0);
-            let id = format!("chatcmpl-{}", openai_response_nonce());
-            Json(response_from_completion(&req.model, &completion, id, created)).into_response()
+    let completion = match agent.policy.run(prompt, TaintLabel::User).await {
+        std::result::Result::Ok(c) => c,
+        std::result::Result::Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(ApiError::new(
+                    format!("upstream turn failed: {e:?}"),
+                    "upstream_error",
+                )),
+            )
+                .into_response();
         }
-        std::result::Result::Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            Json(ApiError::new(
-                format!("upstream turn failed: {e:?}"),
-                "upstream_error",
-            )),
-        )
-            .into_response(),
+    };
+
+    let created = u64::try_from(now_unix_seconds()).unwrap_or(0);
+    let id = format!("chatcmpl-{}", openai_response_nonce());
+
+    if req.stream {
+        // Stream-shaped delivery of the completed turn: one frame per
+        // `chat.completion.chunk`, closed with the sentinel `[DONE]`.
+        use axum::response::sse::{Event, Sse};
+        type SseItem = std::result::Result<Event, std::convert::Infallible>;
+        let mut items: Vec<SseItem> = stream_chunks(&req.model, &completion, &id, created)
+            .iter()
+            .map(|chunk| {
+                let data = serde_json::to_string(chunk).unwrap_or_default();
+                std::result::Result::Ok(Event::default().data(data))
+            })
+            .collect();
+        items.push(std::result::Result::Ok(Event::default().data("[DONE]")));
+        return Sse::new(futures_util::stream::iter(items)).into_response();
     }
+
+    Json(response_from_completion(&req.model, &completion, id, created)).into_response()
 }
 
 /// `GET /v1/models` — list the configured model and its fallback chain
@@ -3093,6 +3127,35 @@ taint = "trusted"
     }
 
     #[tokio::test]
+    async fn providers_endpoint_lists_vendors_and_flags_active() {
+        let mut cfg = Config::default();
+        cfg.provider.name = "anthropic".into();
+        let app = router(ServerState::new(cfg, None));
+        let body = search_uri(app, "/api/providers").await;
+        let rows = body["data"].as_array().expect("data array");
+        assert_eq!(rows.len(), 20, "ships the twenty first-party vendors");
+        let anthropic = rows
+            .iter()
+            .find(|r| r["id"] == "anthropic")
+            .expect("anthropic present");
+        assert_eq!(anthropic["active"], true);
+        assert_eq!(anthropic["name"], "Anthropic");
+        // Exactly one active when the configured vendor is supported.
+        let active_count = rows.iter().filter(|r| r["active"] == true).count();
+        assert_eq!(active_count, 1);
+    }
+
+    #[tokio::test]
+    async fn providers_endpoint_flags_none_active_when_unset() {
+        // Default config has no provider configured.
+        let app = router(ServerState::new(Config::default(), None));
+        let body = search_uri(app, "/api/providers").await;
+        let rows = body["data"].as_array().expect("data array");
+        assert_eq!(rows.len(), 20);
+        assert!(rows.iter().all(|r| r["active"] == false));
+    }
+
+    #[tokio::test]
     async fn tools_endpoint_surfaces_the_builtin_registry() {
         let state = ServerState::new(Config::default(), None);
         let app = router(state);
@@ -3195,16 +3258,37 @@ taint = "trusted"
     }
 
     #[tokio::test]
-    async fn v1_chat_completions_streaming_is_501() {
+    async fn v1_chat_completions_streaming_returns_sse_chunks() {
         let app = router(echo_agent_state());
-        let (status, body) = post_json_app(
-            app,
-            "/v1/chat/completions",
-            r#"{"model":"m","messages":[{"role":"user","content":"hi"}],"stream":true}"#,
-        )
-        .await;
-        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
-        assert_eq!(body["error"]["type"], "not_implemented_error");
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"stream":true}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(ct.starts_with("text/event-stream"), "content-type was {ct}");
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        // SSE frames carry chat.completion.chunk objects and close with
+        // the [DONE] sentinel.
+        assert!(text.contains("chat.completion.chunk"), "no chunk objects: {text}");
+        assert!(text.contains("\"role\":\"assistant\""), "no opening role frame");
+        assert!(text.contains("\"finish_reason\""), "no finish frame");
+        assert!(text.contains("data: [DONE]"), "no DONE sentinel: {text}");
     }
 
     #[tokio::test]

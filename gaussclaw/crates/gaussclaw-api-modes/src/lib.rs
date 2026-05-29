@@ -18,7 +18,8 @@
 pub mod openai;
 
 pub use openai::{
-    map_finish_reason, model_list, prompt_from_request, response_from_completion, ApiError,
-    ApiErrorBody, ChatChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage,
-    ModelCard, ModelList, RequestError, Usage,
+    map_finish_reason, model_list, prompt_from_request, response_from_completion, stream_chunks,
+    ApiError, ApiErrorBody, ChatChoice, ChatCompletionChunk, ChatCompletionRequest,
+    ChatCompletionResponse, ChatMessage, ChunkChoice, Delta, ModelCard, ModelList, RequestError,
+    Usage,
 };

@@ -79,6 +79,7 @@ pub mod postconditions;
 pub mod replicate;
 pub mod router;
 pub mod select;
+pub mod vendors;
 
 #[cfg(test)]
 mod e2e_anthropic;
@@ -103,3 +104,4 @@ pub use postconditions::{check_postconditions, PostconditionError};
 pub use replicate::ReplicateProvider;
 pub use router::{RoutedCompletion, RouterProvider, RouterTransparencyError};
 pub use select::{pick_provider, PickedProvider, ProviderChoice, UnconfiguredBackend};
+pub use vendors::{is_supported_vendor, supported_vendors, VendorInfo, SUPPORTED_VENDORS};

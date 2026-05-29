@@ -79,9 +79,6 @@ pub struct ChatCompletionRequest {
 pub enum RequestError {
     /// `messages` was empty.
     NoMessages,
-    /// `stream: true` — server-sent-events streaming isn't implemented
-    /// for this endpoint yet. Clients should retry with `stream: false`.
-    StreamingUnsupported,
 }
 
 impl RequestError {
@@ -90,7 +87,6 @@ impl RequestError {
     pub const fn error_type(&self) -> &'static str {
         match self {
             Self::NoMessages => "invalid_request_error",
-            Self::StreamingUnsupported => "not_implemented_error",
         }
     }
 
@@ -99,9 +95,6 @@ impl RequestError {
     pub const fn message(&self) -> &'static str {
         match self {
             Self::NoMessages => "`messages` must contain at least one message",
-            Self::StreamingUnsupported => {
-                "streaming responses are not supported on this endpoint; retry with stream:false"
-            }
         }
     }
 }
@@ -211,13 +204,12 @@ impl ApiError {
 
 /// Map an OpenAI chat-completions request into an engine [`Prompt`].
 ///
+/// Streaming (`stream: true`) is handled at the response layer, not
+/// here — this just builds the prompt either way.
+///
 /// # Errors
-/// - [`RequestError::StreamingUnsupported`] when `stream: true`.
 /// - [`RequestError::NoMessages`] when `messages` is empty.
 pub fn prompt_from_request(req: &ChatCompletionRequest) -> Result<Prompt, RequestError> {
-    if req.stream {
-        return Err(RequestError::StreamingUnsupported);
-    }
     if req.messages.is_empty() {
         return Err(RequestError::NoMessages);
     }
@@ -270,6 +262,110 @@ pub fn response_from_completion(
             total_tokens: prompt_tokens.saturating_add(completion_tokens),
         },
     }
+}
+
+// ─── streaming (SSE) ──────────────────────────────────────────────────────────
+
+/// Incremental delta in a streamed chunk. `role` appears on the first
+/// chunk, `content` on body chunks; both are omitted on the final
+/// (finish) chunk.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Delta {
+    /// Present only on the opening chunk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// A slice of the assistant message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+}
+
+/// One choice within a streamed [`ChatCompletionChunk`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkChoice {
+    /// 0-based index.
+    pub index: u32,
+    /// Incremental delta for this chunk.
+    pub delta: Delta,
+    /// Set only on the terminal chunk.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<String>,
+}
+
+/// One `chat.completion.chunk` SSE frame.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatCompletionChunk {
+    /// Response id (`chatcmpl-…`); stable across the whole stream.
+    pub id: String,
+    /// Always `"chat.completion.chunk"`.
+    pub object: String,
+    /// Unix seconds.
+    pub created: u64,
+    /// Echo of the requested model.
+    pub model: String,
+    /// Choices (always exactly one today).
+    pub choices: Vec<ChunkChoice>,
+}
+
+/// Maximum characters per streamed content delta. Splitting the final
+/// text into several frames gives clients a genuine incremental stream
+/// rather than one giant frame.
+const STREAM_CHUNK_CHARS: usize = 16;
+
+/// Render a finished [`Completion`] as the ordered streaming chunks.
+///
+/// An opening `{role:"assistant"}` frame, one or more `{content:…}`
+/// frames, then a terminal frame carrying `finish_reason`. The caller
+/// emits each as an SSE `data:` line and closes with `data: [DONE]`.
+///
+/// This is "stream-shaped" delivery of a completed turn — faithful to
+/// the OpenAI wire protocol — not token-by-token generation (the
+/// provider codec returns the full text in one call today).
+#[must_use]
+pub fn stream_chunks(
+    requested_model: &str,
+    completion: &Completion,
+    id: &str,
+    created: u64,
+) -> Vec<ChatCompletionChunk> {
+    let frame = |delta: Delta, finish: Option<String>| ChatCompletionChunk {
+        id: id.to_owned(),
+        object: "chat.completion.chunk".into(),
+        created,
+        model: requested_model.to_owned(),
+        choices: vec![ChunkChoice {
+            index: 0,
+            delta,
+            finish_reason: finish,
+        }],
+    };
+
+    let mut chunks = Vec::new();
+    // Opening frame announces the assistant role.
+    chunks.push(frame(
+        Delta {
+            role: Some("assistant".into()),
+            content: None,
+        },
+        None,
+    ));
+    // Body frames — char-windowed so multi-byte text is never split
+    // mid-codepoint.
+    let text_chars: Vec<char> = completion.text.chars().collect();
+    for window in text_chars.chunks(STREAM_CHUNK_CHARS) {
+        chunks.push(frame(
+            Delta {
+                role: None,
+                content: Some(window.iter().collect()),
+            },
+            None,
+        ));
+    }
+    // Terminal frame carries the finish reason and an empty delta.
+    chunks.push(frame(
+        Delta::default(),
+        Some(map_finish_reason(&completion.finish_reason).to_owned()),
+    ));
+    chunks
 }
 
 /// Build a `/v1/models` listing from `(id, owned_by)` pairs.
@@ -354,12 +450,46 @@ mod tests {
     }
 
     #[test]
-    fn streaming_request_is_rejected() {
+    fn streaming_request_still_builds_a_prompt() {
+        // Streaming is handled at the response layer; prompt construction
+        // succeeds regardless of the stream flag.
         let r = req(true, vec![ChatMessage::new("user", "hi")]);
-        assert_eq!(
-            prompt_from_request(&r).unwrap_err(),
-            RequestError::StreamingUnsupported
+        let prompt = prompt_from_request(&r).unwrap();
+        assert_eq!(prompt.messages.len(), 1);
+    }
+
+    #[test]
+    fn stream_chunks_open_body_and_finish() {
+        let completion = Completion::new(
+            "hello there friend",
+            "m",
+            "stop",
+            TokenCount::new(2, 3),
         );
+        let chunks = stream_chunks("gpt-4o", &completion, "chatcmpl-x", 7);
+        // First frame announces the role, last carries finish_reason.
+        assert_eq!(chunks.first().unwrap().choices[0].delta.role.as_deref(), Some("assistant"));
+        assert!(chunks.first().unwrap().choices[0].finish_reason.is_none());
+        let last = chunks.last().unwrap();
+        assert_eq!(last.choices[0].finish_reason.as_deref(), Some("stop"));
+        assert!(last.choices[0].delta.content.is_none());
+        // Reassembling the content deltas reproduces the full text.
+        let reassembled: String = chunks
+            .iter()
+            .filter_map(|c| c.choices[0].delta.content.clone())
+            .collect();
+        assert_eq!(reassembled, "hello there friend");
+        // Every frame echoes the requested model + chunk object kind.
+        assert!(chunks.iter().all(|c| c.model == "gpt-4o" && c.object == "chat.completion.chunk"));
+    }
+
+    #[test]
+    fn stream_chunks_empty_text_is_open_then_finish() {
+        let completion = Completion::new("", "m", "stop", TokenCount::new(0, 0));
+        let chunks = stream_chunks("m", &completion, "id", 1);
+        // No content frames for empty text: just role + finish.
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[1].choices[0].finish_reason.is_some());
     }
 
     #[test]

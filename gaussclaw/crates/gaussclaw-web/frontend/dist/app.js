@@ -1008,7 +1008,9 @@ renderers.settings = async () => {
     : ['anthropic', 'openai', 'openai-compat', 'google', 'cohere', 'ollama', 'huggingface', 'replicate', 'llama-cpp'];
   provs.forEach(p => {
     const name = typeof p === 'string' ? p : (p.name ?? 'unknown');
-    list.append(el('span', { class: 'badge' }, name));
+    const active = typeof p === 'object' && p.active === true;
+    list.append(el('span', { class: active ? 'badge badge-ok' : 'badge' },
+      active ? `${name} ✓` : name));
   });
 };
 

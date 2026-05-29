@@ -3329,6 +3329,7 @@ dependencies = [
  "gaussclaw-config",
  "gaussclaw-export",
  "gaussclaw-plugins",
+ "gaussclaw-providers",
  "gaussclaw-skill",
  "gaussclaw-store",
  "gaussclaw-tools",
