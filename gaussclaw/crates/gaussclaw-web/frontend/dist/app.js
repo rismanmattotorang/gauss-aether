@@ -92,6 +92,7 @@ const api = {
   health:    () => api.get('/api/health'),
   config:    () => api.get('/api/config'),
   sessions:  () => api.get('/api/sessions'),
+  search:    (q, mode) => api.get(`/api/search?q=${encodeURIComponent(q)}${mode ? `&mode=${mode}` : ''}`),
   providers: () => api.get('/api/providers'),
   tools:     () => api.get('/api/tools'),
   receipt:   () => api.get('/api/receipt/head'),
@@ -320,6 +321,7 @@ renderers.chat = () => {
 
 renderers.sessions = async () => {
   const list = $('#sessions-list');
+  wireSessionSearch();
   try {
     const sessions = await api.sessions();
     state.sessions = sessions ?? [];
@@ -345,6 +347,46 @@ renderers.sessions = async () => {
       'Could not load sessions. Backend may still be coming up.'));
   }
 };
+
+// Wire the Sessions-tab search box to /api/search (hybrid BM25 + HNSW
+// recall). Debounced; an empty box restores the recent-sessions list.
+// Idempotent — guards against re-binding when the tab re-renders.
+function wireSessionSearch() {
+  const input = $('#sessions-search');
+  if (!input || input.dataset.wired === '1') return;
+  input.dataset.wired = '1';
+  let timer = null;
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    const q = input.value.trim();
+    timer = setTimeout(async () => {
+      const list = $('#sessions-list');
+      if (q === '') { renderers.sessions(); return; }
+      try {
+        const hits = await api.search(q);
+        list.innerHTML = '';
+        if (!hits || hits.length === 0) {
+          list.append(el('div', { class: 'card placeholder' }, `No matches for “${q}”.`));
+          return;
+        }
+        hits.forEach(h => {
+          list.append(el('div', { class: 'card' },
+            el('header', { class: 'card-head' },
+              el('strong', {}, h.role ?? 'turn'),
+              el('span', { class: 'badge' }, `score ${(h.score ?? 0).toFixed(3)}`)
+            ),
+            el('p', {}, escape(h.content ?? '')),
+            el('p', { class: 'muted small' },
+              `turn ${h.turn_id} · session ${shortHex(h.session_id, 12)} · ${fmtTime(h.ts)}`)
+          ));
+        });
+      } catch {
+        list.innerHTML = '';
+        list.append(el('div', { class: 'card placeholder' }, 'Search failed — backend may be coming up.'));
+      }
+    }, 250);
+  });
+}
 
 // ─── 6. Tools view ──────────────────────────────────────────────────────────
 

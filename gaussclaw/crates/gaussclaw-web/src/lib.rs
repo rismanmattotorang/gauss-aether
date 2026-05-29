@@ -22,7 +22,8 @@
 //! | GET  | `/api/config`        | Active config tree |
 //! | GET  | `/api/config/schema` | JSON schema for the config tree |
 //! | POST | `/api/config`        | Patch a config value (cap-gated in P3) |
-//! | GET  | `/api/sessions`      | Recent sessions (FTS-searchable in P2) |
+//! | GET  | `/api/sessions`      | Recent sessions |
+//! | GET  | `/api/search`        | Conversation recall — BM25 ∪ HNSW hybrid over past turns |
 //! | GET  | `/api/providers`     | Provider catalogue (populated in P4) |
 //! | GET  | `/api/tools`         | Tool catalogue — live built-in registry |
 //! | GET  | `/api/receipt/head`  | Receipt-chain head (populated in P2) |
@@ -536,6 +537,80 @@ async fn handle_sessions(State(state): State<ServerState>) -> Json<Ok<Vec<Sessio
     } else {
         vec![]
     };
+    Json(Ok::new(rows))
+}
+
+/// `/api/search` query parameters.
+#[derive(Debug, Deserialize)]
+struct SearchQuery {
+    /// Query text.
+    q: String,
+    /// Max hits to return (default 10, capped at 50).
+    #[serde(default)]
+    k: Option<usize>,
+    /// `hybrid` (default) · `fts` · `vector`.
+    #[serde(default)]
+    mode: Option<String>,
+    /// Hybrid blend weight in `[0,1]` toward FTS (default 0.5). Only
+    /// used in `hybrid` mode.
+    #[serde(default)]
+    alpha: Option<f32>,
+}
+
+/// One conversation-search hit.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SearchHit {
+    /// Matched turn id.
+    pub turn_id: u64,
+    /// Owning session id.
+    pub session_id: String,
+    /// `user` | `assistant` | `system` | `tool`.
+    pub role: String,
+    /// Turn content (the matched text).
+    pub content: String,
+    /// RFC3339 timestamp.
+    pub ts: String,
+    /// Backend relevance score (BM25, cosine, or blended).
+    pub score: f32,
+}
+
+/// `GET /api/search?q=…&k=…&mode=hybrid|fts|vector&alpha=…`
+///
+/// Conversation recall over past turns via the store's BM25 + HNSW
+/// hybrid index. Powers the dashboard search box. Returns an empty list
+/// when no store is attached or the query is blank.
+#[axum::debug_handler]
+async fn handle_search(
+    State(state): State<ServerState>,
+    axum::extract::Query(q): axum::extract::Query<SearchQuery>,
+) -> Json<Ok<Vec<SearchHit>>> {
+    let query = q.q.trim();
+    let Some(store) = state.store() else {
+        return Json(Ok::new(vec![]));
+    };
+    if query.is_empty() {
+        return Json(Ok::new(vec![]));
+    }
+    let k = q.k.unwrap_or(10).min(50);
+    let alpha = q.alpha.unwrap_or(0.5);
+    let hits = match q.mode.as_deref() {
+        Some("fts") => store.fts_search(query, k).await,
+        Some("vector") => store.vector_search(query, k).await,
+        // Default: union recall (BM25 ∪ HNSW).
+        _ => store.hybrid_search(query, k, alpha).await,
+    };
+    let rows = hits
+        .unwrap_or_default()
+        .into_iter()
+        .map(|h| SearchHit {
+            turn_id: h.turn.id,
+            session_id: h.turn.session_id,
+            role: h.turn.role,
+            content: h.turn.content,
+            ts: h.turn.ts,
+            score: h.score,
+        })
+        .collect();
     Json(Ok::new(rows))
 }
 
@@ -1808,6 +1883,7 @@ pub fn router(state: ServerState) -> Router {
         )
         .route("/api/config/schema", get(handle_config_schema))
         .route("/api/sessions", get(handle_sessions))
+        .route("/api/search", get(handle_search))
         .route("/api/providers", get(handle_providers))
         .route("/api/tools", get(handle_tools))
         .route("/api/receipt/head", get(handle_receipt_head))
@@ -2032,6 +2108,109 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["id"], sess.id);
         assert_eq!(rows[0]["turns"], 1);
+    }
+
+    async fn search_uri(app: Router, uri: &str) -> serde_json::Value {
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn search_endpoint_finds_a_matching_turn() {
+        use std::sync::Arc;
+        let store = Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let sess = store.create_session("rest", "echo").await;
+        store
+            .append_turn(
+                &sess.id,
+                None,
+                "user",
+                "the quick brown fox jumps",
+                gauss_core::TaintLabel::User,
+            )
+            .await
+            .unwrap();
+        store
+            .append_turn(
+                &sess.id,
+                None,
+                "assistant",
+                "a lazy dog sleeps",
+                gauss_core::TaintLabel::User,
+            )
+            .await
+            .unwrap();
+
+        let app = router(test_state().with_store(store));
+        let body = search_uri(app, "/api/search?q=brown&mode=fts").await;
+        let rows = body["data"].as_array().expect("data array");
+        assert!(!rows.is_empty(), "fts search should find the 'brown' turn");
+        assert!(rows
+            .iter()
+            .any(|r| r["content"].as_str().unwrap_or("").contains("brown")));
+        assert_eq!(rows[0]["session_id"], sess.id);
+        assert!(rows[0]["score"].is_number());
+    }
+
+    #[tokio::test]
+    async fn search_blank_query_returns_empty() {
+        use std::sync::Arc;
+        let store = Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let app = router(test_state().with_store(store));
+        let body = search_uri(app, "/api/search?q=%20").await;
+        assert!(body["data"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_without_store_returns_empty() {
+        let app = router(test_state());
+        let body = search_uri(app, "/api/search?q=anything").await;
+        assert!(body["data"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_hybrid_mode_is_default_and_returns_hits() {
+        use std::sync::Arc;
+        let store = Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let sess = store.create_session("rest", "echo").await;
+        store
+            .append_turn(
+                &sess.id,
+                None,
+                "user",
+                "deploy the production cluster tonight",
+                gauss_core::TaintLabel::User,
+            )
+            .await
+            .unwrap();
+        let app = router(test_state().with_store(store));
+        // No mode → hybrid (BM25 ∪ HNSW). Hybrid always returns up to k
+        // hits because the vector channel ranks every turn.
+        let body = search_uri(app, "/api/search?q=production%20cluster").await;
+        let rows = body["data"].as_array().expect("data array");
+        assert!(!rows.is_empty(), "hybrid search should return hits");
     }
 
     #[tokio::test]
