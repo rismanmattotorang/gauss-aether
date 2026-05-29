@@ -201,6 +201,17 @@ fn run_web(
         // in a follow-up; this baseline keeps a single hostile peer
         // from saturating the agent loop.
         let rate_limit = gaussclaw_web::RateLimiter::new(120, 2.0);
+        // Sprint 13: background cron tick driver — periodically scans
+        // armed jobs and dispatches due ones through the agent loop.
+        // 5-second tick is granular enough for sub-minute schedules
+        // and cheap enough to run unconditionally; held in `_cron_handle`
+        // so it lives as long as the runtime.
+        let _cron_handle = spawn_cron_tick_driver(
+            cron.clone(),
+            agent.clone(),
+            gauss_core::CapToken::TOP,
+            std::time::Duration::from_secs(5),
+        );
         let mut state = gaussclaw_web::ServerState::new(cfg, source)
             .with_store(store)
             .with_cron(cron)
@@ -1013,6 +1024,100 @@ fn run_setup(
     println!("  export ANTHROPIC_API_KEY=…");
     println!("  gaussclaw chat -m \"hello\"");
     Ok(())
+}
+
+// ─── store opener (Sprint 11) ──────────────────────────────────────────────
+
+/// Sprint 13: spawn a background task that ticks the cron scheduler
+/// every `period`. Due jobs whose `payload_caps` are contained in
+/// `grant` fire through `dispatch`; refused fires land on the
+/// scheduler's TickReport as `Refused`.
+///
+/// The dispatch closure runs the job's payload as a text prompt
+/// through the supplied AgentLoop. Tool-call payloads — `{tool, args}`
+/// shape — land as a synthesised user message ("invoke tool X with
+/// args …") so the agent's normal tool-dispatch path runs them
+/// instead of the cron driver duplicating the kernel-admit logic.
+///
+/// Returned `JoinHandle` is held by the caller; dropping it lets the
+/// loop exit on the next tick.
+fn spawn_cron_tick_driver(
+    scheduler: std::sync::Arc<gauss_cron::Scheduler<gauss_cron::SystemClock>>,
+    agent: std::sync::Arc<gaussclaw_agent::AgentLoop>,
+    grant: gauss_core::CapToken,
+    period: std::time::Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(period);
+        // `interval` fires immediately on the first tick; skip that
+        // so the first fire happens after the period elapses, not at
+        // startup (which would race with workspace bring-up).
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            let agent_clone = agent.clone();
+            let report = scheduler
+                .tick(grant, move |job: &gauss_cron::Job| {
+                    // The fire closure is sync. Spawn the actual
+                    // agent run as a background task and return None
+                    // — receipt-id tracking lands in a follow-up
+                    // (would need the dispatch to be sync-completable
+                    // or the tick API to be async-F).
+                    let agent = agent_clone.clone();
+                    let payload = job.payload.clone();
+                    let label = job.label.clone();
+                    tokio::spawn(async move {
+                        let prompt_text = match payload.get("prompt").and_then(|v| v.as_str()) {
+                            Some(p) => p.to_string(),
+                            None => match payload.get("tool").and_then(|v| v.as_str()) {
+                                Some(tool) => format!(
+                                    "Cron job `{label}` fired. Please invoke the `{tool}` tool with arguments: {args}.",
+                                    args = payload.get("args").cloned().unwrap_or(serde_json::Value::Null),
+                                ),
+                                None => format!(
+                                    "Cron job `{label}` fired. Payload: {payload}.",
+                                ),
+                            },
+                        };
+                        let prompt = gaussclaw_agent::Prompt::new(
+                            "default",
+                            vec![gaussclaw_agent::Message::new("user", prompt_text)],
+                        );
+                        let sink = gaussclaw_agent::MemorySink::new();
+                        match agent
+                            .run(prompt, gauss_core::TaintLabel::User, None, &sink)
+                            .await
+                        {
+                            Ok(_) => tracing::info!(
+                                target: "gaussclaw_bin::cron",
+                                label = %label,
+                                "cron job dispatched through agent"
+                            ),
+                            Err(e) => tracing::warn!(
+                                target: "gaussclaw_bin::cron",
+                                label = %label,
+                                "cron job dispatch failed: {e:?}"
+                            ),
+                        }
+                    });
+                    None
+                })
+                .await;
+            match report {
+                Ok(r) if r.outcomes.is_empty() => {}
+                Ok(r) => tracing::debug!(
+                    target: "gaussclaw_bin::cron",
+                    fired = r.fired_count(),
+                    refused = r.refused_count(),
+                    "cron tick processed"
+                ),
+                Err(e) => tracing::warn!(
+                    target: "gaussclaw_bin::cron",
+                    "cron tick error: {e:?}"
+                ),
+            }
+        }
+    })
 }
 
 // ─── store opener (Sprint 11) ──────────────────────────────────────────────

@@ -643,4 +643,57 @@ mod tests {
         // Expected order: job 2 (60s) → job 1 (120s) → job 3 (180s).
         assert_eq!(*order.lock().unwrap(), vec![2, 1, 3]);
     }
+
+    // ─── Sprint 13: driver pattern test ─────────────────────────────────
+
+    /// Mirrors the `spawn_cron_tick_driver` pattern in `gaussclaw-bin`:
+    /// the fire closure spawns an async task and returns `None`. We
+    /// drive several ticks and assert that:
+    ///   1. The scheduler marks each due job as fired (fire_count
+    ///      advances).
+    ///   2. The spawned tasks all run to completion before the test
+    ///      ends.
+    /// This locks in the contract the bin relies on so a future
+    /// scheduler change that breaks the spawn-and-don't-wait pattern
+    /// is caught here.
+    #[tokio::test]
+    async fn spawn_from_fire_closure_pattern_is_safe() {
+        let clock = FixedClock::epoch();
+        let s = Arc::new(Scheduler::new(Arc::new(InMemoryJobStore::new()), clock));
+        let _ = s.add(sample_duration_job(60)).await.unwrap();
+        let _ = s.add(sample_duration_job(60)).await.unwrap();
+        let _ = s.add(sample_duration_job(60)).await.unwrap();
+        s.clock().advance(60);
+
+        let work_done = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter = work_done.clone();
+        let r = s
+            .tick(CapToken::TOP, move |_job| {
+                let c = counter.clone();
+                tokio::spawn(async move {
+                    // Simulated agent dispatch: small async delay.
+                    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                    c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                });
+                None
+            })
+            .await
+            .unwrap();
+        assert_eq!(r.fired_count(), 3);
+
+        // Wait for the spawned tasks to settle. In production the driver
+        // doesn't wait — that's fine, the agent loop owns its own
+        // backpressure. Here we wait so we can assert.
+        for _ in 0..20 {
+            if work_done.load(std::sync::atomic::Ordering::SeqCst) == 3 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            work_done.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "all spawned dispatches must complete"
+        );
+    }
 }
