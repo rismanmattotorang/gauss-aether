@@ -2925,6 +2925,11 @@ dependencies = [
 [[package]]
 name = "gaussclaw-api-modes"
 version = "0.0.1"
+dependencies = [
+ "gaussclaw-agent",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "gaussclaw-bin"
@@ -3317,6 +3322,7 @@ dependencies = [
  "gauss-cron",
  "gauss-hooks",
  "gaussclaw-agent",
+ "gaussclaw-api-modes",
  "gaussclaw-config",
  "gaussclaw-export",
  "gaussclaw-plugins",

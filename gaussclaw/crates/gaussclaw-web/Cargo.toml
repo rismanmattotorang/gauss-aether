@@ -21,6 +21,7 @@ gaussclaw-export = { workspace = true }
 gaussclaw-skill  = { workspace = true }
 gaussclaw-store  = { workspace = true }
 gaussclaw-tools  = { workspace = true }
+gaussclaw-api-modes = { workspace = true }
 anyhow           = { workspace = true }
 axum             = { workspace = true }
 tokio            = { workspace = true }

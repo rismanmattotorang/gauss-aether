@@ -24,11 +24,16 @@
 //! | POST | `/api/config`        | Patch a config value (cap-gated in P3) |
 //! | GET  | `/api/sessions`      | Recent sessions (FTS-searchable in P2) |
 //! | GET  | `/api/providers`     | Provider catalogue (populated in P4) |
-//! | GET  | `/api/tools`         | Tool catalogue (populated in P3) |
+//! | GET  | `/api/tools`         | Tool catalogue — live built-in registry |
 //! | GET  | `/api/receipt/head`  | Receipt-chain head (populated in P2) |
 //! | WS   | `/api/chat/ws`       | Chat WebSocket — streams turn tokens + tool events |
+//! | POST | `/v1/chat/completions` | OpenAI-compatible chat completions (non-streaming) |
+//! | GET  | `/v1/models`         | OpenAI-compatible model list |
 //!
-//! Every API response carries a JSON envelope: `{ "ok": true, "data": ... }`
+//! The `/v1/*` routes speak the OpenAI wire shape (raw, no `{ok,data}`
+//! envelope) so an unmodified OpenAI SDK pointed at `…/v1` works; the
+//! conversions live in `gaussclaw-api-modes`. Every `/api/*` response
+//! carries a JSON envelope: `{ "ok": true, "data": ... }`
 //! on success, `{ "ok": false, "error": { "code": "...", "message": "..." } }`
 //! on failure. This shape is what the retained Hermes frontend already
 //! consumes — preserving it is the cheapest way to honour Principle 1
@@ -606,6 +611,120 @@ async fn handle_tools() -> Json<Ok<Vec<serde_json::Value>>> {
     // Stable ordering for a deterministic UI / snapshot tests.
     tools.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
     Json(Ok::new(tools))
+}
+
+// ─── OpenAI-compatible API modes (Sprint 3) ───────────────────────────────────
+
+/// `POST /v1/chat/completions` — OpenAI-compatible chat completions.
+///
+/// Lets an unmodified OpenAI SDK pointed at `…/v1` drive the live
+/// GaussClaw agent. The body is mapped to an engine `Prompt`, run
+/// through the same `TurnPolicy` + provider the dashboard uses, and
+/// rendered back in the OpenAI response shape (with standard
+/// `prompt_tokens` / `completion_tokens` / `total_tokens`). Errors use
+/// the OpenAI `{ "error": {…} }` envelope.
+#[axum::debug_handler]
+async fn handle_v1_chat_completions(
+    State(state): State<ServerState>,
+    Json(req): Json<gaussclaw_api_modes::ChatCompletionRequest>,
+) -> Response {
+    use gaussclaw_api_modes::{
+        prompt_from_request, response_from_completion, ApiError, RequestError,
+    };
+
+    // WAL-before-effect: record the inbound request before any work.
+    let plane = state.kernel.plane_for(SurfaceRequest::UserSync);
+    state
+        .audit
+        .record_inbound(
+            "/v1/chat/completions",
+            "openai-api",
+            b"",
+            TaintLabel::User,
+            plane,
+        )
+        .await;
+
+    let prompt = match prompt_from_request(&req) {
+        std::result::Result::Ok(p) => p,
+        std::result::Result::Err(e) => {
+            let status = match e {
+                RequestError::StreamingUnsupported => StatusCode::NOT_IMPLEMENTED,
+                // NoMessages and any future request-validation variant
+                // are client errors.
+                _ => StatusCode::BAD_REQUEST,
+            };
+            return (status, Json(ApiError::from_request_error(&e))).into_response();
+        }
+    };
+
+    let Some(agent) = state.agent() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiError::new(
+                "no provider attached to this server; start `gaussclaw serve` with a configured provider",
+                "server_error",
+            )),
+        )
+            .into_response();
+    };
+
+    // Single faithful turn through the live provider. The TurnPolicy
+    // owns its own WAL + kernel admit for the model call.
+    match agent.policy.run(prompt, TaintLabel::User).await {
+        std::result::Result::Ok(completion) => {
+            let created = u64::try_from(now_unix_seconds()).unwrap_or(0);
+            let id = format!("chatcmpl-{}", openai_response_nonce());
+            Json(response_from_completion(&req.model, &completion, id, created)).into_response()
+        }
+        std::result::Result::Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ApiError::new(
+                format!("upstream turn failed: {e:?}"),
+                "upstream_error",
+            )),
+        )
+            .into_response(),
+    }
+}
+
+/// `GET /v1/models` — list the configured model and its fallback chain
+/// in the OpenAI models-list shape.
+#[axum::debug_handler]
+async fn handle_v1_models(
+    State(state): State<ServerState>,
+) -> Json<gaussclaw_api_modes::ModelList> {
+    let cfg = state.config();
+    let created = u64::try_from(now_unix_seconds()).unwrap_or(0);
+    let owner = if cfg.provider.name.is_empty() {
+        "gaussclaw".to_string()
+    } else {
+        cfg.provider.name.clone()
+    };
+    let mut entries: Vec<(String, String)> = Vec::new();
+    if !cfg.provider.model.is_empty() {
+        let id = if cfg.provider.name.is_empty() {
+            cfg.provider.model.clone()
+        } else {
+            format!("{}/{}", cfg.provider.name, cfg.provider.model)
+        };
+        entries.push((id, owner.clone()));
+    }
+    if let Some(chain) = &cfg.provider.chain {
+        for fallback in &chain.fallback {
+            entries.push((fallback.clone(), owner.clone()));
+        }
+    }
+    Json(gaussclaw_api_modes::model_list(entries, created))
+}
+
+/// A monotonic-ish nonce for `chatcmpl-…` ids. Uniqueness only needs to
+/// hold within a process; nanoseconds-since-epoch suffices.
+fn openai_response_nonce() -> u128 {
+    use std::time::SystemTime;
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos())
 }
 
 #[axum::debug_handler]
@@ -1724,6 +1843,12 @@ pub fn router(state: ServerState) -> Router {
         .route("/api/plugins", get(handle_plugins_list))
         .route("/api/replay/diff", axum::routing::post(handle_replay_diff))
         .route("/api/chat/ws", get(handle_chat_ws))
+        // OpenAI-compatible surface (Sprint 3)
+        .route(
+            "/v1/chat/completions",
+            axum::routing::post(handle_v1_chat_completions),
+        )
+        .route("/v1/models", get(handle_v1_models))
         // Frontend
         .route("/", get(handle_root))
         .route("/{*path}", get(handle_asset))
@@ -2823,6 +2948,120 @@ taint = "trusted"
         let mut sorted = ids.clone();
         sorted.sort_unstable();
         assert_eq!(ids, sorted);
+    }
+
+    // ── OpenAI-compatible API modes (Sprint 3) ────────────────────────────
+
+    fn echo_agent_state() -> ServerState {
+        use gaussclaw_agent::{AgentLoop, EchoProvider, KernelHandle, TurnPolicy};
+        let provider: Arc<dyn gaussclaw_agent::ProviderHandle> = Arc::new(EchoProvider::default());
+        let policy = TurnPolicy::new(KernelHandle::permissive(), provider);
+        let agent = Arc::new(AgentLoop::new(policy));
+        ServerState::new(Config::default(), None).with_agent(agent)
+    }
+
+    async fn post_json_app(app: Router, uri: &str, body: &str) -> (StatusCode, serde_json::Value) {
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn v1_chat_completions_returns_openai_shape() {
+        let app = router(echo_agent_state());
+        let (status, body) = post_json_app(
+            app,
+            "/v1/chat/completions",
+            r#"{"model":"gpt-4o","messages":[{"role":"user","content":"ping"}]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["object"], "chat.completion");
+        // The model is echoed back as the client requested it.
+        assert_eq!(body["model"], "gpt-4o");
+        assert!(body["id"].as_str().unwrap().starts_with("chatcmpl-"));
+        assert_eq!(body["choices"][0]["message"]["role"], "assistant");
+        assert!(body["choices"][0]["message"]["content"].is_string());
+        assert_eq!(body["choices"][0]["index"], 0);
+        // Standard OpenAI usage triple, not the gauss audit accounting.
+        assert!(body["usage"]["prompt_tokens"].is_number());
+        assert!(body["usage"]["completion_tokens"].is_number());
+        assert!(body["usage"]["total_tokens"].is_number());
+        assert!(body["usage"]["chain_index"].is_null());
+    }
+
+    #[tokio::test]
+    async fn v1_chat_completions_without_agent_is_503() {
+        let app = router(ServerState::new(Config::default(), None));
+        let (status, body) = post_json_app(
+            app,
+            "/v1/chat/completions",
+            r#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["type"], "server_error");
+    }
+
+    #[tokio::test]
+    async fn v1_chat_completions_streaming_is_501() {
+        let app = router(echo_agent_state());
+        let (status, body) = post_json_app(
+            app,
+            "/v1/chat/completions",
+            r#"{"model":"m","messages":[{"role":"user","content":"hi"}],"stream":true}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(body["error"]["type"], "not_implemented_error");
+    }
+
+    #[tokio::test]
+    async fn v1_chat_completions_empty_messages_is_400() {
+        let app = router(echo_agent_state());
+        let (status, body) =
+            post_json_app(app, "/v1/chat/completions", r#"{"model":"m","messages":[]}"#).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+    }
+
+    #[tokio::test]
+    async fn v1_models_lists_configured_model_and_fallbacks() {
+        let mut cfg = Config::default();
+        cfg.provider.name = "anthropic".into();
+        cfg.provider.model = "claude-3.5-sonnet".into();
+        let state = ServerState::new(cfg, None);
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/models")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["object"], "list");
+        let data = body["data"].as_array().unwrap();
+        assert_eq!(data[0]["id"], "anthropic/claude-3.5-sonnet");
+        assert_eq!(data[0]["object"], "model");
+        assert_eq!(data[0]["owned_by"], "anthropic");
     }
 
     #[test]
