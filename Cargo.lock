@@ -2942,6 +2942,7 @@ dependencies = [
  "gauss-core",
  "gauss-cron",
  "gauss-health",
+ "gauss-sandbox",
  "gauss-traits",
  "gaussclaw-agent",
  "gaussclaw-channels",

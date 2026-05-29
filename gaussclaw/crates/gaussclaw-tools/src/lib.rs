@@ -97,6 +97,7 @@ pub mod regex_match;
 pub mod registry;
 pub mod security_scan;
 pub mod session_search;
+pub mod sandboxed_shell;
 pub mod shell;
 pub mod spawners;
 pub mod sprint9_tools;
@@ -138,6 +139,7 @@ pub use security_scan::{
     Verdict, OSV_DATABASE, TIRITH_RULES,
 };
 pub use session_search::SessionSearchTool;
+pub use sandboxed_shell::SandboxedShellTool;
 pub use shell::ShellTool;
 pub use spawners::{composite_sandboxed, noop_sandboxed, unsandboxed};
 pub use sprint9_tools::{
@@ -170,6 +172,23 @@ pub fn default_registry() -> ToolRegistry {
 /// (typically `Arc<gaussclaw_http::ReqwestHttpClient>`).
 #[must_use]
 pub fn registry_with_http_client(http_client: Arc<dyn HttpClient>) -> ToolRegistry {
+    registry_full(http_client, None)
+}
+
+/// Build a registry with every default tool, the HTTP family wired to
+/// `http_client`, and a sandboxed shell tool wired to `sandbox` when
+/// supplied. The sandbox is typically `Arc<gauss_sandbox::BwrapSandbox>`
+/// on Linux; macOS deployments pass `Arc<gauss_sandbox::SeatbeltSandbox>`
+/// once that layer ships its real-spawn path.
+///
+/// Sprint 12 of "Wire the Loop" — connects the bwrap real-spawn work
+/// from Sprint 9 into the tool catalogue so the agent can pick
+/// `shell_sandboxed` over `shell` when isolation matters.
+#[must_use]
+pub fn registry_full(
+    http_client: Arc<dyn HttpClient>,
+    sandbox: Option<Arc<dyn gauss_traits::SandboxTrait>>,
+) -> ToolRegistry {
     let mut reg = ToolRegistry::new();
     reg.register(Arc::new(EchoTool::new()));
     reg.register(Arc::new(JsonGetTool::new()));
@@ -182,6 +201,9 @@ pub fn registry_with_http_client(http_client: Arc<dyn HttpClient>) -> ToolRegist
     reg.register(Arc::new(FileReadTool::new()));
     reg.register(Arc::new(FileWriteTool::new()));
     reg.register(Arc::new(ShellTool::new()));
+    if let Some(sb) = sandbox {
+        reg.register(Arc::new(SandboxedShellTool::new(sb)));
+    }
     reg.register(Arc::new(DatetimeTool::new()));
     reg.register(Arc::new(UuidTool::new()));
     reg.register(Arc::new(CsvParseTool::new()));

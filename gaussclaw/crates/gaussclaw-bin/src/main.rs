@@ -165,8 +165,17 @@ fn run_web(
                     std::sync::Arc::new(gaussclaw_tools::UnconfiguredHttpClient)
                 }
             };
-        let tools =
-            std::sync::Arc::new(gaussclaw_tools::registry_with_http_client(http_client));
+        // Sprint 12: thread a bwrap sandbox into the registry so the
+        // `shell_sandboxed` tool is wired alongside `shell`. The agent
+        // picks one over the other based on the model's call shape;
+        // when bwrap isn't installed the layer surfaces a clean error
+        // at invoke time, not at registry-build time.
+        let sandbox: std::sync::Arc<dyn gauss_traits::SandboxTrait> =
+            std::sync::Arc::new(gauss_sandbox::bwrap_layer::BwrapSandbox::default());
+        let tools = std::sync::Arc::new(gaussclaw_tools::registry_full(
+            http_client,
+            Some(sandbox),
+        ));
         let policy = gaussclaw_agent::TurnPolicy::new(kernel.clone(), provider)
             .with_audit(audit.clone())
             .with_store(store.clone())
@@ -361,7 +370,9 @@ fn build_tui_runtime(cfg: &gaussclaw_config::Config) -> anyhow::Result<TuiRuntim
             Ok(c) => std::sync::Arc::new(c),
             Err(_) => std::sync::Arc::new(gaussclaw_tools::UnconfiguredHttpClient),
         };
-    let tools = std::sync::Arc::new(gaussclaw_tools::registry_with_http_client(http_client));
+    let sandbox: std::sync::Arc<dyn gauss_traits::SandboxTrait> =
+        std::sync::Arc::new(gauss_sandbox::bwrap_layer::BwrapSandbox::default());
+    let tools = std::sync::Arc::new(gaussclaw_tools::registry_full(http_client, Some(sandbox)));
     let policy = gaussclaw_agent::TurnPolicy::new(kernel, provider)
         .with_audit(audit)
         .with_tools(tools);
@@ -799,7 +810,14 @@ fn run_model_set(
 // ─── tools ─────────────────────────────────────────────────────────────────
 
 fn run_tools_list() -> anyhow::Result<()> {
-    let reg = gaussclaw_tools::default_registry();
+    // Sprint 12: surface the full catalogue including the sandbox-
+    // backed shell tool so `gaussclaw tools list` matches what
+    // `gaussclaw web` and `gaussclaw gateway start` actually register.
+    let http_client: std::sync::Arc<dyn gaussclaw_tools::HttpClient> =
+        std::sync::Arc::new(gaussclaw_tools::UnconfiguredHttpClient);
+    let sandbox: std::sync::Arc<dyn gauss_traits::SandboxTrait> =
+        std::sync::Arc::new(gauss_sandbox::bwrap_layer::BwrapSandbox::default());
+    let reg = gaussclaw_tools::registry_full(http_client, Some(sandbox));
     if reg.is_empty() {
         println!("(no tools registered)");
         return Ok(());
@@ -815,7 +833,11 @@ fn run_tools_list() -> anyhow::Result<()> {
 }
 
 fn run_tools_show(name: &str) -> anyhow::Result<()> {
-    let reg = gaussclaw_tools::default_registry();
+    let http_client: std::sync::Arc<dyn gaussclaw_tools::HttpClient> =
+        std::sync::Arc::new(gaussclaw_tools::UnconfiguredHttpClient);
+    let sandbox: std::sync::Arc<dyn gauss_traits::SandboxTrait> =
+        std::sync::Arc::new(gauss_sandbox::bwrap_layer::BwrapSandbox::default());
+    let reg = gaussclaw_tools::registry_full(http_client, Some(sandbox));
     let tool = reg
         .get(name)
         .ok_or_else(|| anyhow::anyhow!("unknown tool: {name}"))?;
@@ -1091,8 +1113,12 @@ fn run_gateway_start(cfg: gaussclaw_config::Config) -> anyhow::Result<()> {
                 Ok(c) => std::sync::Arc::new(c),
                 Err(_) => std::sync::Arc::new(gaussclaw_tools::UnconfiguredHttpClient),
             };
-        let tools =
-            std::sync::Arc::new(gaussclaw_tools::registry_with_http_client(http_client));
+        let sandbox: std::sync::Arc<dyn gauss_traits::SandboxTrait> =
+            std::sync::Arc::new(gauss_sandbox::bwrap_layer::BwrapSandbox::default());
+        let tools = std::sync::Arc::new(gaussclaw_tools::registry_full(
+            http_client,
+            Some(sandbox),
+        ));
         let policy = gaussclaw_agent::TurnPolicy::new(kernel, provider)
             .with_audit(audit)
             .with_store(store.clone())
