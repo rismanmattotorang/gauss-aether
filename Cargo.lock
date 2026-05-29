@@ -2945,6 +2945,7 @@ dependencies = [
  "gaussclaw-cli",
  "gaussclaw-config",
  "gaussclaw-export",
+ "gaussclaw-http",
  "gaussclaw-migrate",
  "gaussclaw-plugins",
  "gaussclaw-providers",
@@ -3094,8 +3095,11 @@ name = "gaussclaw-http"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "gaussclaw-agent",
+ "gaussclaw-providers",
  "gaussclaw-tools",
  "reqwest",
+ "serde_json",
  "tokio",
  "wiremock",
 ]

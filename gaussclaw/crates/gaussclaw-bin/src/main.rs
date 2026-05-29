@@ -85,28 +85,19 @@ fn run_web(
             gauss_cron::SystemClock,
         ));
         // Build the AgentLoop that drives /api/chat/ws (Sprint 11).
-        // Sprint 13 §2: vendor codec is now selected from
-        // `cfg.provider.name`. Until a real `reqwest`-backed
-        // HttpBackend lands, the picker wraps the chosen codec around
-        // `UnconfiguredBackend`, which fails every send with a clean
-        // transport error — the dashboard renders this as an `error`
-        // frame rather than silently echoing.
+        // The vendor codec is selected from `cfg.provider.name` and
+        // wired to a real `reqwest`-backed `HttpBackend` so vendor
+        // calls hit the wire. When the configured vendor is unknown or
+        // empty, `pick_provider` falls back to the EchoProvider — the
+        // backend is harmless there because it's never invoked.
         let kernel = gaussclaw_agent::KernelHandle::permissive();
-        // API key sourced from a vendor-specific env var. The bin is
-        // tolerant of unset env: an empty key still passes through to
-        // the codec (it will surface as a 401 from the upstream when
-        // a real backend is plumbed).
-        let env_key = match cfg.provider.name.to_ascii_lowercase().as_str() {
-            "anthropic" => std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
-            "openai" => std::env::var("OPENAI_API_KEY").unwrap_or_default(),
-            _ => String::new(),
-        };
-        let choice = gaussclaw_providers::ProviderChoice::new(cfg.provider.name.clone())
-            .with_api_key(env_key);
+        // API key (env-sourced) + live reqwest transport, shared with
+        // the one-shot `chat` path via `build_provider_choice`.
+        let (_model, choice) = build_provider_choice(&cfg);
         let (provider, picked) = gaussclaw_providers::pick_provider(&choice);
         tracing::info!(
             target: "gaussclaw_bin::serve",
-            "vendor codec selected: {}",
+            "vendor codec selected: {} (live HTTP transport)",
             picked.as_str()
         );
         let audit = gaussclaw_agent::AuditTrace::new();
@@ -309,11 +300,49 @@ fn run_import(args: ImportArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+// ─── provider wiring ─────────────────────────────────────────────────────────
+
+/// Build a [`gaussclaw_providers::ProviderChoice`] from config: the
+/// configured vendor name, an env-sourced API key, and the live
+/// reqwest HTTP transport. Returns the bare model id the codec should
+/// send upstream alongside the choice.
+///
+/// Shared by the one-shot `chat` command and the `serve` agent-loop
+/// wiring so both reach the wire identically. An unset API-key env var
+/// passes an empty key through to the codec (which surfaces as a 401
+/// from the upstream). If the reqwest client can't be built, the
+/// backend is left unset and `pick_provider` falls back to the
+/// fail-closed `UnconfiguredBackend`.
+fn build_provider_choice(
+    cfg: &gaussclaw_config::Config,
+) -> (String, gaussclaw_providers::ProviderChoice) {
+    let model = if cfg.provider.model.is_empty() {
+        "echo".to_string()
+    } else {
+        cfg.provider.model.clone()
+    };
+    let env_key = match cfg.provider.name.to_ascii_lowercase().as_str() {
+        "anthropic" => std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+        "openai" => std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+        _ => String::new(),
+    };
+    let mut choice = gaussclaw_providers::ProviderChoice::new(cfg.provider.name.clone())
+        .with_api_key(env_key);
+    match gaussclaw_http::ReqwestProviderBackend::new() {
+        Ok(backend) => choice = choice.with_backend(std::sync::Arc::new(backend)),
+        Err(e) => tracing::error!(
+            target: "gaussclaw_bin",
+            "failed to build HTTP backend, vendor calls will fail closed: {e}"
+        ),
+    }
+    (model, choice)
+}
+
 // ─── chat ──────────────────────────────────────────────────────────────────
 
 fn run_chat(args: ChatArgs, cfg: &gaussclaw_config::Config) -> anyhow::Result<()> {
     use gauss_core::TaintLabel;
-    use gaussclaw_agent::{EchoProvider, KernelHandle, Message, Prompt, TurnPolicy};
+    use gaussclaw_agent::{KernelHandle, Message, Prompt, TurnPolicy};
     let Some(message) = args.message else {
         eprintln!(
             "gaussclaw chat: interactive mode is the TUI (`gaussclaw` with no args).\n  \
@@ -321,23 +350,17 @@ fn run_chat(args: ChatArgs, cfg: &gaussclaw_config::Config) -> anyhow::Result<()
         );
         return Ok(());
     };
-    let model = if cfg.provider.name.is_empty() {
-        "echo".to_string()
-    } else {
-        format!("{}/{}", cfg.provider.name, cfg.provider.model)
-    };
+    // Select the vendor codec from config and attach the live HTTP
+    // transport. With no vendor configured, `pick_provider` falls back
+    // to the EchoProvider; the model id we send the codec is the bare
+    // `provider.model` (the vendor doesn't understand the `name/model`
+    // display form).
+    let (model, choice) = build_provider_choice(cfg);
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let completion = rt.block_on(async move {
-        // The shipping binary's default chat path runs the EchoProvider —
-        // real vendor drivers in `gaussclaw-providers` ship behind the
-        // `chat` command once provider auth wiring lands (the crate is
-        // already present and tested; the binary's chat path is the last
-        // mile). Until then the EchoProvider gives the user a working
-        // round trip that exercises the kernel admit gate and the audit
-        // chain.
-        let provider = std::sync::Arc::new(EchoProvider::default());
+        let (provider, _picked) = gaussclaw_providers::pick_provider(&choice);
         let tp = TurnPolicy::new(KernelHandle::permissive(), provider);
         let prompt = Prompt::new(model, vec![Message::new("user", message.clone())]);
         tp.run(prompt, TaintLabel::User).await

@@ -14,21 +14,18 @@
 //!
 //! ## The HTTP backend story
 //!
-//! Until a real `reqwest`-backed [`HttpBackend`](crate::HttpBackend)
-//! lands in the workspace, vendor codecs constructed by this helper
-//! are wrapped around a small built-in [`UnconfiguredBackend`] that
-//! returns a deterministic error (`HttpError::Network("backend not
-//! configured")`) on every send. This is the same pattern
-//! `gaussclaw_tools::http::UnconfiguredHttpClient` uses — the codec
-//! is *reachable* and *typed correctly*, but the wire actually fails
-//! at the transport layer. A real network test surfaces the gap as a
-//! clean error frame the dashboard renders, instead of silently
-//! returning a stub echo.
+//! Callers attach the transport via [`ProviderChoice::with_backend`].
+//! The production transport is `gaussclaw_http::ReqwestProviderBackend`
+//! (a `reqwest`/rustls client); `gaussclaw-bin` builds it once and
+//! threads it through every codec.
 //!
-//! When a real backend ships, [`pick_provider`] grows a
-//! `Option<Arc<dyn HttpBackend>>` parameter and the
-//! `UnconfiguredBackend` default falls away. The wire-up *between*
-//! the bin, the config, and the vendor codec stays unchanged.
+//! When [`ProviderChoice::backend`] is left `None` — e.g. a build with
+//! no transport, or a unit test that doesn't care — the codec is still
+//! constructed and typed correctly, but wraps the built-in
+//! [`UnconfiguredBackend`], which returns a deterministic
+//! `HttpError::Network("backend not configured")` on every send. The
+//! dashboard renders that as a clean error frame rather than silently
+//! returning a stub echo. Tests inject a [`MockHttpBackend`] instead.
 
 use std::sync::Arc;
 

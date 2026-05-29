@@ -14,9 +14,12 @@
 //!
 //! ## Production wiring
 //!
-//! See `gaussclaw-bin` for the `reqwest`-backed implementation. The
-//! production backend honours per-request timeout, TLS verification,
-//! retry policy, and the surface's audit-WAL contract.
+//! The `reqwest`-backed implementation lives in `gaussclaw-http` as
+//! [`ReqwestProviderBackend`](https://docs.rs/gaussclaw-http) and is
+//! wired into the vendor codecs by `gaussclaw-bin` (see
+//! `build_provider_choice`). It honours a per-request timeout, rustls
+//! TLS verification against the OS root store, and a response-body cap.
+//! Tests plug [`MockHttpBackend`] into the same seam.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
