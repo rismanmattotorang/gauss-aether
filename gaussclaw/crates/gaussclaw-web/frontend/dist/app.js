@@ -374,25 +374,42 @@ const builtInTools = [
 renderers.tools = async () => {
   const list = $('#tools-list');
   list.innerHTML = '';
+  // Curated display metadata (descriptions, sandbox layers) keyed by
+  // tool name — the live `/api/tools` manifest doesn't carry prose.
+  const curated = Object.fromEntries(builtInTools.map(t => [t.name, t]));
+  // The backend registry is authoritative for *which* tools exist and
+  // their real caps / reversibility; fall back to the curated list only
+  // when the API is unreachable or empty.
   let tools = builtInTools;
+  let live = false;
   try {
     const remote = await api.tools();
-    if (Array.isArray(remote) && remote.length) tools = remote;
+    if (Array.isArray(remote) && remote.length) { tools = remote; live = true; }
   } catch {}
   state.tools = tools;
   tools.forEach(t => {
+    const name = t.name ?? t.id ?? '(unnamed)';
+    const meta = curated[name] ?? {};
+    // Capabilities: live rows carry a decoded `caps` array; curated
+    // rows carry a single `cap` string. Normalise to an array.
+    const caps = Array.isArray(t.caps) && t.caps.length
+      ? t.caps
+      : (t.cap ?? t.capability ? [t.cap ?? t.capability] : (meta.cap ? [meta.cap] : []));
+    const meta_row = el('div', { class: 'tool-meta' });
+    if (caps.length) caps.forEach(c => meta_row.append(el('span', { class: 'badge' }, c)));
+    else meta_row.append(el('span', { class: 'badge' }, 'cap:none'));
+    if (t.reversible === false) meta_row.append(el('span', { class: 'badge badge-warn' }, 'irreversible'));
+    const layers = t.layers ?? meta.layers ?? [];
+    layers.forEach(l => meta_row.append(el('span', { class: 'badge badge-ok' }, l)));
     list.append(
       el('article', { class: 'card tool-card' },
-        el('div', { class: 'tool-name' }, t.name),
-        el('p',  { class: 'tool-desc' }, t.desc ?? t.description ?? ''),
-        el('div', { class: 'tool-meta' },
-          el('span', { class: 'badge' }, t.cap ?? t.capability ?? 'cap:none'),
-          el('span', { class: 'badge' }, `taint: ${t.taint ?? '⊥'}`),
-          ...((t.layers ?? []).map(l => el('span', { class: 'badge badge-ok' }, l)))
-        )
+        el('div', { class: 'tool-name' }, name),
+        el('p',  { class: 'tool-desc' }, t.desc ?? t.description ?? meta.desc ?? ''),
+        meta_row,
       )
     );
   });
+  if (live) state.toolsSource = 'live registry';
 };
 
 // ─── 7. Receipts view ───────────────────────────────────────────────────────

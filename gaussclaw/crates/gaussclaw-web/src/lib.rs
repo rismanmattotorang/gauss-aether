@@ -539,9 +539,73 @@ async fn handle_providers() -> Json<Ok<Vec<serde_json::Value>>> {
     Json(Ok::new(vec![]))
 }
 
+/// Decode a [`CapToken`] bitset into stable, human-readable capability
+/// names for the dashboard's Tools tab. Only the named lattice
+/// constants are decoded; any unrecognised residual bits are reported
+/// as a `cap:0x…` hex tail so the UI never silently drops a capability.
+fn cap_names(cap: CapToken) -> Vec<String> {
+    const NAMED: &[(CapToken, &str)] = &[
+        (CapToken::FILESYSTEM_READ, "filesystem:read"),
+        (CapToken::FILESYSTEM_WRITE, "filesystem:write"),
+        (CapToken::NETWORK_GET, "network:get"),
+        (CapToken::NETWORK_POST, "network:post"),
+        (CapToken::SUBPROCESS_SPAWN, "subprocess:spawn"),
+        (CapToken::CRYPTO_SIGN, "crypto:sign"),
+        (CapToken::CANVAS_RENDER, "canvas:render"),
+        (CapToken::CANVAS_EMBED, "canvas:embed"),
+        (CapToken::CANVAS_FILE_WRITE, "canvas:file_write"),
+        (CapToken::ENV_READ, "env:read"),
+        (CapToken::MEMORY_READ, "memory:read"),
+        (CapToken::APPROVAL_ASK, "approval:ask"),
+        (CapToken::CRON_SCHEDULE, "cron:schedule"),
+        (CapToken::CHECKPOINT_WRITE, "checkpoint:write"),
+        (CapToken::CHECKPOINT_ROLLBACK, "checkpoint:rollback"),
+        (CapToken::EXECUTOR_LOCAL, "executor:local"),
+        (CapToken::EXECUTOR_DOCKER, "executor:docker"),
+        (CapToken::EXECUTOR_SSH, "executor:ssh"),
+        (CapToken::EXECUTOR_MODAL, "executor:modal"),
+        (CapToken::WORKTREE_WRITE, "worktree:write"),
+    ];
+    let mut names = Vec::new();
+    let mut residual = cap.bits();
+    for (bit, name) in NAMED {
+        if cap.contains(*bit) {
+            names.push((*name).to_string());
+            residual &= !bit.bits();
+        }
+    }
+    if residual != 0 {
+        names.push(format!("cap:{residual:#018x}"));
+    }
+    names
+}
+
 #[axum::debug_handler]
 async fn handle_tools() -> Json<Ok<Vec<serde_json::Value>>> {
-    Json(Ok::new(vec![]))
+    // Surface the built-in tool registry so the dashboard's Tools tab
+    // reflects what the agent can actually call: id, the capability the
+    // kernel gates each tool on, and whether the effect is reversible.
+    let registry = gaussclaw_tools::default_registry();
+    let mut tools: Vec<serde_json::Value> = registry
+        .ids()
+        .into_iter()
+        .filter_map(|id| registry.get(id))
+        .map(|tool| {
+            let m = tool.manifest();
+            serde_json::json!({
+                "id": m.id.0,
+                // `name` mirrors `id` so the dashboard renderer (which
+                // keys on `name`) shows a label even before it merges
+                // its curated description/layer metadata.
+                "name": m.id.0,
+                "caps": cap_names(m.cap_required),
+                "reversible": m.reversible,
+            })
+        })
+        .collect();
+    // Stable ordering for a deterministic UI / snapshot tests.
+    tools.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    Json(Ok::new(tools))
 }
 
 #[axum::debug_handler]
@@ -2722,5 +2786,60 @@ taint = "trusted"
     fn server_state_default_has_no_agent() {
         let state = ServerState::new(Config::default(), None);
         assert!(state.agent().is_none());
+    }
+
+    #[tokio::test]
+    async fn tools_endpoint_surfaces_the_builtin_registry() {
+        let state = ServerState::new(Config::default(), None);
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/tools")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let tools = body["data"].as_array().expect("tools array");
+        // The default registry is non-trivial and every row carries the
+        // id / caps / reversible triple the dashboard renders.
+        assert!(
+            tools.len() >= 19,
+            "expected the full builtin registry, got {}",
+            tools.len()
+        );
+        for t in tools {
+            assert!(t["id"].as_str().is_some());
+            assert!(t["caps"].as_array().is_some());
+            assert!(t["reversible"].as_bool().is_some());
+        }
+        // Sorted by id for a deterministic UI.
+        let ids: Vec<&str> = tools.iter().filter_map(|t| t["id"].as_str()).collect();
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        assert_eq!(ids, sorted);
+    }
+
+    #[test]
+    fn cap_names_decodes_known_bits_and_flags_residual() {
+        let cap = CapToken::from_bits(
+            CapToken::NETWORK_GET.bits() | CapToken::FILESYSTEM_READ.bits(),
+        );
+        let names = cap_names(cap);
+        assert!(names.contains(&"network:get".to_string()));
+        assert!(names.contains(&"filesystem:read".to_string()));
+        // An undecoded high bit surfaces as a hex residual rather than
+        // being silently dropped.
+        let unknown = CapToken::from_bits(1 << 40);
+        let names = cap_names(unknown);
+        assert_eq!(names.len(), 1);
+        assert!(names[0].starts_with("cap:0x"));
+        // Bottom decodes to no names.
+        assert!(cap_names(CapToken::BOTTOM).is_empty());
     }
 }
