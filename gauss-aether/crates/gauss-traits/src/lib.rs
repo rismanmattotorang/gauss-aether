@@ -483,18 +483,47 @@ pub struct SandboxRequest {
     pub args: serde_json::Value,
     /// Bytes piped to the tool's stdin (or its WASM `args.stdin` equivalent).
     pub stdin: Vec<u8>,
+    /// Optional command line (program + arguments) the L3 sandbox layer
+    /// runs inside its confinement. `None` keeps the historical
+    /// "probe-only" semantics — useful for the L1/L2 layers that don't
+    /// spawn a subprocess.
+    pub argv: Option<Vec<String>>,
+    /// Optional list of host directories the L3 layer should bind read-only
+    /// into the sandbox. Empty when the program needs nothing beyond
+    /// `/usr` + `/lib` + `/lib64` + `/bin` (the standard read-only set
+    /// the layer ships by default). Each path must be absolute.
+    pub bind_ro: Vec<String>,
 }
 
 impl SandboxRequest {
     /// Construct a request.
     #[must_use]
-    pub const fn new(tool: ToolId, cap: CapToken, args: serde_json::Value, stdin: Vec<u8>) -> Self {
+    pub fn new(tool: ToolId, cap: CapToken, args: serde_json::Value, stdin: Vec<u8>) -> Self {
         Self {
             tool,
             cap,
             args,
             stdin,
+            argv: None,
+            bind_ro: Vec::new(),
         }
+    }
+
+    /// Builder: attach a command line. The L3 layer interprets this as
+    /// the program + arguments to spawn inside its confinement.
+    #[must_use]
+    pub fn with_argv(mut self, argv: Vec<String>) -> Self {
+        self.argv = Some(argv);
+        self
+    }
+
+    /// Builder: request additional read-only host bind mounts. Each
+    /// path must be absolute; relative paths are rejected by the L3
+    /// layer at exec time.
+    #[must_use]
+    pub fn with_bind_ro(mut self, paths: Vec<String>) -> Self {
+        self.bind_ro = paths;
+        self
     }
 }
 
