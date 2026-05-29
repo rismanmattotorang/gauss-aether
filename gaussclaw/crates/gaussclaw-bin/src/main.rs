@@ -24,6 +24,12 @@ use gaussclaw_tui::StatusInfo;
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    // Sprint 14: install a tracing subscriber so `tracing::info!` /
+    // `warn!` / `error!` calls across the workspace land on stderr.
+    // `$RUST_LOG` (e.g. `RUST_LOG=gaussclaw_bin=info,gauss_kernel=debug`)
+    // takes precedence; the `-v` / `-q` flags map to a sensible
+    // default when the env var is absent.
+    init_tracing(cli.verbose, cli.quiet);
     let cfg_path = cli.config.as_deref();
     let (cfg, report) = match gaussclaw_config::load(cfg_path) {
         Ok((c, r)) => (c, Some(r)),
@@ -50,6 +56,41 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Web(args)) => run_web(cfg, report, args),
         Some(cmd) => dispatch(cmd, cfg, cfg_source),
     }
+}
+
+/// Sprint 14: install a tracing subscriber. Honours `$RUST_LOG`
+/// (standard `tracing_subscriber::EnvFilter` syntax) when present;
+/// otherwise falls back to a level derived from the CLI flags:
+///   • `-q`           → `warn`
+///   • default        → `info` (for `gaussclaw_*` and `gauss_*` targets;
+///                     `warn` for everything else, so dependency
+///                     chatter stays out of the way)
+///   • `-v`           → `debug` on workspace targets
+///   • `-vv` or more  → `trace` on workspace targets
+///
+/// Subscribers can only be installed once per process; on duplicate
+/// invocation (rare — only happens if a test harness `main()`s into
+/// this fn) the second call returns silently.
+fn init_tracing(verbose: u8, quiet: bool) {
+    use tracing_subscriber::{fmt, EnvFilter};
+    let default_filter = if quiet {
+        "warn".to_string()
+    } else {
+        match verbose {
+            0 => "warn,gaussclaw=info,gauss=info,gaussclaw_bin=info,gauss_aether=info".to_string(),
+            1 => "info,gaussclaw=debug,gauss=debug".to_string(),
+            _ => "debug,gaussclaw=trace,gauss=trace".to_string(),
+        }
+    };
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
+    // `try_init` returns Err if a subscriber is already set; we
+    // deliberately swallow that so we never panic in a process that
+    // bridged stdio.
+    let _ = fmt()
+        .with_env_filter(filter)
+        .with_target(true)
+        .with_writer(std::io::stderr)
+        .try_init();
 }
 
 fn run_web(
@@ -622,8 +663,16 @@ fn run_doctor(args: DoctorArgs) -> anyhow::Result<()> {
     let engine = HealthEngine::with_specs_defaults();
     let subject = DefaultSubject;
     let report: HealthReport = engine.evaluate(&subject);
+    // Sprint 14: environmental probes — things the SDHE invariants can't
+    // see because they're properties of the host, not the running
+    // process. Surfaced after the SPECS report so operators get one
+    // unified picture from `gaussclaw doctor`.
+    let env = collect_env_probes();
     if args.json {
-        let body = serde_json::to_string_pretty(&report)?;
+        let body = serde_json::to_string_pretty(&serde_json::json!({
+            "specs": report,
+            "environment": env.to_json(),
+        }))?;
         println!("{body}");
     } else {
         let pass = report
@@ -657,6 +706,19 @@ fn run_doctor(args: DoctorArgs) -> anyhow::Result<()> {
                 println!("      {d}");
             }
         }
+        // Sprint 14: environment probe table — wraps up the doctor
+        // report with host-level checks operators care about before
+        // deploying.
+        println!();
+        println!("environment:");
+        for probe in &env.probes {
+            let marker = match probe.status {
+                ProbeStatus::Ok => "ok",
+                ProbeStatus::Warn => "warn",
+                ProbeStatus::Fail => "fail",
+            };
+            println!("  [{marker}] {} — {}", probe.id, probe.detail);
+        }
         if report.has_failure() {
             eprintln!("\nat least one invariant is FAILING; exiting with code 1");
             std::process::exit(1);
@@ -669,6 +731,184 @@ fn run_doctor(args: DoctorArgs) -> anyhow::Result<()> {
 /// SPECS-default invariants exercise their `Ok` branch on a fresh
 /// install. Real deployments swap this for a subject backed by the
 /// runtime kernel / store / signer.
+// ─── Sprint 14: environmental probes ───────────────────────────────────────
+
+/// One host-level check the doctor command runs in addition to the
+/// SPECS invariants.
+#[derive(Debug, Clone)]
+struct EnvProbe {
+    /// Stable id for the probe (matches the operator-facing label).
+    id: &'static str,
+    /// Free-text detail surfaced under the marker in the textual
+    /// output.
+    detail: String,
+    /// Verdict — operators read this as a traffic light.
+    status: ProbeStatus,
+}
+
+impl EnvProbe {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "id": self.id,
+            "detail": self.detail,
+            "status": self.status.as_str(),
+        })
+    }
+}
+
+/// Probe outcomes. Mirrors `gauss_health::Verdict` shape so JSON
+/// consumers can fold the two sources into one view.
+#[derive(Debug, Clone, Copy)]
+enum ProbeStatus {
+    /// All good.
+    Ok,
+    /// Functional but suboptimal (missing optional dependency, etc.).
+    Warn,
+    /// Will block a production deployment.
+    Fail,
+}
+
+impl ProbeStatus {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Warn => "warn",
+            Self::Fail => "fail",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct EnvProbeReport {
+    probes: Vec<EnvProbe>,
+}
+
+impl EnvProbeReport {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "probes": self.probes.iter().map(EnvProbe::to_json).collect::<Vec<_>>()
+        })
+    }
+}
+
+fn collect_env_probes() -> EnvProbeReport {
+    let mut probes = Vec::new();
+
+    // 1. bwrap availability — needed for the L3a sandbox + the
+    //    shell_sandboxed tool.
+    let bwrap = std::process::Command::new("bwrap")
+        .arg("--version")
+        .output();
+    probes.push(match bwrap {
+        Ok(out) if out.status.success() => {
+            let ver = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            EnvProbe {
+                id: "sandbox.bwrap",
+                detail: format!("present ({ver})"),
+                status: ProbeStatus::Ok,
+            }
+        }
+        _ => EnvProbe {
+            id: "sandbox.bwrap",
+            detail: "not on PATH — shell_sandboxed will fail at invoke; \
+                     install `bubblewrap` (Debian/Ubuntu) or `bubblewrap` (Arch)"
+                .into(),
+            status: ProbeStatus::Warn,
+        },
+    });
+
+    // 2. Persistent data dir — set / unset, writable, etc.
+    probes.push(match std::env::var("GAUSSCLAW_DATA_DIR") {
+        Ok(dir) if !dir.is_empty() => {
+            let path = std::path::PathBuf::from(&dir);
+            let probe_id = "store.data_dir";
+            match std::fs::create_dir_all(&path) {
+                Ok(()) => {
+                    // Write a marker file to confirm we can actually
+                    // touch it.
+                    let marker = path.join(".gaussclaw-doctor-write");
+                    match std::fs::write(&marker, b"ok") {
+                        Ok(()) => {
+                            let _ = std::fs::remove_file(&marker);
+                            EnvProbe {
+                                id: probe_id,
+                                detail: format!("writable at {}", path.display()),
+                                status: ProbeStatus::Ok,
+                            }
+                        }
+                        Err(e) => EnvProbe {
+                            id: probe_id,
+                            detail: format!("{} exists but not writable: {e}", path.display()),
+                            status: ProbeStatus::Fail,
+                        },
+                    }
+                }
+                Err(e) => EnvProbe {
+                    id: probe_id,
+                    detail: format!("cannot create {}: {e}", path.display()),
+                    status: ProbeStatus::Fail,
+                },
+            }
+        }
+        _ => EnvProbe {
+            id: "store.data_dir",
+            detail: "GAUSSCLAW_DATA_DIR not set — session history will be lost on restart"
+                .into(),
+            status: ProbeStatus::Warn,
+        },
+    });
+
+    // 3. Provider API key — checked per the configured vendor.
+    // The doctor doesn't have the loaded config here (the args
+    // surface is small), so we probe both common env vars and report
+    // what's set / missing so operators self-correlate.
+    let anthropic_set = std::env::var("ANTHROPIC_API_KEY")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    let openai_set = std::env::var("OPENAI_API_KEY")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    let detail = format!(
+        "anthropic={}; openai={}",
+        if anthropic_set { "set" } else { "unset" },
+        if openai_set { "set" } else { "unset" }
+    );
+    probes.push(EnvProbe {
+        id: "provider.env_keys",
+        detail,
+        status: if anthropic_set || openai_set {
+            ProbeStatus::Ok
+        } else {
+            ProbeStatus::Warn
+        },
+    });
+
+    // 4. Default web port reachability — check that we can bind to
+    //    127.0.0.1:8080 (the default for `gaussclaw web`) without it
+    //    being already in use. This is best-effort: the OS may
+    //    refuse the bind for unrelated reasons (CAP_NET_BIND on
+    //    privileged ports, conflicting socket reuse, …); a `warn`
+    //    here just hints at the conflict before deployment.
+    let port_probe = match std::net::TcpListener::bind("127.0.0.1:8080") {
+        Ok(listener) => {
+            drop(listener);
+            EnvProbe {
+                id: "web.port_8080",
+                detail: "default port 8080 is bindable".into(),
+                status: ProbeStatus::Ok,
+            }
+        }
+        Err(e) => EnvProbe {
+            id: "web.port_8080",
+            detail: format!("port 8080 not bindable: {e} — pass --port to override"),
+            status: ProbeStatus::Warn,
+        },
+    };
+    probes.push(port_probe);
+
+    EnvProbeReport { probes }
+}
+
 struct DefaultSubject;
 
 #[async_trait::async_trait]
