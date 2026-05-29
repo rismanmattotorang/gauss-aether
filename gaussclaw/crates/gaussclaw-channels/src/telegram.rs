@@ -93,7 +93,7 @@ impl TelegramChannel {
         );
         let chat_id = msg.recipient.parse::<i64>().map_or_else(
             |_| serde_json::Value::String(msg.recipient.clone()),
-            |n| serde_json::Value::from(n),
+            serde_json::Value::from,
         );
         let body = serde_json::json!({
             "chat_id": chat_id,

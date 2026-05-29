@@ -804,13 +804,14 @@ fn run_config_path(cfg_path: Option<&std::path::Path>) -> anyhow::Result<()> {
 
 /// Default persistent-store path under the platform data directory.
 fn default_storage_path() -> String {
-    directories::ProjectDirs::from("ai", "gauss", "gaussclaw")
-        .map(|d| d.data_dir().join("store").to_string_lossy().into_owned())
-        .unwrap_or_else(|| "./gaussclaw-data/store".to_string())
+    directories::ProjectDirs::from("ai", "gauss", "gaussclaw").map_or_else(
+        || "./gaussclaw-data/store".to_string(),
+        |d| d.data_dir().join("store").to_string_lossy().into_owned(),
+    )
 }
 
 /// Render an empty config value as `unset` for prompts.
-fn shown(s: &str) -> &str {
+const fn shown(s: &str) -> &str {
     if s.is_empty() {
         "unset"
     } else {
@@ -840,15 +841,15 @@ fn run_setup(
     cfg: &gaussclaw_config::Config,
     cfg_source: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
-    let target: std::path::PathBuf =
-        cfg_source
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_else(|| {
-                gaussclaw_config::search_path()
-                    .into_iter()
-                    .next()
-                    .unwrap_or_else(|| std::path::PathBuf::from("./gaussclaw.toml"))
-            });
+    let target: std::path::PathBuf = cfg_source.map_or_else(
+        || {
+            gaussclaw_config::search_path()
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| std::path::PathBuf::from("./gaussclaw.toml"))
+        },
+        std::path::Path::to_path_buf,
+    );
 
     // Edit a clone of the current config so re-running setup is idempotent.
     let mut new_cfg = cfg.clone();

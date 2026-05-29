@@ -17,6 +17,13 @@
 //! block on reply delivery — a failed outbound send is logged, not
 //! surfaced to the vendor (which would otherwise retry the delivery).
 
+// These items are `pub(crate)` because `main.rs` (the crate root, a
+// sibling of this private module) builds the state and router.
+// `unreachable_pub` forbids plain `pub` here, while `redundant_pub_crate`
+// flags the `pub(crate)` as redundant in a binary — the two lints
+// conflict, so we silence the latter with that rationale.
+#![allow(clippy::redundant_pub_crate)]
+
 use std::sync::Arc;
 
 use axum::body::Bytes;
@@ -45,7 +52,6 @@ pub(crate) struct GatewayState {
 
 /// Build the gateway router. Separated from the server bind so it's
 /// unit-testable via `tower::ServiceExt::oneshot`.
-#[must_use]
 pub(crate) fn gateway_router(state: GatewayState) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -63,7 +69,7 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
 }
 
 /// Map a verification/parse error to an HTTP status.
-fn verify_status(e: &ChannelError) -> StatusCode {
+const fn verify_status(e: &ChannelError) -> StatusCode {
     match e {
         ChannelError::BadSignature
         | ChannelError::SignatureInvalid(_)
