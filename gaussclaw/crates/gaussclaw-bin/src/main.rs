@@ -254,11 +254,22 @@ fn run_web(
             std::time::Duration::from_secs(5),
         );
         let mut state = gaussclaw_web::ServerState::new(cfg, source)
-            .with_store(store)
+            .with_store(store.clone())
             .with_cron(cron)
             .with_plugin_roots(gaussclaw_plugins::default_discovery_roots())
             .with_agent(agent)
             .with_rate_limit(rate_limit);
+        // Sprint 15: background TSA anchor driver — anchors the chain
+        // head every N chain-length entries (default 1000, per README).
+        // `_anchor_handle` lives as long as the runtime; metrics are
+        // shared with the dashboard so /api/metrics surfaces anchor
+        // counts.
+        let _anchor_handle = spawn_tsa_anchor_driver(
+            store,
+            state.metrics().clone(),
+            anchor_every_from_env(),
+            std::time::Duration::from_secs(30),
+        );
         if let Some(g) = gateway {
             state = state.with_gateway(g);
             for (handle, secret) in channel_secrets {
@@ -1360,6 +1371,146 @@ fn spawn_cron_tick_driver(
     })
 }
 
+// ─── TSA anchor driver (Sprint 15) ─────────────────────────────────────────
+
+/// Default chain-length delta between anchors. Mirrors the README
+/// claim of "anchored to an RFC 3161 timestamp authority every
+/// thousand entries". Operators can override at deploy time via
+/// `$GAUSSCLAW_ANCHOR_EVERY`.
+pub const DEFAULT_ANCHOR_EVERY: u64 = 1000;
+
+/// Sprint 15: spawn a background task that periodically anchors the
+/// chain head when its length has grown by at least `every_n` entries
+/// since the last successful anchor.
+///
+/// The poll interval is fixed at 30 s — frequent enough to keep
+/// anchors close to the head, infrequent enough that an idle
+/// deployment doesn't generate a TSA call every loop. The `every_n`
+/// threshold is configurable so a chatty deployment (web + channels +
+/// cron firing) can anchor at the natural rotation point and a quiet
+/// one only anchors when there's enough new chain to bother.
+fn spawn_tsa_anchor_driver(
+    store: std::sync::Arc<gaussclaw_store::SessionStore>,
+    metrics: std::sync::Arc<gaussclaw_web::Metrics>,
+    every_n: u64,
+    period: std::time::Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(period);
+        ticker.tick().await; // skip the immediate fire
+        let mut last_anchored_at: u64 = 0;
+        loop {
+            ticker.tick().await;
+            let length = match store.chain_head().await {
+                Ok(h) => h.length,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "gaussclaw_bin::anchor",
+                        "chain_head read failed: {e:?}"
+                    );
+                    continue;
+                }
+            };
+            if !should_anchor(length, last_anchored_at, every_n) {
+                continue;
+            }
+            match store.anchor_now().await {
+                Ok(anchor) => {
+                    use std::sync::atomic::Ordering::Relaxed;
+                    metrics.audit_anchors_total.fetch_add(1, Relaxed);
+                    last_anchored_at = length;
+                    tracing::info!(
+                        target: "gaussclaw_bin::anchor",
+                        chain_length = length,
+                        kind = ?anchor.kind,
+                        anchored_at_ms = anchor.anchored_at_ms,
+                        "anchored chain head"
+                    );
+                }
+                Err(e) => {
+                    use std::sync::atomic::Ordering::Relaxed;
+                    metrics
+                        .audit_anchor_failures_total
+                        .fetch_add(1, Relaxed);
+                    tracing::warn!(
+                        target: "gaussclaw_bin::anchor",
+                        "anchor_now failed: {e:?}"
+                    );
+                }
+            }
+        }
+    })
+}
+
+/// Read `$GAUSSCLAW_ANCHOR_EVERY` as a chain-length delta, falling
+/// back to [`DEFAULT_ANCHOR_EVERY`]. Operators set this lower (e.g.
+/// `50`) on quiet test deployments so the anchor path stays
+/// exercised.
+fn anchor_every_from_env() -> u64 {
+    std::env::var("GAUSSCLAW_ANCHOR_EVERY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n: &u64| *n > 0)
+        .unwrap_or(DEFAULT_ANCHOR_EVERY)
+}
+
+/// Throttle predicate used by the anchor driver. Pure function so
+/// the policy is testable without the surrounding tokio loop. Returns
+/// `true` iff the current `length` has grown by at least `every_n`
+/// since `last_anchored_at`.
+#[must_use]
+fn should_anchor(length: u64, last_anchored_at: u64, every_n: u64) -> bool {
+    length.saturating_sub(last_anchored_at) >= every_n
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anchor_every_from_env_falls_back_to_default_when_unset() {
+        // Save+restore so the test is order-insensitive against other
+        // tests in the same process.
+        let prior = std::env::var("GAUSSCLAW_ANCHOR_EVERY").ok();
+        std::env::remove_var("GAUSSCLAW_ANCHOR_EVERY");
+        assert_eq!(anchor_every_from_env(), DEFAULT_ANCHOR_EVERY);
+        if let Some(v) = prior {
+            std::env::set_var("GAUSSCLAW_ANCHOR_EVERY", v);
+        }
+    }
+
+    #[test]
+    fn anchor_every_from_env_honours_a_valid_override() {
+        let prior = std::env::var("GAUSSCLAW_ANCHOR_EVERY").ok();
+        std::env::set_var("GAUSSCLAW_ANCHOR_EVERY", "50");
+        assert_eq!(anchor_every_from_env(), 50);
+        // A zero override is ignored — defaulting is the safer
+        // behaviour (zero would anchor on every tick).
+        std::env::set_var("GAUSSCLAW_ANCHOR_EVERY", "0");
+        assert_eq!(anchor_every_from_env(), DEFAULT_ANCHOR_EVERY);
+        // Garbage falls back too.
+        std::env::set_var("GAUSSCLAW_ANCHOR_EVERY", "not-a-number");
+        assert_eq!(anchor_every_from_env(), DEFAULT_ANCHOR_EVERY);
+        match prior {
+            Some(v) => std::env::set_var("GAUSSCLAW_ANCHOR_EVERY", v),
+            None => std::env::remove_var("GAUSSCLAW_ANCHOR_EVERY"),
+        }
+    }
+
+    #[test]
+    fn should_anchor_returns_true_only_when_delta_meets_threshold() {
+        assert!(!should_anchor(0, 0, 1000));
+        assert!(!should_anchor(999, 0, 1000));
+        assert!(should_anchor(1000, 0, 1000));
+        assert!(should_anchor(2500, 0, 1000));
+        assert!(!should_anchor(1500, 1000, 1000));
+        assert!(should_anchor(2000, 1000, 1000));
+        // Length shrinks below last (impossible in practice but
+        // guard saturating_sub semantics): predicate stays false.
+        assert!(!should_anchor(100, 1000, 50));
+    }
+}
+
 // ─── store opener (Sprint 11) ──────────────────────────────────────────────
 
 /// Sprint 11: open the session store with optional disk persistence.
@@ -1374,7 +1525,7 @@ fn spawn_cron_tick_driver(
 /// Falls back to the in-memory backend when the env var is absent —
 /// preserves the existing demo-binary semantics for tests + CI.
 async fn open_store(surface: &str) -> anyhow::Result<gaussclaw_store::SessionStore> {
-    match std::env::var("GAUSSCLAW_DATA_DIR") {
+    let raw = match std::env::var("GAUSSCLAW_DATA_DIR") {
         Ok(dir) if !dir.is_empty() => {
             let path = std::path::PathBuf::from(dir).join(surface);
             tracing::info!(
@@ -1383,7 +1534,7 @@ async fn open_store(surface: &str) -> anyhow::Result<gaussclaw_store::SessionSto
                 path = %path.display(),
                 "opening durable session store"
             );
-            Ok(gaussclaw_store::SessionStore::open_at_path(path).await?)
+            gaussclaw_store::SessionStore::open_at_path(path).await?
         }
         _ => {
             tracing::info!(
@@ -1391,9 +1542,19 @@ async fn open_store(surface: &str) -> anyhow::Result<gaussclaw_store::SessionSto
                 surface = surface,
                 "opening in-memory session store (set GAUSSCLAW_DATA_DIR for persistence)"
             );
-            Ok(gaussclaw_store::SessionStore::open_in_memory().await?)
+            gaussclaw_store::SessionStore::open_in_memory().await?
         }
-    }
+    };
+    // Sprint 15: attach a TSA client so the anchor driver has
+    // something to call. The default is the deterministic in-process
+    // `SimulatorTsaClient`, seeded so the same anchors are reproducible
+    // across runs against the same store contents. Production
+    // deployments will swap in a real RFC 3161 HTTP client (separate
+    // sprint) via a `with_tsa` builder on the bin's startup path.
+    use gauss_audit::SimulatorTsaClient;
+    let tsa: std::sync::Arc<dyn gauss_audit::TsaClient> =
+        std::sync::Arc::new(SimulatorTsaClient::from_seed([0xa7u8; 32]));
+    Ok(raw.with_tsa(tsa))
 }
 
 // ─── gateway start (standalone daemon) ─────────────────────────────────────
@@ -1486,10 +1647,17 @@ fn run_gateway_start(cfg: gaussclaw_config::Config) -> anyhow::Result<()> {
         };
         let rate_limit = gaussclaw_web::RateLimiter::new(120, 2.0);
         let state = gaussclaw_web::ServerState::new(cfg, None)
-            .with_store(store)
+            .with_store(store.clone())
             .with_agent(agent)
             .with_gateway(gateway)
             .with_rate_limit(rate_limit);
+        // Sprint 15: same TSA anchor driver the web surface uses.
+        let _anchor_handle = spawn_tsa_anchor_driver(
+            store,
+            state.metrics().clone(),
+            anchor_every_from_env(),
+            std::time::Duration::from_secs(30),
+        );
         for (handle, secret) in channel_secrets {
             state.insert_channel_secret(handle, secret);
         }

@@ -431,6 +431,11 @@ pub struct Metrics {
     pub tool_calls_ok_total: std::sync::atomic::AtomicU64,
     /// Tool calls that completed with an error (ok=false).
     pub tool_calls_err_total: std::sync::atomic::AtomicU64,
+    /// Sprint 15: chain-head anchors successfully recorded via the
+    /// TSA. Bumped by the background anchor driver in the bin.
+    pub audit_anchors_total: std::sync::atomic::AtomicU64,
+    /// Anchor attempts that failed (TSA client returned an error).
+    pub audit_anchor_failures_total: std::sync::atomic::AtomicU64,
 }
 
 impl Metrics {
@@ -486,6 +491,18 @@ impl Metrics {
             "gaussclaw_tool_calls_err_total",
             "Tool calls that completed with an error.",
             self.tool_calls_err_total.load(Relaxed),
+        );
+        row(
+            &mut s,
+            "gaussclaw_audit_anchors_total",
+            "Chain-head anchors successfully recorded via the TSA.",
+            self.audit_anchors_total.load(Relaxed),
+        );
+        row(
+            &mut s,
+            "gaussclaw_audit_anchor_failures_total",
+            "Anchor attempts that failed (TSA client returned an error).",
+            self.audit_anchor_failures_total.load(Relaxed),
         );
         s
     }

@@ -40,6 +40,7 @@ gauss-checkpoint   = { workspace = true }
 gauss-health       = { workspace = true }
 gauss-traits       = { workspace = true }
 gauss-sandbox      = { workspace = true }
+gauss-audit        = { workspace = true }
 clap               = { workspace = true }
 anyhow             = { workspace = true }
 tokio              = { workspace = true, features = ["fs"] }

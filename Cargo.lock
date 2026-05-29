@@ -2938,6 +2938,7 @@ dependencies = [
  "blake3",
  "clap",
  "directories",
+ "gauss-audit",
  "gauss-checkpoint",
  "gauss-core",
  "gauss-cron",
