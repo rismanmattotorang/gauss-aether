@@ -72,9 +72,12 @@ fn run_web(
     rt.block_on(async move {
         // Phase 2 wiring: build a single Arc<SessionStore> that backs
         // /api/sessions, /api/receipt/head, and the chat WebSocket.
-        // In-memory backend for the demo binary; production deployments
-        // swap to a persistent SurrealMemory via SessionStore::with_memory.
-        let store = std::sync::Arc::new(gaussclaw_store::SessionStore::open_in_memory().await?);
+        // Sprint 11: when `$GAUSSCLAW_DATA_DIR` is set, persist every
+        // session / turn / anchor to `<dir>/store.jsonl`. On restart
+        // the same path replays into the new store, so chat history
+        // survives. Without the env var we keep the in-memory backend
+        // for tests, CI, and the demo binary.
+        let store = std::sync::Arc::new(open_store(/* surface = */ "web").await?);
         // Sprint 5 §3: one persistent in-memory cron scheduler per
         // server lifecycle. Trinity-backed persistence wires in the
         // Sprint 5 §3 follow-on.
@@ -990,6 +993,42 @@ fn run_setup(
     Ok(())
 }
 
+// ─── store opener (Sprint 11) ──────────────────────────────────────────────
+
+/// Sprint 11: open the session store with optional disk persistence.
+///
+/// When `$GAUSSCLAW_DATA_DIR` is set, the store is opened at
+/// `<dir>/<surface>/` (e.g. `<dir>/web/`, `<dir>/gateway/`) so the
+/// web surface and the gateway daemon don't race on the same file
+/// when both are deployed against the same data directory. The path
+/// is logged at info level so operators can confirm what they
+/// configured at startup.
+///
+/// Falls back to the in-memory backend when the env var is absent —
+/// preserves the existing demo-binary semantics for tests + CI.
+async fn open_store(surface: &str) -> anyhow::Result<gaussclaw_store::SessionStore> {
+    match std::env::var("GAUSSCLAW_DATA_DIR") {
+        Ok(dir) if !dir.is_empty() => {
+            let path = std::path::PathBuf::from(dir).join(surface);
+            tracing::info!(
+                target: "gaussclaw_bin::store",
+                surface = surface,
+                path = %path.display(),
+                "opening durable session store"
+            );
+            Ok(gaussclaw_store::SessionStore::open_at_path(path).await?)
+        }
+        _ => {
+            tracing::info!(
+                target: "gaussclaw_bin::store",
+                surface = surface,
+                "opening in-memory session store (set GAUSSCLAW_DATA_DIR for persistence)"
+            );
+            Ok(gaussclaw_store::SessionStore::open_in_memory().await?)
+        }
+    }
+}
+
 // ─── gateway start (standalone daemon) ─────────────────────────────────────
 
 fn run_gateway_start(cfg: gaussclaw_config::Config) -> anyhow::Result<()> {
@@ -1028,7 +1067,7 @@ fn run_gateway_start(cfg: gaussclaw_config::Config) -> anyhow::Result<()> {
         // Same agent + provider + tools + store wiring as run_web,
         // copied minimally rather than refactored so the daemon
         // surface stays narrow.
-        let store = std::sync::Arc::new(gaussclaw_store::SessionStore::open_in_memory().await?);
+        let store = std::sync::Arc::new(open_store(/* surface = */ "gateway").await?);
         let env_key = match cfg.provider.name.to_ascii_lowercase().as_str() {
             "anthropic" => std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
             "openai" => std::env::var("OPENAI_API_KEY").unwrap_or_default(),

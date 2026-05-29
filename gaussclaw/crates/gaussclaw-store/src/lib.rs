@@ -69,8 +69,11 @@
 
 pub mod cron_store;
 pub mod embed;
+pub mod persist;
 pub mod store;
 pub mod types;
+
+pub use persist::{read_all as read_persist_log, PersistLog, PersistRecord};
 
 pub use cron_store::{ChainCronRecord, TrinityCronJobStore};
 pub use embed::{mock_embed, EMBED_DIM};
@@ -604,6 +607,98 @@ mod tests {
             .unwrap();
         let back = s.get_turn(t.id).await.unwrap();
         assert!(back.route.is_none());
+    }
+
+    // ─── Sprint 11 — durable open_at_path round-trip ────────────────────
+
+    fn tmp_dir(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "gaussclaw_persist_e2e_{}_{}",
+            name,
+            std::process::id()
+        ))
+    }
+
+    #[tokio::test]
+    async fn open_at_path_persists_sessions_and_turns_across_restart() {
+        let dir = tmp_dir("survives_restart");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // First "process": create session + two turns + close.
+        let (session_id, head_before) = {
+            let store = SessionStore::open_at_path(&dir).await.unwrap();
+            let sess = store.create_session("tui", "echo").await;
+            let (_t1, _h1) = store
+                .append_turn(&sess.id, None, "user", "hello", TaintLabel::User)
+                .await
+                .unwrap();
+            let (_t2, h2) = store
+                .append_turn(&sess.id, None, "assistant", "world", TaintLabel::User)
+                .await
+                .unwrap();
+            (sess.id, h2.digest_hex)
+        };
+        // The first store handle is dropped; the file on disk survives.
+
+        // Second "process": reopen the same path, assert state was
+        // replayed into the new SessionStore and the chain head digest
+        // matches bit-for-bit what was written.
+        let store = SessionStore::open_at_path(&dir).await.unwrap();
+        let head_after = store.chain_head().await.unwrap();
+        assert_eq!(
+            head_after.digest_hex, head_before,
+            "chain head must match across restart (the deterministic ratchet \
+             over the same payload bytes is what gives the chain its tamper-evident \
+             property)"
+        );
+        assert_eq!(head_after.length, 2, "two turns replayed");
+        let sessions = store.list_recent_sessions(10).await;
+        assert_eq!(sessions.len(), 1, "session metadata survived restart");
+        assert_eq!(sessions[0].id, session_id);
+        assert_eq!(sessions[0].turn_count, 2);
+        let turns = store.list_session_turns(&session_id).await;
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].content, "hello");
+        assert_eq!(turns[1].content, "world");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A turn appended in the second process is visible after a third
+    /// reopen, so persistence is incremental, not just snapshot-on-close.
+    #[tokio::test]
+    async fn open_at_path_appends_incrementally_across_multiple_reopens() {
+        let dir = tmp_dir("incremental");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Process 1: create + 1 turn.
+        let sid = {
+            let store = SessionStore::open_at_path(&dir).await.unwrap();
+            let sess = store.create_session("tui", "echo").await;
+            store
+                .append_turn(&sess.id, None, "user", "one", TaintLabel::User)
+                .await
+                .unwrap();
+            sess.id
+        };
+        // Process 2: append another turn against the same session.
+        {
+            let store = SessionStore::open_at_path(&dir).await.unwrap();
+            store
+                .append_turn(&sid, None, "user", "two", TaintLabel::User)
+                .await
+                .unwrap();
+        }
+        // Process 3: assert both turns are present.
+        let store = SessionStore::open_at_path(&dir).await.unwrap();
+        let turns = store.list_session_turns(&sid).await;
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].content, "one");
+        assert_eq!(turns[1].content, "two");
+        let head = store.chain_head().await.unwrap();
+        assert_eq!(head.length, 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

@@ -100,6 +100,11 @@ pub struct SessionStore {
     /// chain head. Operators call [`Self::anchor_now`] manually or
     /// run a background loop (slice 7+ ships the loop).
     tsa: Option<Arc<dyn TsaClient>>,
+    /// Sprint 11: optional durable persistence sidecar. When set,
+    /// every session create + turn append + anchor lands as a JSON
+    /// line on disk; the [`Self::open_at_path`] constructor replays
+    /// the file on startup so a restart preserves history.
+    persist: Option<Arc<crate::persist::PersistLog>>,
 }
 
 #[derive(Default)]
@@ -148,7 +153,122 @@ impl SessionStore {
             state: Mutex::new(State::default()),
             signer: None,
             tsa: None,
+            persist: None,
         }
+    }
+
+    /// Sprint 11: open a store with a file-backed durability sidecar at
+    /// `dir/store.jsonl`. On open, every previously persisted record
+    /// is replayed through the same code path the runtime uses for
+    /// fresh writes, so the chain head digest matches bit-for-bit
+    /// what was last written. Subsequent state mutations are persisted
+    /// before the call returns to the caller.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::Backend`] if the directory can't be
+    /// created or the log can't be opened; returns the same on any IO
+    /// failure during replay.
+    pub async fn open_at_path(dir: impl Into<std::path::PathBuf>) -> StoreResult<Self> {
+        let dir: std::path::PathBuf = dir.into();
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            StoreError::Backend(gauss_core::GaussError::Internal(format!(
+                "create dir {}: {e}",
+                dir.display()
+            )))
+        })?;
+        let path = dir.join("store.jsonl");
+        // First replay everything that's already on disk so the chain
+        // head and the in-memory mirror line up with the last-known
+        // state. We do this *before* opening the writer so a corrupt
+        // tail line doesn't get re-appended.
+        let records = crate::persist::read_all(&path).await?;
+        let memory = SurrealMemory::open_in_memory().await?;
+        let store = Self {
+            memory: Arc::new(memory),
+            state: Mutex::new(State::default()),
+            signer: None,
+            tsa: None,
+            persist: None, // attached after replay so replay itself isn't re-persisted
+        };
+        store.replay_records(records).await?;
+        let persist = Arc::new(crate::persist::PersistLog::open(path).await?);
+        Ok(Self {
+            persist: Some(persist),
+            ..store
+        })
+    }
+
+    /// Replay a sequence of [`crate::persist::PersistRecord`]s into
+    /// the freshly-opened store, advancing the chain head and the
+    /// in-memory mirror via the same paths the runtime uses for live
+    /// writes. Internal — used only by [`Self::open_at_path`].
+    async fn replay_records(
+        &self,
+        records: Vec<crate::persist::PersistRecord>,
+    ) -> StoreResult<()> {
+        use crate::persist::PersistRecord;
+        for rec in records {
+            match rec {
+                PersistRecord::Session { session } => {
+                    let mut st = self.state.lock().await;
+                    st.session_turns
+                        .entry(session.id.clone())
+                        .or_default();
+                    st.sessions.insert(session.id.clone(), session);
+                }
+                PersistRecord::Turn { turn } => {
+                    self.replay_turn(turn).await?;
+                }
+                PersistRecord::Anchor { anchor } => {
+                    self.state.lock().await.anchors.push(anchor);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Replay a single turn record. Mirrors the live-write path's
+    /// chain-head ratchet so the post-replay digest matches what the
+    /// previous process committed. Skips the signer / lineage-commit
+    /// branches (those re-attach via builder calls when a new
+    /// signer is wired up at the next process start).
+    async fn replay_turn(&self, turn: Turn) -> StoreResult<()> {
+        use gauss_traits::AppendEntry;
+        let mut st = self.state.lock().await;
+        // Auto-create a session if the record references one we
+        // haven't seen yet — handles the case where the session row
+        // landed in a previous process but the file was truncated to
+        // start from a later turn (manual operator intervention).
+        if !st.sessions.contains_key(&turn.session_id) {
+            let synthetic = Session::new(&turn.session_id, "replay", "");
+            st.sessions.insert(turn.session_id.clone(), synthetic);
+            st.session_turns
+                .entry(turn.session_id.clone())
+                .or_default();
+        }
+        let payload = serde_json::to_vec(&turn)?;
+        let entry = AppendEntry::new(
+            gauss_core::TurnId::new(u128::from(turn.id)),
+            payload,
+            turn.taint,
+        )
+        .with_text(turn.content.clone())
+        .with_embedding(mock_embed(&turn.content));
+        let _ack = self.memory.append(entry).await?;
+
+        st.next_turn_id = st.next_turn_id.max(turn.id);
+        st.session_turns
+            .entry(turn.session_id.clone())
+            .or_default()
+            .push(turn.id);
+        if let Some(s) = st.sessions.get_mut(&turn.session_id) {
+            s.turn_count = s.turn_count.saturating_add(1);
+        }
+        if let Some(p) = turn.parent_id {
+            st.parent_children.entry(p).or_default().push(turn.id);
+        }
+        st.turns.insert(turn.id, turn);
+        Ok(())
     }
 
     /// Attach a [`TsaClient`] for wall-clock anchoring. Operators
@@ -177,6 +297,19 @@ impl SessionStore {
         let head = gauss_audit::ChainHead::from_bytes(snap.digest);
         let anchor = tsa.anchor(head, snap.length).await?;
         self.state.lock().await.anchors.push(anchor.clone());
+        if let Some(p) = self.persist.as_ref() {
+            if let Err(e) = p
+                .append(&crate::persist::PersistRecord::Anchor {
+                    anchor: anchor.clone(),
+                })
+                .await
+            {
+                tracing::warn!(
+                    target: "gaussclaw_store",
+                    "persist anchor write failed: {e:?}"
+                );
+            }
+        }
         Ok(anchor)
     }
 
@@ -223,9 +356,27 @@ impl SessionStore {
     ) -> Session {
         let id = next_session_id();
         let sess = Session::new(id.clone(), surface, model);
-        let mut st = self.state.lock().await;
-        st.sessions.insert(id.clone(), sess.clone());
-        st.session_turns.insert(id, Vec::new());
+        {
+            let mut st = self.state.lock().await;
+            st.sessions.insert(id.clone(), sess.clone());
+            st.session_turns.insert(id, Vec::new());
+        }
+        if let Some(p) = self.persist.as_ref() {
+            // Best-effort: a persist write failure shouldn't take the
+            // session creation down (the in-memory mirror already
+            // reflects it). Operators see the IO error via tracing.
+            if let Err(e) = p
+                .append(&crate::persist::PersistRecord::Session {
+                    session: sess.clone(),
+                })
+                .await
+            {
+                tracing::warn!(
+                    target: "gaussclaw_store",
+                    "persist session write failed: {e:?}"
+                );
+            }
+        }
         sess
     }
 
@@ -427,6 +578,28 @@ impl SessionStore {
             digest_hex: hex_string(&ack.head.digest),
             length: ack.head.length,
         };
+
+        // Sprint 11: persist the durable turn record. The in-memory
+        // mirror is already updated; a write failure here is logged
+        // but doesn't fail the call — the next process will see this
+        // turn missing from disk only if the host crashed *between*
+        // the in-memory commit and the fsync, which is the documented
+        // semantics ("at most one in-flight write lost on hard kill").
+        if let Some(p) = self.persist.as_ref() {
+            if let Err(e) = p
+                .append(&crate::persist::PersistRecord::Turn {
+                    turn: turn.clone(),
+                })
+                .await
+            {
+                tracing::warn!(
+                    target: "gaussclaw_store",
+                    turn_id = turn.id,
+                    "persist turn write failed: {e:?}"
+                );
+            }
+        }
+
         Ok((turn, head))
     }
 

@@ -23,7 +23,8 @@ serde_json   = { workspace = true }
 blake3       = { workspace = true }
 thiserror    = { workspace = true }
 time         = { workspace = true }
-tokio        = { workspace = true, features = ["sync"] }
+tokio        = { workspace = true, features = ["sync", "fs", "io-util"] }
+tracing      = { workspace = true }
 
 [dev-dependencies]
 tokio          = { workspace = true, features = ["test-util", "macros"] }
