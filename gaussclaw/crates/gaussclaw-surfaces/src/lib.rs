@@ -444,9 +444,9 @@ async fn handle_chat_completions(
 
 fn unary_from_completion(model: &str, c: &gaussclaw_agent::Completion) -> ChatResponse {
     ChatResponse {
-        id: "chatcmpl-stub".into(),
+        id: chatcmpl_id(),
         object: "chat.completion",
-        created: 0,
+        created: unix_now_seconds(),
         model: model.to_string(),
         choices: vec![ChatChoice {
             index: 0,
@@ -463,6 +463,27 @@ fn unary_from_completion(model: &str, c: &gaussclaw_agent::Completion) -> ChatRe
             total_tokens: c.usage.total(),
         },
     }
+}
+
+/// Sprint 10 — OpenAI SDK polish. Mint a `chatcmpl-<29 chars>` id per
+/// response so downstream clients that key off the id (logging,
+/// dedup, retry replay) get distinct ids. The character set matches
+/// the OpenAI shape (lowercase alphanumeric).
+fn chatcmpl_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Relaxed);
+    let now = unix_now_seconds();
+    // 16 hex chars from (now||n) gives ~10^19 distinct ids per second.
+    let mixed = (now as u128) << 64 | (n as u128);
+    format!("chatcmpl-{mixed:016x}{n:04x}")
+}
+
+fn unix_now_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn sse_from_completion(
@@ -483,9 +504,9 @@ fn sse_from_completion(
 
 fn chunk_event(model: &str, delta: &str) -> Event {
     let payload = serde_json::json!({
-        "id": "chatcmpl-stub",
+        "id": chatcmpl_id(),
         "object": "chat.completion.chunk",
-        "created": 0,
+        "created": unix_now_seconds(),
         "model": model,
         "choices": [{
             "index": 0,
@@ -1287,5 +1308,51 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let head = store.chain_head().await.unwrap();
         assert_eq!(head.length, 0);
+    }
+
+    // ─── Sprint 10 — OpenAI SDK polish ─────────────────────────────────
+
+    #[test]
+    fn chatcmpl_ids_are_well_formed_and_unique() {
+        // Mint a batch; assert prefix + lowercase hex body + uniqueness.
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..200 {
+            let id = chatcmpl_id();
+            assert!(id.starts_with("chatcmpl-"), "got {id:?}");
+            let body = id.trim_start_matches("chatcmpl-");
+            assert!(!body.is_empty(), "empty body in {id:?}");
+            for c in body.chars() {
+                assert!(
+                    c.is_ascii_hexdigit() && (!c.is_ascii_alphabetic() || c.is_ascii_lowercase()),
+                    "bad char in id: {id:?} (char {c:?})"
+                );
+            }
+            assert!(seen.insert(id), "duplicate chatcmpl id minted");
+        }
+    }
+
+    #[test]
+    fn unix_now_seconds_returns_recent_timestamp() {
+        let t = unix_now_seconds();
+        // Sanity: after 2020 (1577836800) and before 2100 (4102444800).
+        assert!(t > 1_577_836_800, "got {t}");
+        assert!(t < 4_102_444_800, "got {t}");
+    }
+
+    /// The unary response carries a fresh chatcmpl id (not the
+    /// hard-coded `chatcmpl-stub` we shipped before) and a real
+    /// non-zero `created` timestamp — preconditions for OpenAI SDK
+    /// log dedup / replay logic.
+    #[test]
+    fn unary_completion_carries_fresh_id_and_timestamp() {
+        use gaussclaw_agent::{Completion, TokenCount};
+        let c = Completion::new("hi", "x", "stop", TokenCount::new(1, 1));
+        let r1 = unary_from_completion("m", &c);
+        let r2 = unary_from_completion("m", &c);
+        assert_ne!(r1.id, "chatcmpl-stub");
+        assert_ne!(r2.id, "chatcmpl-stub");
+        assert_ne!(r1.id, r2.id, "two calls must mint distinct ids");
+        assert!(r1.created > 0, "created must be a real unix timestamp");
+        assert_eq!(r1.usage.total_tokens, 2);
     }
 }

@@ -551,8 +551,14 @@ fn dispatch(
             ConfigCmd::Path => run_config_path(cfg_source.as_deref()),
         },
         Command::Gateway(sub) => match sub {
-            GatewayCmd::Start => stub("gateway start", 1, "gaussclaw-channels + gauss-gateway"),
-            GatewayCmd::Stop => stub("gateway stop", 1, "gaussclaw-channels"),
+            GatewayCmd::Start => run_gateway_start(cfg),
+            GatewayCmd::Stop => {
+                eprintln!(
+                    "gaussclaw gateway stop: not implemented — the standalone \
+                     daemon runs in the foreground; stop it with Ctrl+C."
+                );
+                Ok(())
+            }
             GatewayCmd::Status => run_gateway_status(&cfg),
         },
         Command::Setup(args) => run_setup(args, cfg_source.as_deref()),
@@ -982,6 +988,103 @@ fn run_setup(
     println!("  export ANTHROPIC_API_KEY=…");
     println!("  gaussclaw chat -m \"hello\"");
     Ok(())
+}
+
+// ─── gateway start (standalone daemon) ─────────────────────────────────────
+
+fn run_gateway_start(cfg: gaussclaw_config::Config) -> anyhow::Result<()> {
+    // Sprint 10: standalone gateway daemon. Starts an Axum server that
+    // serves only the webhook ingress routes + health + metrics +
+    // receipt-head — no dashboard UI, no chat WS. The same in-process
+    // wiring `gaussclaw web` uses for the agent + gateway + outbox
+    // is reused verbatim; this binary is just a thinner surface for
+    // channel-only deployments (containers behind a load balancer,
+    // serverless functions, etc.).
+    if cfg.channels.is_empty() {
+        eprintln!(
+            "gaussclaw gateway start: no channels configured in gaussclaw.toml.\n  \
+             Add at least one `[channels.<name>]` block (slack/discord/telegram) \
+             before starting the gateway daemon."
+        );
+        return Ok(());
+    }
+
+    let host = "127.0.0.1";
+    // Re-use $PORT (12-factor convention) when present so container
+    // platforms can override at deploy time without a config edit.
+    let port: u16 = std::env::var("GAUSSCLAW_GATEWAY_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8081);
+    let addr: std::net::SocketAddr = format!("{host}:{port}").parse()?;
+    eprintln!("gaussclaw gateway: listening on http://{addr}/ (channels-only)");
+    eprintln!("  webhook ingress: /webhook/slack /webhook/discord /webhook/telegram");
+    eprintln!("  observability:   /api/metrics /api/health /api/receipt/head");
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async move {
+        // Same agent + provider + tools + store wiring as run_web,
+        // copied minimally rather than refactored so the daemon
+        // surface stays narrow.
+        let store = std::sync::Arc::new(gaussclaw_store::SessionStore::open_in_memory().await?);
+        let env_key = match cfg.provider.name.to_ascii_lowercase().as_str() {
+            "anthropic" => std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+            "openai" => std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+            _ => String::new(),
+        };
+        let mut choice = gaussclaw_providers::ProviderChoice::new(cfg.provider.name.clone())
+            .with_api_key(env_key);
+        if let Ok(backend) = gaussclaw_providers::ReqwestBackend::shared() {
+            choice = choice.with_backend(backend);
+        }
+        let (provider, picked) = gaussclaw_providers::pick_provider(&choice);
+        tracing::info!(
+            target: "gaussclaw_bin::gateway",
+            vendor = %picked.as_str(),
+            "gateway daemon provider"
+        );
+        let kernel = gaussclaw_agent::KernelHandle::permissive();
+        let audit = gaussclaw_agent::AuditTrace::new();
+        let http_client: std::sync::Arc<dyn gaussclaw_tools::HttpClient> =
+            match gaussclaw_http::ReqwestHttpClient::new() {
+                Ok(c) => std::sync::Arc::new(c),
+                Err(_) => std::sync::Arc::new(gaussclaw_tools::UnconfiguredHttpClient),
+            };
+        let tools =
+            std::sync::Arc::new(gaussclaw_tools::registry_with_http_client(http_client));
+        let policy = gaussclaw_agent::TurnPolicy::new(kernel, provider)
+            .with_audit(audit)
+            .with_store(store.clone())
+            .with_tools(tools);
+        let compactor: std::sync::Arc<dyn gaussclaw_agent::Compactor> =
+            std::sync::Arc::new(gaussclaw_agent::WindowedCompactor::defaults());
+        let agent = std::sync::Arc::new(
+            gaussclaw_agent::AgentLoop::new(policy).with_compactor(compactor),
+        );
+
+        let (gateway, channel_secrets) = build_channel_gateway(&cfg, agent.clone());
+        let Some(gateway) = gateway else {
+            eprintln!(
+                "gaussclaw gateway start: no channel transport could be \
+                 constructed from the config — check that each [channels.*] \
+                 block has its required option (slack/discord: webhook_url; \
+                 telegram: bot_token)."
+            );
+            return Ok::<_, anyhow::Error>(());
+        };
+        let rate_limit = gaussclaw_web::RateLimiter::new(120, 2.0);
+        let state = gaussclaw_web::ServerState::new(cfg, None)
+            .with_store(store)
+            .with_agent(agent)
+            .with_gateway(gateway)
+            .with_rate_limit(rate_limit);
+        for (handle, secret) in channel_secrets {
+            state.insert_channel_secret(handle, secret);
+        }
+        gaussclaw_web::serve(addr, state).await
+    })
 }
 
 // ─── gateway status ────────────────────────────────────────────────────────
