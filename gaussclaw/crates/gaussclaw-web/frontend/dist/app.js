@@ -92,6 +92,7 @@ const api = {
   health:    () => api.get('/api/health'),
   config:    () => api.get('/api/config'),
   sessions:  () => api.get('/api/sessions'),
+  search:    (q, mode) => api.get(`/api/search?q=${encodeURIComponent(q)}${mode ? `&mode=${mode}` : ''}`),
   providers: () => api.get('/api/providers'),
   tools:     () => api.get('/api/tools'),
   receipt:   () => api.get('/api/receipt/head'),
@@ -320,6 +321,7 @@ renderers.chat = () => {
 
 renderers.sessions = async () => {
   const list = $('#sessions-list');
+  wireSessionSearch();
   try {
     const sessions = await api.sessions();
     state.sessions = sessions ?? [];
@@ -345,6 +347,46 @@ renderers.sessions = async () => {
       'Could not load sessions. Backend may still be coming up.'));
   }
 };
+
+// Wire the Sessions-tab search box to /api/search (hybrid BM25 + HNSW
+// recall). Debounced; an empty box restores the recent-sessions list.
+// Idempotent — guards against re-binding when the tab re-renders.
+function wireSessionSearch() {
+  const input = $('#sessions-search');
+  if (!input || input.dataset.wired === '1') return;
+  input.dataset.wired = '1';
+  let timer = null;
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    const q = input.value.trim();
+    timer = setTimeout(async () => {
+      const list = $('#sessions-list');
+      if (q === '') { renderers.sessions(); return; }
+      try {
+        const hits = await api.search(q);
+        list.innerHTML = '';
+        if (!hits || hits.length === 0) {
+          list.append(el('div', { class: 'card placeholder' }, `No matches for “${q}”.`));
+          return;
+        }
+        hits.forEach(h => {
+          list.append(el('div', { class: 'card' },
+            el('header', { class: 'card-head' },
+              el('strong', {}, h.role ?? 'turn'),
+              el('span', { class: 'badge' }, `score ${(h.score ?? 0).toFixed(3)}`)
+            ),
+            el('p', {}, escape(h.content ?? '')),
+            el('p', { class: 'muted small' },
+              `turn ${h.turn_id} · session ${shortHex(h.session_id, 12)} · ${fmtTime(h.ts)}`)
+          ));
+        });
+      } catch {
+        list.innerHTML = '';
+        list.append(el('div', { class: 'card placeholder' }, 'Search failed — backend may be coming up.'));
+      }
+    }, 250);
+  });
+}
 
 // ─── 6. Tools view ──────────────────────────────────────────────────────────
 
@@ -374,25 +416,42 @@ const builtInTools = [
 renderers.tools = async () => {
   const list = $('#tools-list');
   list.innerHTML = '';
+  // Curated display metadata (descriptions, sandbox layers) keyed by
+  // tool name — the live `/api/tools` manifest doesn't carry prose.
+  const curated = Object.fromEntries(builtInTools.map(t => [t.name, t]));
+  // The backend registry is authoritative for *which* tools exist and
+  // their real caps / reversibility; fall back to the curated list only
+  // when the API is unreachable or empty.
   let tools = builtInTools;
+  let live = false;
   try {
     const remote = await api.tools();
-    if (Array.isArray(remote) && remote.length) tools = remote;
+    if (Array.isArray(remote) && remote.length) { tools = remote; live = true; }
   } catch {}
   state.tools = tools;
   tools.forEach(t => {
+    const name = t.name ?? t.id ?? '(unnamed)';
+    const meta = curated[name] ?? {};
+    // Capabilities: live rows carry a decoded `caps` array; curated
+    // rows carry a single `cap` string. Normalise to an array.
+    const caps = Array.isArray(t.caps) && t.caps.length
+      ? t.caps
+      : (t.cap ?? t.capability ? [t.cap ?? t.capability] : (meta.cap ? [meta.cap] : []));
+    const meta_row = el('div', { class: 'tool-meta' });
+    if (caps.length) caps.forEach(c => meta_row.append(el('span', { class: 'badge' }, c)));
+    else meta_row.append(el('span', { class: 'badge' }, 'cap:none'));
+    if (t.reversible === false) meta_row.append(el('span', { class: 'badge badge-warn' }, 'irreversible'));
+    const layers = t.layers ?? meta.layers ?? [];
+    layers.forEach(l => meta_row.append(el('span', { class: 'badge badge-ok' }, l)));
     list.append(
       el('article', { class: 'card tool-card' },
-        el('div', { class: 'tool-name' }, t.name),
-        el('p',  { class: 'tool-desc' }, t.desc ?? t.description ?? ''),
-        el('div', { class: 'tool-meta' },
-          el('span', { class: 'badge' }, t.cap ?? t.capability ?? 'cap:none'),
-          el('span', { class: 'badge' }, `taint: ${t.taint ?? '⊥'}`),
-          ...((t.layers ?? []).map(l => el('span', { class: 'badge badge-ok' }, l)))
-        )
+        el('div', { class: 'tool-name' }, name),
+        el('p',  { class: 'tool-desc' }, t.desc ?? t.description ?? meta.desc ?? ''),
+        meta_row,
       )
     );
   });
+  if (live) state.toolsSource = 'live registry';
 };
 
 // ─── 7. Receipts view ───────────────────────────────────────────────────────
@@ -949,7 +1008,9 @@ renderers.settings = async () => {
     : ['anthropic', 'openai', 'openai-compat', 'google', 'cohere', 'ollama', 'huggingface', 'replicate', 'llama-cpp'];
   provs.forEach(p => {
     const name = typeof p === 'string' ? p : (p.name ?? 'unknown');
-    list.append(el('span', { class: 'badge' }, name));
+    const active = typeof p === 'object' && p.active === true;
+    list.append(el('span', { class: active ? 'badge badge-ok' : 'badge' },
+      active ? `${name} ✓` : name));
   });
 };
 

@@ -49,6 +49,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use gaussclaw_tools::{HttpClient, HttpClientError, HttpMethod, HttpRequest, HttpResponse};
 
+pub mod provider_backend;
+pub use provider_backend::{ReqwestProviderBackend, ReqwestProviderBackendBuilder};
+
 /// `reqwest`-backed [`HttpClient`] implementation.
 ///
 /// Cheap to clone — internal state is shared via `reqwest::Client`'s

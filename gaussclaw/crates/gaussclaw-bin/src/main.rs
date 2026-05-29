@@ -18,9 +18,11 @@
 use clap::Parser;
 use gaussclaw_cli::{
     ChatArgs, Cli, Command, ConfigCmd, CronCmd, DoctorArgs, GatewayCmd, ImportArgs, ModelCmd,
-    PluginsCmd, ProxyArgs, ReceiptCmd, SkillCmd, SnapshotCmd, ToolsCmd, WebArgs,
+    PluginsCmd, ProxyArgs, ReceiptCmd, SetupArgs, SkillCmd, SnapshotCmd, ToolsCmd, WebArgs,
 };
 use gaussclaw_tui::StatusInfo;
+
+mod gateway;
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -70,11 +72,13 @@ fn run_web(
         .enable_all()
         .build()?;
     rt.block_on(async move {
-        // Phase 2 wiring: build a single Arc<SessionStore> that backs
-        // /api/sessions, /api/receipt/head, and the chat WebSocket.
-        // In-memory backend for the demo binary; production deployments
-        // swap to a persistent SurrealMemory via SessionStore::with_memory.
-        let store = std::sync::Arc::new(gaussclaw_store::SessionStore::open_in_memory().await?);
+        // Build the Arc<SessionStore> backing /api/sessions,
+        // /api/receipt/head, and the chat WebSocket. When `[storage]
+        // path` is set (and the binary is built with `kv-surrealkv`,
+        // the default), use the persistent embedded SurrealKV backend so
+        // sessions + the receipt chain survive restarts; otherwise fall
+        // back to the ephemeral in-memory store.
+        let store = std::sync::Arc::new(open_session_store(&cfg).await?);
         // Sprint 5 §3: one persistent in-memory cron scheduler per
         // server lifecycle. Trinity-backed persistence wires in the
         // Sprint 5 §3 follow-on.
@@ -85,28 +89,19 @@ fn run_web(
             gauss_cron::SystemClock,
         ));
         // Build the AgentLoop that drives /api/chat/ws (Sprint 11).
-        // Sprint 13 §2: vendor codec is now selected from
-        // `cfg.provider.name`. Until a real `reqwest`-backed
-        // HttpBackend lands, the picker wraps the chosen codec around
-        // `UnconfiguredBackend`, which fails every send with a clean
-        // transport error — the dashboard renders this as an `error`
-        // frame rather than silently echoing.
+        // The vendor codec is selected from `cfg.provider.name` and
+        // wired to a real `reqwest`-backed `HttpBackend` so vendor
+        // calls hit the wire. When the configured vendor is unknown or
+        // empty, `pick_provider` falls back to the EchoProvider — the
+        // backend is harmless there because it's never invoked.
         let kernel = gaussclaw_agent::KernelHandle::permissive();
-        // API key sourced from a vendor-specific env var. The bin is
-        // tolerant of unset env: an empty key still passes through to
-        // the codec (it will surface as a 401 from the upstream when
-        // a real backend is plumbed).
-        let env_key = match cfg.provider.name.to_ascii_lowercase().as_str() {
-            "anthropic" => std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
-            "openai" => std::env::var("OPENAI_API_KEY").unwrap_or_default(),
-            _ => String::new(),
-        };
-        let choice = gaussclaw_providers::ProviderChoice::new(cfg.provider.name.clone())
-            .with_api_key(env_key);
+        // API key (env-sourced) + live reqwest transport, shared with
+        // the one-shot `chat` path via `build_provider_choice`.
+        let (_model, choice) = build_provider_choice(&cfg);
         let (provider, picked) = gaussclaw_providers::pick_provider(&choice);
         tracing::info!(
             target: "gaussclaw_bin::serve",
-            "vendor codec selected: {}",
+            "vendor codec selected: {} (live HTTP transport)",
             picked.as_str()
         );
         let audit = gaussclaw_agent::AuditTrace::new();
@@ -129,6 +124,66 @@ fn run_web(
     })
 }
 
+/// Drives TUI user turns through a [`TurnPolicy`] on a background
+/// thread, keeping a running transcript so the terminal holds a real
+/// multi-turn conversation. The TUI render loop stays responsive and
+/// cancellable while a turn is in flight.
+struct AgentTurnDispatcher {
+    kernel: gaussclaw_agent::KernelHandle,
+    provider: std::sync::Arc<dyn gaussclaw_agent::ProviderHandle>,
+    model: String,
+    /// Conversation so far, replayed into every prompt for context.
+    transcript: std::sync::Arc<std::sync::Mutex<Vec<gaussclaw_agent::Message>>>,
+}
+
+impl gaussclaw_tui::TurnDispatcher for AgentTurnDispatcher {
+    fn dispatch(&self, prompt: String, tx: std::sync::mpsc::Sender<gaussclaw_tui::TurnOutcome>) {
+        use gaussclaw_tui::TurnOutcome;
+        let kernel = self.kernel.clone();
+        let provider = self.provider.clone();
+        let model = self.model.clone();
+        let transcript = self.transcript.clone();
+        // Run off the render thread on a single-thread runtime so the UI
+        // never blocks. The outcome goes back over `tx` exactly once.
+        std::thread::spawn(move || {
+            let messages = {
+                let mut hist = transcript
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                hist.push(gaussclaw_agent::Message::new("user", prompt));
+                hist.clone()
+            };
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    let _ = tx.send(TurnOutcome::Error(format!("runtime build: {e}")));
+                    return;
+                }
+            };
+            let policy = gaussclaw_agent::TurnPolicy::new(kernel, provider);
+            let prompt = gaussclaw_agent::Prompt::new(model, messages);
+            match rt.block_on(policy.run(prompt, gauss_core::TaintLabel::User)) {
+                Ok(completion) => {
+                    transcript
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(gaussclaw_agent::Message::new(
+                            "assistant",
+                            completion.text.clone(),
+                        ));
+                    let _ = tx.send(TurnOutcome::Reply(completion.text));
+                }
+                Err(e) => {
+                    let _ = tx.send(TurnOutcome::Error(format!("{e:?}")));
+                }
+            }
+        });
+    }
+}
+
 fn run_default_tui(cfg: &gaussclaw_config::Config) -> anyhow::Result<()> {
     let status = StatusInfo {
         session: "new".into(),
@@ -144,7 +199,20 @@ fn run_default_tui(cfg: &gaussclaw_config::Config) -> anyhow::Result<()> {
             u32::try_from(c.default_grant.len()).unwrap_or(u32::MAX)
         }),
     };
-    gaussclaw_tui::run(status)
+    // Select the vendor codec + live transport (same path as `chat` /
+    // `serve`) and drive the terminal through it. With no vendor
+    // configured this resolves to the EchoProvider, so the TUI still
+    // gives a working round-trip rather than a dead stub.
+    let (model, choice) = build_provider_choice(cfg);
+    let (provider, _picked) = gaussclaw_providers::pick_provider(&choice);
+    let dispatcher: std::sync::Arc<dyn gaussclaw_tui::TurnDispatcher> =
+        std::sync::Arc::new(AgentTurnDispatcher {
+            kernel: gaussclaw_agent::KernelHandle::permissive(),
+            provider,
+            model,
+            transcript: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        });
+    gaussclaw_tui::run_with_dispatcher(status, Some(dispatcher))
 }
 
 fn dispatch(
@@ -178,11 +246,16 @@ fn dispatch(
             ConfigCmd::Path => run_config_path(cfg_source.as_deref()),
         },
         Command::Gateway(sub) => match sub {
-            GatewayCmd::Start => stub("gateway start", 1, "gaussclaw-channels + gauss-gateway"),
-            GatewayCmd::Stop => stub("gateway stop", 1, "gaussclaw-channels"),
-            GatewayCmd::Status => stub("gateway status", 1, "gaussclaw-channels"),
+            GatewayCmd::Start => run_gateway(cfg),
+            GatewayCmd::Stop => {
+                eprintln!(
+                    "gaussclaw gateway runs in the foreground; stop it with Ctrl+C in its terminal."
+                );
+                Ok(())
+            }
+            GatewayCmd::Status => run_gateway_status(&cfg),
         },
-        Command::Setup(_) => stub("setup", 1, "gaussclaw-config + gaussclaw-migrate"),
+        Command::Setup(args) => run_setup(&args, &cfg, cfg_source.as_deref()),
         Command::Update(_) => stub("update", 5, "gaussclaw-desktop updater + gauss-attest"),
         Command::Doctor(args) => run_doctor(args),
         Command::Import(args) => run_import(args),
@@ -309,11 +382,227 @@ fn run_import(args: ImportArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+// ─── gateway ─────────────────────────────────────────────────────────────────
+
+/// Default gateway bind port.
+const GATEWAY_DEFAULT_PORT: u16 = 8787;
+
+/// SecretStore handles the gateway resolves from the environment.
+const GATEWAY_SECRET_HANDLES: &[&str] = &[
+    "SLACK_SIGNING_SECRET",
+    "SLACK_BOT_TOKEN",
+    "DISCORD_PUBLIC_KEY",
+    "DISCORD_BOT_TOKEN",
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_WEBHOOK_SECRET",
+];
+
+/// `gaussclaw gateway start` — run the messaging gateway in the
+/// foreground, exposing `/webhooks/{slack,discord,telegram}` and
+/// dispatching verified inbound messages through the agent.
+fn run_gateway(cfg: gaussclaw_config::Config) -> anyhow::Result<()> {
+    use std::sync::Arc;
+
+    let port = GATEWAY_DEFAULT_PORT;
+    let addr: std::net::SocketAddr = ([0, 0, 0, 0], port).into();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async move {
+        // Outbound transport (shared by every adapter) + env-backed secrets.
+        let http: Arc<dyn gaussclaw_tools::HttpClient> = Arc::new(
+            gaussclaw_http::ReqwestHttpClient::new()
+                .map_err(|e| anyhow::anyhow!("failed to build HTTP client for gateway: {e}"))?,
+        );
+        let secrets: Arc<dyn gaussclaw_channels::SecretStore> =
+            Arc::new(gaussclaw_channels::EnvSecretStore);
+        let kernel = gaussclaw_agent::KernelHandle::permissive();
+
+        // Reply agent: same live provider path as `serve` / `chat`.
+        let (model, choice) = build_provider_choice(&cfg);
+        let (provider, picked) = gaussclaw_providers::pick_provider(&choice);
+        let audit = gaussclaw_agent::AuditTrace::new();
+        let policy =
+            gaussclaw_agent::TurnPolicy::new(kernel.clone(), provider).with_audit(audit.clone());
+        let agent = Arc::new(gaussclaw_agent::AgentLoop::new(policy).with_audit(audit));
+
+        // Adapters, each wired to the shared outbound transport.
+        let slack = Arc::new(
+            gaussclaw_channels::SlackChannel::new(
+                secrets.clone(),
+                kernel.clone(),
+                "SLACK_SIGNING_SECRET",
+            )
+            .with_http(http.clone()),
+        );
+        let discord = Arc::new(
+            gaussclaw_channels::DiscordChannel::new(
+                secrets.clone(),
+                kernel.clone(),
+                "DISCORD_PUBLIC_KEY",
+            )
+            .with_http(http.clone()),
+        );
+        // Telegram verifies the inbound secret header only when one is
+        // configured in the environment.
+        let mut telegram = gaussclaw_channels::TelegramChannel::new(
+            secrets.clone(),
+            kernel.clone(),
+            "TELEGRAM_BOT_TOKEN",
+        )
+        .with_http(http.clone());
+        if std::env::var("TELEGRAM_WEBHOOK_SECRET").is_ok() {
+            telegram = telegram.with_webhook_secret("TELEGRAM_WEBHOOK_SECRET");
+        }
+        let telegram = Arc::new(telegram);
+
+        let state = gateway::GatewayState {
+            agent,
+            model,
+            slack,
+            discord,
+            telegram,
+        };
+        let configured: Vec<&str> = GATEWAY_SECRET_HANDLES
+            .iter()
+            .copied()
+            .filter(|h| secrets.get(h).is_some())
+            .collect();
+        eprintln!(
+            "gaussclaw gateway: listening on http://{addr}/ (vendor codec: {})",
+            picked.as_str()
+        );
+        eprintln!("  routes: POST /webhooks/{{slack,discord,telegram}}  ·  GET /healthz");
+        eprintln!(
+            "  configured secrets: {}",
+            if configured.is_empty() {
+                "(none — set the vendor env vars; see `gaussclaw gateway status`)".to_string()
+            } else {
+                configured.join(", ")
+            }
+        );
+
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        axum::serve(listener, gateway::gateway_router(state)).await?;
+        Ok::<(), anyhow::Error>(())
+    })
+}
+
+/// `gaussclaw gateway status` — report which vendor secrets are present
+/// so an operator can see which channels are ready to serve.
+fn run_gateway_status(_cfg: &gaussclaw_config::Config) -> anyhow::Result<()> {
+    use gaussclaw_channels::SecretStore;
+    let secrets = gaussclaw_channels::EnvSecretStore;
+    let ready = |handles: &[&str]| handles.iter().all(|h| secrets.get(h).is_some());
+    println!("gaussclaw gateway — channel readiness (from environment):");
+    println!(
+        "  slack     {}",
+        if ready(&["SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN"]) {
+            "ready"
+        } else {
+            "missing SLACK_SIGNING_SECRET and/or SLACK_BOT_TOKEN"
+        }
+    );
+    println!(
+        "  discord   {}",
+        if ready(&["DISCORD_PUBLIC_KEY", "DISCORD_BOT_TOKEN"]) {
+            "ready"
+        } else {
+            "missing DISCORD_PUBLIC_KEY and/or DISCORD_BOT_TOKEN"
+        }
+    );
+    println!(
+        "  telegram  {}",
+        if ready(&["TELEGRAM_BOT_TOKEN"]) {
+            "ready"
+        } else {
+            "missing TELEGRAM_BOT_TOKEN"
+        }
+    );
+    println!("\nStart the gateway with: gaussclaw gateway start");
+    Ok(())
+}
+
+// ─── storage wiring ──────────────────────────────────────────────────────────
+
+/// Open the session store for `serve`, honouring `[storage] path`.
+///
+/// Empty path → ephemeral in-memory store. Non-empty path → persistent
+/// embedded SurrealKV store (when built with `kv-surrealkv`, the
+/// default); without that feature we log and fall back to in-memory so
+/// the server still starts.
+async fn open_session_store(
+    cfg: &gaussclaw_config::Config,
+) -> anyhow::Result<gaussclaw_store::SessionStore> {
+    let path = cfg.storage.path.trim();
+    if path.is_empty() {
+        return Ok(gaussclaw_store::SessionStore::open_in_memory().await?);
+    }
+    #[cfg(feature = "kv-surrealkv")]
+    {
+        // SurrealKV roots its LSM store at this directory; create it
+        // (and any parents) up front so a first run on a fresh box works.
+        tokio::fs::create_dir_all(path).await.ok();
+        tracing::info!(
+            target: "gaussclaw_bin::serve",
+            "persistent storage: SurrealKV at {path}"
+        );
+        Ok(gaussclaw_store::SessionStore::open_surrealkv(path).await?)
+    }
+    #[cfg(not(feature = "kv-surrealkv"))]
+    {
+        tracing::warn!(
+            target: "gaussclaw_bin::serve",
+            "storage.path is set ({path}) but this binary was built without the \
+             kv-surrealkv feature; falling back to an ephemeral in-memory store"
+        );
+        Ok(gaussclaw_store::SessionStore::open_in_memory().await?)
+    }
+}
+
+// ─── provider wiring ─────────────────────────────────────────────────────────
+
+/// Build a [`gaussclaw_providers::ProviderChoice`] from config: the
+/// configured vendor name, an env-sourced API key, and the live
+/// reqwest HTTP transport. Returns the bare model id the codec should
+/// send upstream alongside the choice.
+///
+/// Shared by the one-shot `chat` command and the `serve` agent-loop
+/// wiring so both reach the wire identically. An unset API-key env var
+/// passes an empty key through to the codec (which surfaces as a 401
+/// from the upstream). If the reqwest client can't be built, the
+/// backend is left unset and `pick_provider` falls back to the
+/// fail-closed `UnconfiguredBackend`.
+fn build_provider_choice(
+    cfg: &gaussclaw_config::Config,
+) -> (String, gaussclaw_providers::ProviderChoice) {
+    let model = if cfg.provider.model.is_empty() {
+        "echo".to_string()
+    } else {
+        cfg.provider.model.clone()
+    };
+    let env_key = match cfg.provider.name.to_ascii_lowercase().as_str() {
+        "anthropic" => std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+        "openai" => std::env::var("OPENAI_API_KEY").unwrap_or_default(),
+        _ => String::new(),
+    };
+    let mut choice =
+        gaussclaw_providers::ProviderChoice::new(cfg.provider.name.clone()).with_api_key(env_key);
+    match gaussclaw_http::ReqwestProviderBackend::new() {
+        Ok(backend) => choice = choice.with_backend(std::sync::Arc::new(backend)),
+        Err(e) => tracing::error!(
+            target: "gaussclaw_bin",
+            "failed to build HTTP backend, vendor calls will fail closed: {e}"
+        ),
+    }
+    (model, choice)
+}
+
 // ─── chat ──────────────────────────────────────────────────────────────────
 
 fn run_chat(args: ChatArgs, cfg: &gaussclaw_config::Config) -> anyhow::Result<()> {
     use gauss_core::TaintLabel;
-    use gaussclaw_agent::{EchoProvider, KernelHandle, Message, Prompt, TurnPolicy};
+    use gaussclaw_agent::{KernelHandle, Message, Prompt, TurnPolicy};
     let Some(message) = args.message else {
         eprintln!(
             "gaussclaw chat: interactive mode is the TUI (`gaussclaw` with no args).\n  \
@@ -321,23 +610,17 @@ fn run_chat(args: ChatArgs, cfg: &gaussclaw_config::Config) -> anyhow::Result<()
         );
         return Ok(());
     };
-    let model = if cfg.provider.name.is_empty() {
-        "echo".to_string()
-    } else {
-        format!("{}/{}", cfg.provider.name, cfg.provider.model)
-    };
+    // Select the vendor codec from config and attach the live HTTP
+    // transport. With no vendor configured, `pick_provider` falls back
+    // to the EchoProvider; the model id we send the codec is the bare
+    // `provider.model` (the vendor doesn't understand the `name/model`
+    // display form).
+    let (model, choice) = build_provider_choice(cfg);
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let completion = rt.block_on(async move {
-        // The shipping binary's default chat path runs the EchoProvider —
-        // real vendor drivers in `gaussclaw-providers` ship behind the
-        // `chat` command once provider auth wiring lands (the crate is
-        // already present and tested; the binary's chat path is the last
-        // mile). Until then the EchoProvider gives the user a working
-        // round trip that exercises the kernel admit gate and the audit
-        // chain.
-        let provider = std::sync::Arc::new(EchoProvider::default());
+        let (provider, _picked) = gaussclaw_providers::pick_provider(&choice);
         let tp = TurnPolicy::new(KernelHandle::permissive(), provider);
         let prompt = Prompt::new(model, vec![Message::new("user", message.clone())]);
         tp.run(prompt, TaintLabel::User).await
@@ -514,6 +797,113 @@ fn run_config_path(cfg_path: Option<&std::path::Path>) -> anyhow::Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+// ─── setup wizard ────────────────────────────────────────────────────────────
+
+/// Default persistent-store path under the platform data directory.
+fn default_storage_path() -> String {
+    directories::ProjectDirs::from("ai", "gauss", "gaussclaw").map_or_else(
+        || "./gaussclaw-data/store".to_string(),
+        |d| d.data_dir().join("store").to_string_lossy().into_owned(),
+    )
+}
+
+/// Render an empty config value as `unset` for prompts.
+const fn shown(s: &str) -> &str {
+    if s.is_empty() {
+        "unset"
+    } else {
+        s
+    }
+}
+
+/// Read one trimmed line from stdin after printing `label`.
+fn prompt_line(label: &str) -> anyhow::Result<String> {
+    use std::io::Write;
+    print!("{label}");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(line.trim().to_string())
+}
+
+/// `gaussclaw setup` — first-run wizard.
+///
+/// Walks the operator through provider, model, and storage selection,
+/// then writes a `config.toml` to the active (or default) config path.
+/// `--non-interactive` accepts sensible defaults without prompting
+/// (handy for CI / container images). Re-running edits the existing
+/// config in place rather than starting from scratch.
+fn run_setup(
+    args: &SetupArgs,
+    cfg: &gaussclaw_config::Config,
+    cfg_source: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    let target: std::path::PathBuf = cfg_source.map_or_else(
+        || {
+            gaussclaw_config::search_path()
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| std::path::PathBuf::from("./gaussclaw.toml"))
+        },
+        std::path::Path::to_path_buf,
+    );
+
+    // Edit a clone of the current config so re-running setup is idempotent.
+    let mut new_cfg = cfg.clone();
+
+    if args.non_interactive {
+        if new_cfg.storage.path.is_empty() {
+            new_cfg.storage.path = default_storage_path();
+        }
+    } else {
+        println!("GaussClaw setup — press Enter to keep the current value.\n");
+
+        let name = prompt_line(&format!("Provider [{}]: ", shown(&cfg.provider.name)))?;
+        if !name.is_empty() {
+            new_cfg.provider.name = name;
+        }
+
+        let model = prompt_line(&format!("Model [{}]: ", shown(&cfg.provider.model)))?;
+        if !model.is_empty() {
+            new_cfg.provider.model = model;
+        }
+
+        let default_store = if cfg.storage.path.is_empty() {
+            default_storage_path()
+        } else {
+            cfg.storage.path.clone()
+        };
+        let store = prompt_line(&format!("Storage path [{default_store}]: "))?;
+        new_cfg.storage.path = if store.is_empty() {
+            default_store
+        } else {
+            store
+        };
+    }
+
+    gaussclaw_config::save(&new_cfg, &target)?;
+    println!("\n✓ wrote {}", target.display());
+
+    // API-key hygiene hint.
+    if let Some(var) = match new_cfg.provider.name.to_ascii_lowercase().as_str() {
+        "anthropic" => Some("ANTHROPIC_API_KEY"),
+        "openai" => Some("OPENAI_API_KEY"),
+        _ => None,
+    } {
+        if std::env::var(var).map(|v| v.is_empty()).unwrap_or(true) {
+            println!("⚠ {var} is not set — export it before talking to a real model.");
+        } else {
+            println!("✓ {var} detected.");
+        }
+    }
+
+    println!("\nNext steps:");
+    println!("  gaussclaw doctor          # verify health");
+    println!("  gaussclaw                 # chat in the terminal");
+    println!("  gaussclaw serve           # web dashboard + OpenAI API on :8080");
     Ok(())
 }
 
@@ -1081,4 +1471,225 @@ fn run_proxy(args: ProxyArgs) -> anyhow::Result<()> {
         axum::serve(listener, gaussclaw_proxy::router(state)).await?;
         Ok::<(), anyhow::Error>(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_interactive_setup_writes_config_with_default_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config.toml");
+        let cfg = gaussclaw_config::Config::default();
+        run_setup(
+            &SetupArgs {
+                non_interactive: true,
+            },
+            &cfg,
+            Some(&target),
+        )
+        .unwrap();
+        // The file exists and round-trips with a non-empty storage path.
+        let (loaded, _report) = gaussclaw_config::load(Some(&target)).unwrap();
+        assert!(
+            !loaded.storage.path.is_empty(),
+            "non-interactive setup should default the storage path"
+        );
+    }
+
+    #[test]
+    fn non_interactive_setup_preserves_existing_storage_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config.toml");
+        let mut cfg = gaussclaw_config::Config::default();
+        cfg.storage.path = "/custom/store".into();
+        run_setup(
+            &SetupArgs {
+                non_interactive: true,
+            },
+            &cfg,
+            Some(&target),
+        )
+        .unwrap();
+        let (loaded, _report) = gaussclaw_config::load(Some(&target)).unwrap();
+        assert_eq!(loaded.storage.path, "/custom/store");
+    }
+
+    #[tokio::test]
+    async fn open_session_store_uses_in_memory_when_path_empty() {
+        let cfg = gaussclaw_config::Config::default();
+        assert!(cfg.storage.path.is_empty());
+        // Builds without touching the filesystem.
+        let store = open_session_store(&cfg).await.unwrap();
+        assert_eq!(store.chain_head().await.unwrap().length, 0);
+    }
+
+    /// End-to-end durability through `open_session_store`: across a
+    /// restart the chain head AND the derived session index survive, so
+    /// the dashboard's session list isn't empty after a reboot.
+    #[cfg(feature = "kv-surrealkv")]
+    #[tokio::test]
+    async fn open_session_store_persists_chain_and_sessions_across_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store");
+        let mut cfg = gaussclaw_config::Config::default();
+        cfg.storage.path = path.to_string_lossy().into_owned();
+
+        // First open: create a session, append a turn, then drop.
+        let (len_before, head_before, session_id);
+        {
+            let store = open_session_store(&cfg).await.unwrap();
+            let sess = store.create_session("tui", "echo").await;
+            session_id = sess.id.clone();
+            store
+                .append_turn(sess.id, None, "user", "hello", gauss_core::TaintLabel::User)
+                .await
+                .unwrap();
+            let head = store.chain_head().await.unwrap();
+            len_before = head.length;
+            head_before = head.digest_hex;
+            assert_eq!(len_before, 1);
+        }
+        // Reopen the same path: chain head + session index both survive.
+        let store = open_session_store(&cfg).await.unwrap();
+        let reopened = store.chain_head().await.unwrap();
+        assert_eq!(reopened.length, len_before, "chain length survives reopen");
+        assert_eq!(
+            reopened.digest_hex, head_before,
+            "chain head survives reopen"
+        );
+
+        let sessions = store.list_recent_sessions(10).await;
+        assert_eq!(sessions.len(), 1, "session index restored after restart");
+        assert_eq!(sessions[0].id, session_id);
+        assert_eq!(sessions[0].turn_count, 1);
+    }
+
+    // ── gateway server ────────────────────────────────────────────────────
+
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use gaussclaw_channels::{DiscordChannel, InMemorySecretStore, SlackChannel, TelegramChannel};
+    use gaussclaw_tools::{HttpClient, HttpMethod, HttpResponse, MockHttpClient};
+    use tower::ServiceExt;
+
+    /// Build a gateway state whose adapters share `mock` for outbound and
+    /// `secrets` for credentials, driven by an EchoProvider agent.
+    fn test_gateway_state(
+        secrets: Arc<InMemorySecretStore>,
+        mock: Arc<MockHttpClient>,
+    ) -> gateway::GatewayState {
+        use gaussclaw_agent::{AgentLoop, EchoProvider, KernelHandle, TurnPolicy};
+        let provider: Arc<dyn gaussclaw_agent::ProviderHandle> = Arc::new(EchoProvider::default());
+        let agent = Arc::new(AgentLoop::new(TurnPolicy::new(
+            KernelHandle::permissive(),
+            provider,
+        )));
+        let kernel = KernelHandle::permissive();
+        let http: Arc<dyn HttpClient> = mock;
+        gateway::GatewayState {
+            agent,
+            model: "echo".into(),
+            slack: Arc::new(
+                SlackChannel::new(secrets.clone(), kernel.clone(), "SLACK_SIGNING_SECRET")
+                    .with_http(http.clone()),
+            ),
+            discord: Arc::new(
+                DiscordChannel::new(secrets.clone(), kernel.clone(), "DISCORD_PUBLIC_KEY")
+                    .with_http(http.clone()),
+            ),
+            telegram: Arc::new(
+                TelegramChannel::new(secrets, kernel, "TELEGRAM_BOT_TOKEN").with_http(http),
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn gateway_healthz_is_ok() {
+        let state = test_gateway_state(
+            Arc::new(InMemorySecretStore::default()),
+            Arc::new(MockHttpClient::new()),
+        );
+        let app = gateway::gateway_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn gateway_telegram_webhook_dispatches_and_replies() {
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets.insert("TELEGRAM_BOT_TOKEN", b"TESTTOKEN".to_vec());
+        let mock = Arc::new(MockHttpClient::new());
+        // The agent reply is delivered via sendMessage; canned-ok it.
+        mock.expect(
+            HttpMethod::Post,
+            "https://api.telegram.org/botTESTTOKEN/sendMessage",
+            HttpResponse::new(
+                200,
+                std::collections::BTreeMap::new(),
+                r#"{"ok":true}"#.into(),
+                false,
+            ),
+        );
+        let state = test_gateway_state(secrets, mock.clone());
+        let app = gateway::gateway_router(state);
+
+        let body = r#"{"update_id":1,"message":{"chat":{"id":99},"from":{"username":"alice"},"text":"hi"}}"#;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/telegram")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        // The verified message was dispatched and a reply delivered to
+        // chat 99 via the Telegram API.
+        let calls = mock.observed();
+        assert_eq!(calls.len(), 1, "expected one outbound sendMessage");
+        assert_eq!(
+            calls[0].url,
+            "https://api.telegram.org/botTESTTOKEN/sendMessage"
+        );
+        let sent: serde_json::Value =
+            serde_json::from_str(calls[0].body.as_deref().unwrap()).unwrap();
+        assert_eq!(sent["chat_id"], 99);
+    }
+
+    #[tokio::test]
+    async fn gateway_slack_bad_signature_is_401() {
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets.insert("SLACK_SIGNING_SECRET", b"shhh".to_vec());
+        let state = test_gateway_state(secrets, Arc::new(MockHttpClient::new()));
+        let app = gateway::gateway_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/slack")
+                    .header("x-slack-request-timestamp", "1700000000")
+                    .header("x-slack-signature", "v0=deadbeef")
+                    .body(Body::from(r#"{"event":{"text":"hi"}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
 }

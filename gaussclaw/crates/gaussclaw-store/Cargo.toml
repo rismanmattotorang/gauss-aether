@@ -11,6 +11,12 @@ description = "Hermes session and lineage schema atop the SurrealDB Trinity + re
 [lints]
 workspace = true
 
+[features]
+default = []
+# Enable the persistent embedded SurrealKV backend
+# (`SessionStore::open_surrealkv`). Forwarded to `gauss-memory`.
+kv-surrealkv = ["gauss-memory/kv-surrealkv"]
+
 [dependencies]
 gauss-core   = { workspace = true }
 gauss-traits = { workspace = true }
@@ -28,3 +34,4 @@ tokio        = { workspace = true, features = ["sync"] }
 [dev-dependencies]
 tokio          = { workspace = true, features = ["test-util", "macros"] }
 ed25519-dalek  = { workspace = true }
+tempfile       = { workspace = true }

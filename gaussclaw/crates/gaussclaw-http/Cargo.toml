@@ -19,11 +19,14 @@ default = []
 live-network = []
 
 [dependencies]
-gaussclaw-tools = { workspace = true }
-async-trait     = { workspace = true }
-reqwest         = { workspace = true }
-tokio           = { workspace = true }
+gaussclaw-tools     = { workspace = true }
+gaussclaw-providers = { workspace = true }
+async-trait         = { workspace = true }
+reqwest             = { workspace = true }
+tokio               = { workspace = true }
 
 [dev-dependencies]
-tokio    = { workspace = true, features = ["test-util", "macros"] }
-wiremock = { workspace = true }
+tokio           = { workspace = true, features = ["test-util", "macros"] }
+wiremock        = { workspace = true }
+gaussclaw-agent = { workspace = true }
+serde_json      = { workspace = true }

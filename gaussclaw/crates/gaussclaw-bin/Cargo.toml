@@ -11,6 +11,14 @@ description = "The shipping `gaussclaw` binary; wires every gaussclaw-* crate to
 [lints]
 workspace = true
 
+[features]
+# Persistent embedded SurrealKV storage is on by default for the
+# shipping binary so `gaussclaw serve` with a configured `[storage]
+# path` survives restarts. Build with `--no-default-features` for an
+# in-memory-only binary (smaller, faster to compile).
+default = ["kv-surrealkv"]
+kv-surrealkv = ["gaussclaw-store/kv-surrealkv"]
+
 [[bin]]
 name = "gaussclaw"
 path = "src/main.rs"
@@ -31,6 +39,8 @@ directories        = { workspace = true }
 gaussclaw-export   = { workspace = true }
 gaussclaw-agent    = { workspace = true }
 gaussclaw-providers = { workspace = true }
+gaussclaw-http     = { workspace = true }
+gaussclaw-channels = { workspace = true }
 gaussclaw-tools    = { workspace = true }
 gauss-core         = { workspace = true }
 gauss-cron         = { workspace = true }
@@ -45,3 +55,7 @@ serde_json         = { workspace = true }
 async-trait        = { workspace = true }
 hex                = { workspace = true }
 toml               = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tower    = { workspace = true }

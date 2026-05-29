@@ -2755,6 +2755,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "surrealdb",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2925,6 +2926,11 @@ dependencies = [
 [[package]]
 name = "gaussclaw-api-modes"
 version = "0.0.1"
+dependencies = [
+ "gaussclaw-agent",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "gaussclaw-bin"
@@ -2942,9 +2948,11 @@ dependencies = [
  "gauss-health",
  "gauss-traits",
  "gaussclaw-agent",
+ "gaussclaw-channels",
  "gaussclaw-cli",
  "gaussclaw-config",
  "gaussclaw-export",
+ "gaussclaw-http",
  "gaussclaw-migrate",
  "gaussclaw-plugins",
  "gaussclaw-providers",
@@ -2956,8 +2964,10 @@ dependencies = [
  "gaussclaw-web",
  "hex",
  "serde_json",
+ "tempfile",
  "tokio",
  "toml 0.8.2",
+ "tower",
  "tracing",
 ]
 
@@ -3094,8 +3104,11 @@ name = "gaussclaw-http"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "gaussclaw-agent",
+ "gaussclaw-providers",
  "gaussclaw-tools",
  "reqwest",
+ "serde_json",
  "tokio",
  "wiremock",
 ]
@@ -3236,6 +3249,7 @@ dependencies = [
  "gauss-traits",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "time",
  "tokio",
@@ -3313,11 +3327,14 @@ dependencies = [
  "gauss-cron",
  "gauss-hooks",
  "gaussclaw-agent",
+ "gaussclaw-api-modes",
  "gaussclaw-config",
  "gaussclaw-export",
  "gaussclaw-plugins",
+ "gaussclaw-providers",
  "gaussclaw-skill",
  "gaussclaw-store",
+ "gaussclaw-tools",
  "mime_guess",
  "rust-embed",
  "serde",

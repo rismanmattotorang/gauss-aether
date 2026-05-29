@@ -12,3 +12,6 @@ description = "Chat-completion, responses, and OpenAI-compatible API mode shims.
 workspace = true
 
 [dependencies]
+gaussclaw-agent = { workspace = true }
+serde           = { workspace = true }
+serde_json      = { workspace = true }

@@ -10,14 +10,18 @@
 //!    exposes the typed wire shape; the live transport lives in the
 //!    surface plane.
 //!
-//! Outbound is queued in an in-memory outbox; the surface plane drains
-//! it and POSTs to `https://api.telegram.org/bot<token>/sendMessage`.
+//! Outbound delivery: with an [`HttpClient`] transport configured,
+//! [`TelegramChannel::send`] POSTs to
+//! `https://api.telegram.org/bot<token>/sendMessage`. Without one it
+//! buffers to an in-memory outbox.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use gauss_core::{CapToken, TaintLabel};
 use gaussclaw_agent::KernelHandle;
+use gaussclaw_tools::{HttpClient, HttpMethod, HttpRequest};
 use serde::Deserialize;
 use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
@@ -34,6 +38,8 @@ pub struct TelegramChannel {
     secrets: Arc<dyn SecretStore>,
     kernel: KernelHandle,
     default_taint: TaintLabel,
+    /// Optional outbound HTTP transport. `None` → buffer to `outbox`.
+    http: Option<Arc<dyn HttpClient>>,
     outbox: Mutex<Vec<OutboundMessage>>,
 }
 
@@ -53,6 +59,7 @@ impl TelegramChannel {
             secrets,
             kernel,
             default_taint: TaintLabel::Web,
+            http: None,
             outbox: Mutex::new(Vec::new()),
         }
     }
@@ -63,6 +70,42 @@ impl TelegramChannel {
     pub fn with_webhook_secret(mut self, handle: impl Into<String>) -> Self {
         self.webhook_secret_handle = Some(handle.into());
         self
+    }
+
+    /// Attach an HTTP transport so [`Self::send`] delivers via the
+    /// Telegram Bot API instead of buffering.
+    #[must_use]
+    pub fn with_http(mut self, http: Arc<dyn HttpClient>) -> Self {
+        self.http = Some(http);
+        self
+    }
+
+    /// Build the `sendMessage` request for `msg` under `token`. Pure, so
+    /// the wire shape is unit-testable. `recipient` is the Telegram
+    /// chat id (sent as a number when it parses as one, else a string,
+    /// covering both numeric ids and `@channelusername`).
+    #[must_use]
+    pub fn build_send_request(token: &str, msg: &OutboundMessage) -> HttpRequest {
+        let mut headers = BTreeMap::new();
+        headers.insert(
+            "content-type".into(),
+            "application/json; charset=utf-8".into(),
+        );
+        let chat_id = msg.recipient.parse::<i64>().map_or_else(
+            |_| serde_json::Value::String(msg.recipient.clone()),
+            serde_json::Value::from,
+        );
+        let body = serde_json::json!({
+            "chat_id": chat_id,
+            "text": msg.body,
+        })
+        .to_string();
+        HttpRequest::new(
+            HttpMethod::Post,
+            format!("https://api.telegram.org/bot{token}/sendMessage"),
+            headers,
+            Some(body),
+        )
     }
 
     /// Verify the optional webhook secret header and turn a Telegram
@@ -131,7 +174,40 @@ impl ChannelTrait for TelegramChannel {
     }
 
     async fn send(&self, msg: OutboundMessage) -> ChannelResult<()> {
-        self.outbox.lock().await.push(msg);
+        let Some(http) = &self.http else {
+            self.outbox.lock().await.push(msg);
+            return Ok(());
+        };
+        let token = self
+            .secrets
+            .get(&self.token_handle)
+            .ok_or_else(|| ChannelError::MissingSecret(self.token_handle.clone()))?;
+        let token = String::from_utf8(token)
+            .map_err(|_| ChannelError::Transport("bot token is not valid UTF-8".into()))?;
+        let req = Self::build_send_request(&token, &msg);
+        let resp = http
+            .request(req)
+            .await
+            .map_err(|e| ChannelError::Transport(format!("telegram send: {e}")))?;
+        if !(200..300).contains(&resp.status) {
+            return Err(ChannelError::Transport(format!(
+                "telegram sendMessage HTTP {}: {}",
+                resp.status, resp.body
+            )));
+        }
+        // Telegram replies `{"ok": false, "description": "..."}` on logical
+        // failures even with a 200; surface those.
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&resp.body) {
+            if v.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
+                let desc = v
+                    .get("description")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown");
+                return Err(ChannelError::Transport(format!(
+                    "telegram sendMessage error: {desc}"
+                )));
+            }
+        }
         Ok(())
     }
 }
@@ -201,6 +277,88 @@ mod tests {
         assert_eq!(msg.sender, "alice");
         assert_eq!(msg.body, "hi");
         assert_eq!(msg.metadata["chat_id"], 99);
+    }
+
+    #[test]
+    fn build_send_request_targets_sendmessage_with_numeric_chat_id() {
+        let msg = OutboundMessage::new("12345", "hello world");
+        let req = TelegramChannel::build_send_request("TOK", &msg);
+        assert_eq!(req.method, HttpMethod::Post);
+        assert_eq!(req.url, "https://api.telegram.org/botTOK/sendMessage");
+        let body: serde_json::Value = serde_json::from_str(req.body.as_deref().unwrap()).unwrap();
+        // Numeric recipients become a JSON number; text is carried verbatim.
+        assert_eq!(body["chat_id"], 12345);
+        assert_eq!(body["text"], "hello world");
+    }
+
+    #[test]
+    fn build_send_request_keeps_username_recipient_as_string() {
+        let msg = OutboundMessage::new("@channel", "yo");
+        let req = TelegramChannel::build_send_request("TOK", &msg);
+        let body: serde_json::Value = serde_json::from_str(req.body.as_deref().unwrap()).unwrap();
+        assert_eq!(body["chat_id"], "@channel");
+    }
+
+    #[tokio::test]
+    async fn send_delivers_over_http_when_configured() {
+        use gaussclaw_tools::{HttpMethod, HttpResponse, MockHttpClient};
+        use std::collections::BTreeMap;
+
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets.insert("TELEGRAM_BOT_TOKEN", b"BOTTOKEN".to_vec());
+        let mock = Arc::new(MockHttpClient::new());
+        mock.expect(
+            HttpMethod::Post,
+            "https://api.telegram.org/botBOTTOKEN/sendMessage",
+            HttpResponse::new(200, BTreeMap::new(), r#"{"ok":true}"#.into(), false),
+        );
+        let ch =
+            TelegramChannel::new(secrets, kernel(), "TELEGRAM_BOT_TOKEN").with_http(mock.clone());
+        ch.send(OutboundMessage::new("777", "ping")).await.unwrap();
+
+        let calls = mock.observed();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].url,
+            "https://api.telegram.org/botBOTTOKEN/sendMessage"
+        );
+        // Nothing buffered — it went over the wire.
+        assert!(ch.drain_outbox().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn send_surfaces_logical_failure_from_ok_false() {
+        use gaussclaw_tools::{HttpMethod, HttpResponse, MockHttpClient};
+        use std::collections::BTreeMap;
+
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets.insert("TELEGRAM_BOT_TOKEN", b"T".to_vec());
+        let mock = Arc::new(MockHttpClient::new());
+        mock.expect(
+            HttpMethod::Post,
+            "https://api.telegram.org/botT/sendMessage",
+            HttpResponse::new(
+                200,
+                BTreeMap::new(),
+                r#"{"ok":false,"description":"chat not found"}"#.into(),
+                false,
+            ),
+        );
+        let ch = TelegramChannel::new(secrets, kernel(), "TELEGRAM_BOT_TOKEN").with_http(mock);
+        let err = ch.send(OutboundMessage::new("1", "x")).await.unwrap_err();
+        assert!(matches!(err, ChannelError::Transport(m) if m.contains("chat not found")));
+    }
+
+    #[tokio::test]
+    async fn send_without_http_buffers_to_outbox() {
+        let secrets = Arc::new(InMemorySecretStore::default());
+        let ch = TelegramChannel::new(secrets, kernel(), "TELEGRAM_BOT_TOKEN");
+        ch.send(OutboundMessage::new("1", "buffered"))
+            .await
+            .unwrap();
+        let drained = ch.drain_outbox().await;
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].body, "buffered");
     }
 
     #[tokio::test]

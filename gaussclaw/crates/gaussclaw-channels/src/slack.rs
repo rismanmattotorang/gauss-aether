@@ -11,16 +11,18 @@
 //!    [`crate::hmac_verify`] primitive.
 //! 3. Builds a typed [`ChannelMessage`] with the operator-chosen taint.
 //!
-//! Outbound is queued in an in-memory outbox; the transport layer
-//! drains it and POSTs to the Slack webhook URL. Wiring the live HTTP
-//! transport is the responsibility of the `gaussclaw-surfaces`
-//! gateway plane; the typed adapter is the surface contract.
+//! Outbound delivery: when an [`HttpClient`] transport and a bot-token
+//! handle are configured, [`SlackChannel::send`] POSTs to Slack's
+//! `chat.postMessage` Web API. Without a transport it falls back to an
+//! in-memory outbox (drained by tests / the gateway plane).
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use gauss_core::{CapToken, TaintLabel};
 use gaussclaw_agent::KernelHandle;
+use gaussclaw_tools::{HttpClient, HttpMethod, HttpRequest};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
@@ -31,6 +33,9 @@ use crate::{
     SecretStore,
 };
 
+/// Slack `chat.postMessage` Web API endpoint.
+const SLACK_POST_MESSAGE_URL: &str = "https://slack.com/api/chat.postMessage";
+
 /// Slack webhook adapter.
 pub struct SlackChannel {
     id: String,
@@ -40,6 +45,11 @@ pub struct SlackChannel {
     default_taint: TaintLabel,
     /// Allowable clock skew between Slack and the receiver, in seconds.
     max_skew_secs: i64,
+    /// SecretStore handle for the bot OAuth token used on outbound
+    /// `chat.postMessage` calls (default `SLACK_BOT_TOKEN`).
+    bot_token_handle: String,
+    /// Optional outbound HTTP transport. `None` → buffer to `outbox`.
+    http: Option<Arc<dyn HttpClient>>,
     outbox: Mutex<Vec<OutboundMessage>>,
 }
 
@@ -60,6 +70,8 @@ impl SlackChannel {
             kernel,
             default_taint: TaintLabel::Web,
             max_skew_secs: 5 * 60,
+            bot_token_handle: "SLACK_BOT_TOKEN".into(),
+            http: None,
             outbox: Mutex::new(Vec::new()),
         }
     }
@@ -69,6 +81,46 @@ impl SlackChannel {
     pub const fn with_max_skew_secs(mut self, secs: i64) -> Self {
         self.max_skew_secs = secs;
         self
+    }
+
+    /// Attach an HTTP transport so [`Self::send`] delivers to Slack's
+    /// `chat.postMessage` API instead of buffering.
+    #[must_use]
+    pub fn with_http(mut self, http: Arc<dyn HttpClient>) -> Self {
+        self.http = Some(http);
+        self
+    }
+
+    /// Override the SecretStore handle for the bot OAuth token
+    /// (default `SLACK_BOT_TOKEN`).
+    #[must_use]
+    pub fn with_bot_token_handle(mut self, handle: impl Into<String>) -> Self {
+        self.bot_token_handle = handle.into();
+        self
+    }
+
+    /// Build the `chat.postMessage` request for `msg` under `token`.
+    /// Pure — separated out so the wire shape is unit-testable without a
+    /// live transport. `recipient` is the Slack channel id.
+    #[must_use]
+    pub fn build_send_request(token: &str, msg: &OutboundMessage) -> HttpRequest {
+        let mut headers = BTreeMap::new();
+        headers.insert("authorization".into(), format!("Bearer {token}"));
+        headers.insert(
+            "content-type".into(),
+            "application/json; charset=utf-8".into(),
+        );
+        let body = serde_json::json!({
+            "channel": msg.recipient,
+            "text": msg.body,
+        })
+        .to_string();
+        HttpRequest::new(
+            HttpMethod::Post,
+            SLACK_POST_MESSAGE_URL.to_string(),
+            headers,
+            Some(body),
+        )
     }
 
     /// Verify a Slack `v0=` signed webhook and build a typed message.
@@ -118,8 +170,28 @@ impl SlackChannel {
             .admit(self.required_caps(), self.default_taint)
             .map_err(ChannelError::Denied)?;
 
-        let body = std::str::from_utf8(raw_body).unwrap_or("").to_string();
-        Ok(ChannelMessage::new(&self.id, sender, body).with_taint(self.default_taint))
+        // Extract the user text + originating channel from the Slack
+        // Events API envelope (`{event: {text, channel, …}}`). Parsing
+        // is lenient: anything that isn't a recognised event shape falls
+        // back to the raw body as text with no channel, so non-message
+        // callbacks (and tests) still produce a typed message.
+        let raw = std::str::from_utf8(raw_body).unwrap_or("");
+        let v: serde_json::Value = serde_json::from_str(raw).unwrap_or(serde_json::Value::Null);
+        let event = v.get("event");
+        let text = event
+            .and_then(|e| e.get("text"))
+            .and_then(serde_json::Value::as_str)
+            .map_or_else(|| raw.to_string(), str::to_string);
+        let channel = event
+            .and_then(|e| e.get("channel"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let mut msg = ChannelMessage::new(&self.id, sender, text).with_taint(self.default_taint);
+        if !channel.is_empty() {
+            msg = msg.with_meta("channel", serde_json::Value::String(channel));
+        }
+        Ok(msg)
     }
 
     /// Drain queued outbound messages.
@@ -143,9 +215,41 @@ impl ChannelTrait for SlackChannel {
     }
 
     async fn send(&self, msg: OutboundMessage) -> ChannelResult<()> {
-        // The HTTP transport lives in `gaussclaw-surfaces`; the adapter
-        // queues structured outbound to be drained there.
-        self.outbox.lock().await.push(msg);
+        let Some(http) = &self.http else {
+            // No transport configured → buffer for a draining caller.
+            self.outbox.lock().await.push(msg);
+            return Ok(());
+        };
+        let token = self
+            .secrets
+            .get(&self.bot_token_handle)
+            .ok_or_else(|| ChannelError::MissingSecret(self.bot_token_handle.clone()))?;
+        let token = String::from_utf8(token)
+            .map_err(|_| ChannelError::Transport("bot token is not valid UTF-8".into()))?;
+        let req = Self::build_send_request(&token, &msg);
+        let resp = http
+            .request(req)
+            .await
+            .map_err(|e| ChannelError::Transport(format!("slack send: {e}")))?;
+        if !(200..300).contains(&resp.status) {
+            return Err(ChannelError::Transport(format!(
+                "slack chat.postMessage HTTP {}: {}",
+                resp.status, resp.body
+            )));
+        }
+        // Slack returns 200 with `{"ok": false, "error": "..."}` on
+        // logical failures — surface those as transport errors.
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&resp.body) {
+            if v.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
+                let err = v
+                    .get("error")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown");
+                return Err(ChannelError::Transport(format!(
+                    "slack chat.postMessage error: {err}"
+                )));
+            }
+        }
         Ok(())
     }
 }
@@ -182,6 +286,80 @@ mod tests {
             hex.push_str(&format!("{b:02x}"));
         }
         format!("v0={hex}")
+    }
+
+    #[test]
+    fn build_send_request_targets_chat_post_message() {
+        let msg = OutboundMessage::new("C123", "hello team");
+        let req = SlackChannel::build_send_request("xoxb-tok", &msg);
+        assert_eq!(req.method, gaussclaw_tools::HttpMethod::Post);
+        assert_eq!(req.url, "https://slack.com/api/chat.postMessage");
+        assert_eq!(
+            req.headers.get("authorization").map(String::as_str),
+            Some("Bearer xoxb-tok")
+        );
+        let body: serde_json::Value = serde_json::from_str(req.body.as_deref().unwrap()).unwrap();
+        assert_eq!(body["channel"], "C123");
+        assert_eq!(body["text"], "hello team");
+    }
+
+    #[tokio::test]
+    async fn send_delivers_to_slack_when_configured() {
+        use gaussclaw_tools::{HttpMethod, HttpResponse, MockHttpClient};
+        use std::collections::BTreeMap;
+
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets.insert("SLACK_SIGNING_SECRET", b"shhh".to_vec());
+        secrets.insert("SLACK_BOT_TOKEN", b"xoxb-123".to_vec());
+        let mock = Arc::new(MockHttpClient::new());
+        mock.expect(
+            HttpMethod::Post,
+            "https://slack.com/api/chat.postMessage",
+            HttpResponse::new(200, BTreeMap::new(), r#"{"ok":true}"#.into(), false),
+        );
+        let ch =
+            SlackChannel::new(secrets, kernel(), "SLACK_SIGNING_SECRET").with_http(mock.clone());
+        ch.send(OutboundMessage::new("C999", "ping")).await.unwrap();
+        let calls = mock.observed();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].headers.get("authorization").map(String::as_str),
+            Some("Bearer xoxb-123")
+        );
+    }
+
+    #[tokio::test]
+    async fn send_surfaces_slack_ok_false() {
+        use gaussclaw_tools::{HttpMethod, HttpResponse, MockHttpClient};
+        use std::collections::BTreeMap;
+
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets.insert("SLACK_BOT_TOKEN", b"xoxb".to_vec());
+        let mock = Arc::new(MockHttpClient::new());
+        mock.expect(
+            HttpMethod::Post,
+            "https://slack.com/api/chat.postMessage",
+            HttpResponse::new(
+                200,
+                BTreeMap::new(),
+                r#"{"ok":false,"error":"channel_not_found"}"#.into(),
+                false,
+            ),
+        );
+        let ch = SlackChannel::new(secrets, kernel(), "SLACK_SIGNING_SECRET").with_http(mock);
+        let err = ch.send(OutboundMessage::new("C1", "x")).await.unwrap_err();
+        assert!(matches!(err, ChannelError::Transport(m) if m.contains("channel_not_found")));
+    }
+
+    #[tokio::test]
+    async fn send_missing_bot_token_errors() {
+        use gaussclaw_tools::MockHttpClient;
+        let secrets = Arc::new(InMemorySecretStore::default());
+        // No SLACK_BOT_TOKEN inserted.
+        let ch = SlackChannel::new(secrets, kernel(), "SLACK_SIGNING_SECRET")
+            .with_http(Arc::new(MockHttpClient::new()));
+        let err = ch.send(OutboundMessage::new("C1", "x")).await.unwrap_err();
+        assert!(matches!(err, ChannelError::MissingSecret(h) if h == "SLACK_BOT_TOKEN"));
     }
 
     #[tokio::test]

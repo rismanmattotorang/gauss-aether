@@ -22,13 +22,19 @@
 //! | GET  | `/api/config`        | Active config tree |
 //! | GET  | `/api/config/schema` | JSON schema for the config tree |
 //! | POST | `/api/config`        | Patch a config value (cap-gated in P3) |
-//! | GET  | `/api/sessions`      | Recent sessions (FTS-searchable in P2) |
+//! | GET  | `/api/sessions`      | Recent sessions |
+//! | GET  | `/api/search`        | Conversation recall — BM25 ∪ HNSW hybrid over past turns |
 //! | GET  | `/api/providers`     | Provider catalogue (populated in P4) |
-//! | GET  | `/api/tools`         | Tool catalogue (populated in P3) |
+//! | GET  | `/api/tools`         | Tool catalogue — live built-in registry |
 //! | GET  | `/api/receipt/head`  | Receipt-chain head (populated in P2) |
 //! | WS   | `/api/chat/ws`       | Chat WebSocket — streams turn tokens + tool events |
+//! | POST | `/v1/chat/completions` | OpenAI-compatible chat completions (non-streaming) |
+//! | GET  | `/v1/models`         | OpenAI-compatible model list |
 //!
-//! Every API response carries a JSON envelope: `{ "ok": true, "data": ... }`
+//! The `/v1/*` routes speak the OpenAI wire shape (raw, no `{ok,data}`
+//! envelope) so an unmodified OpenAI SDK pointed at `…/v1` works; the
+//! conversions live in `gaussclaw-api-modes`. Every `/api/*` response
+//! carries a JSON envelope: `{ "ok": true, "data": ... }`
 //! on success, `{ "ok": false, "error": { "code": "...", "message": "..." } }`
 //! on failure. This shape is what the retained Hermes frontend already
 //! consumes — preserving it is the cheapest way to honour Principle 1
@@ -534,14 +540,309 @@ async fn handle_sessions(State(state): State<ServerState>) -> Json<Ok<Vec<Sessio
     Json(Ok::new(rows))
 }
 
+/// `/api/search` query parameters.
+#[derive(Debug, Deserialize)]
+struct SearchQuery {
+    /// Query text.
+    q: String,
+    /// Max hits to return (default 10, capped at 50).
+    #[serde(default)]
+    k: Option<usize>,
+    /// `hybrid` (default) · `fts` · `vector`.
+    #[serde(default)]
+    mode: Option<String>,
+    /// Hybrid blend weight in `[0,1]` toward FTS (default 0.5). Only
+    /// used in `hybrid` mode.
+    #[serde(default)]
+    alpha: Option<f32>,
+}
+
+/// One conversation-search hit.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SearchHit {
+    /// Matched turn id.
+    pub turn_id: u64,
+    /// Owning session id.
+    pub session_id: String,
+    /// `user` | `assistant` | `system` | `tool`.
+    pub role: String,
+    /// Turn content (the matched text).
+    pub content: String,
+    /// RFC3339 timestamp.
+    pub ts: String,
+    /// Backend relevance score (BM25, cosine, or blended).
+    pub score: f32,
+}
+
+/// `GET /api/search?q=…&k=…&mode=hybrid|fts|vector&alpha=…`
+///
+/// Conversation recall over past turns via the store's BM25 + HNSW
+/// hybrid index. Powers the dashboard search box. Returns an empty list
+/// when no store is attached or the query is blank.
 #[axum::debug_handler]
-async fn handle_providers() -> Json<Ok<Vec<serde_json::Value>>> {
-    Json(Ok::new(vec![]))
+async fn handle_search(
+    State(state): State<ServerState>,
+    axum::extract::Query(q): axum::extract::Query<SearchQuery>,
+) -> Json<Ok<Vec<SearchHit>>> {
+    let query = q.q.trim();
+    let Some(store) = state.store() else {
+        return Json(Ok::new(vec![]));
+    };
+    if query.is_empty() {
+        return Json(Ok::new(vec![]));
+    }
+    let k = q.k.unwrap_or(10).min(50);
+    let alpha = q.alpha.unwrap_or(0.5);
+    let hits = match q.mode.as_deref() {
+        Some("fts") => store.fts_search(query, k).await,
+        Some("vector") => store.vector_search(query, k).await,
+        // Default: union recall (BM25 ∪ HNSW).
+        _ => store.hybrid_search(query, k, alpha).await,
+    };
+    let rows = hits
+        .unwrap_or_default()
+        .into_iter()
+        .map(|h| SearchHit {
+            turn_id: h.turn.id,
+            session_id: h.turn.session_id,
+            role: h.turn.role,
+            content: h.turn.content,
+            ts: h.turn.ts,
+            score: h.score,
+        })
+        .collect();
+    Json(Ok::new(rows))
+}
+
+/// `GET /api/providers` — the first-party vendor drivers this build
+/// ships, flagging the one named in `[provider] name`. Reflects the
+/// canonical list in `gaussclaw_providers::supported_vendors()` so the
+/// dashboard's Providers tab matches what the agent can actually route
+/// to (rather than a stale client-side guess).
+#[axum::debug_handler]
+async fn handle_providers(State(state): State<ServerState>) -> Json<Ok<Vec<serde_json::Value>>> {
+    let active = state.config().provider.name.to_ascii_lowercase();
+    let rows = gaussclaw_providers::supported_vendors()
+        .iter()
+        .map(|v| {
+            serde_json::json!({
+                "id": v.id,
+                "name": v.display,
+                "active": v.id == active,
+            })
+        })
+        .collect();
+    Json(Ok::new(rows))
+}
+
+/// Decode a [`CapToken`] bitset into stable, human-readable capability
+/// names for the dashboard's Tools tab. Only the named lattice
+/// constants are decoded; any unrecognised residual bits are reported
+/// as a `cap:0x…` hex tail so the UI never silently drops a capability.
+fn cap_names(cap: CapToken) -> Vec<String> {
+    const NAMED: &[(CapToken, &str)] = &[
+        (CapToken::FILESYSTEM_READ, "filesystem:read"),
+        (CapToken::FILESYSTEM_WRITE, "filesystem:write"),
+        (CapToken::NETWORK_GET, "network:get"),
+        (CapToken::NETWORK_POST, "network:post"),
+        (CapToken::SUBPROCESS_SPAWN, "subprocess:spawn"),
+        (CapToken::CRYPTO_SIGN, "crypto:sign"),
+        (CapToken::CANVAS_RENDER, "canvas:render"),
+        (CapToken::CANVAS_EMBED, "canvas:embed"),
+        (CapToken::CANVAS_FILE_WRITE, "canvas:file_write"),
+        (CapToken::ENV_READ, "env:read"),
+        (CapToken::MEMORY_READ, "memory:read"),
+        (CapToken::APPROVAL_ASK, "approval:ask"),
+        (CapToken::CRON_SCHEDULE, "cron:schedule"),
+        (CapToken::CHECKPOINT_WRITE, "checkpoint:write"),
+        (CapToken::CHECKPOINT_ROLLBACK, "checkpoint:rollback"),
+        (CapToken::EXECUTOR_LOCAL, "executor:local"),
+        (CapToken::EXECUTOR_DOCKER, "executor:docker"),
+        (CapToken::EXECUTOR_SSH, "executor:ssh"),
+        (CapToken::EXECUTOR_MODAL, "executor:modal"),
+        (CapToken::WORKTREE_WRITE, "worktree:write"),
+    ];
+    let mut names = Vec::new();
+    let mut residual = cap.bits();
+    for (bit, name) in NAMED {
+        if cap.contains(*bit) {
+            names.push((*name).to_string());
+            residual &= !bit.bits();
+        }
+    }
+    if residual != 0 {
+        names.push(format!("cap:{residual:#018x}"));
+    }
+    names
 }
 
 #[axum::debug_handler]
 async fn handle_tools() -> Json<Ok<Vec<serde_json::Value>>> {
-    Json(Ok::new(vec![]))
+    // Surface the built-in tool registry so the dashboard's Tools tab
+    // reflects what the agent can actually call: id, the capability the
+    // kernel gates each tool on, and whether the effect is reversible.
+    let registry = gaussclaw_tools::default_registry();
+    let mut tools: Vec<serde_json::Value> = registry
+        .ids()
+        .into_iter()
+        .filter_map(|id| registry.get(id))
+        .map(|tool| {
+            let m = tool.manifest();
+            serde_json::json!({
+                "id": m.id.0,
+                // `name` mirrors `id` so the dashboard renderer (which
+                // keys on `name`) shows a label even before it merges
+                // its curated description/layer metadata.
+                "name": m.id.0,
+                "caps": cap_names(m.cap_required),
+                "reversible": m.reversible,
+            })
+        })
+        .collect();
+    // Stable ordering for a deterministic UI / snapshot tests.
+    tools.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    Json(Ok::new(tools))
+}
+
+// ─── OpenAI-compatible API modes (Sprint 3) ───────────────────────────────────
+
+/// `POST /v1/chat/completions` — OpenAI-compatible chat completions.
+///
+/// Lets an unmodified OpenAI SDK pointed at `…/v1` drive the live
+/// GaussClaw agent. The body is mapped to an engine `Prompt`, run
+/// through the same `TurnPolicy` + provider the dashboard uses, and
+/// rendered back in the OpenAI response shape (with standard
+/// `prompt_tokens` / `completion_tokens` / `total_tokens`). With
+/// `stream: true` the reply is delivered as Server-Sent Events of
+/// `chat.completion.chunk` frames terminated by `data: [DONE]`. Errors
+/// use the OpenAI `{ "error": {…} }` envelope.
+#[axum::debug_handler]
+async fn handle_v1_chat_completions(
+    State(state): State<ServerState>,
+    Json(req): Json<gaussclaw_api_modes::ChatCompletionRequest>,
+) -> Response {
+    use gaussclaw_api_modes::{
+        prompt_from_request, response_from_completion, stream_chunks, ApiError,
+    };
+
+    // WAL-before-effect: record the inbound request before any work.
+    let plane = state.kernel.plane_for(SurfaceRequest::UserSync);
+    state
+        .audit
+        .record_inbound(
+            "/v1/chat/completions",
+            "openai-api",
+            b"",
+            TaintLabel::User,
+            plane,
+        )
+        .await;
+
+    let prompt = match prompt_from_request(&req) {
+        std::result::Result::Ok(p) => p,
+        // NoMessages (and any future request-validation variant) is a
+        // client error.
+        std::result::Result::Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError::from_request_error(&e)),
+            )
+                .into_response();
+        }
+    };
+
+    let Some(agent) = state.agent() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiError::new(
+                "no provider attached to this server; start `gaussclaw serve` with a configured provider",
+                "server_error",
+            )),
+        )
+            .into_response();
+    };
+
+    // Single faithful turn through the live provider. The TurnPolicy
+    // owns its own WAL + kernel admit for the model call.
+    let completion = match agent.policy.run(prompt, TaintLabel::User).await {
+        std::result::Result::Ok(c) => c,
+        std::result::Result::Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(ApiError::new(
+                    format!("upstream turn failed: {e:?}"),
+                    "upstream_error",
+                )),
+            )
+                .into_response();
+        }
+    };
+
+    let created = u64::try_from(now_unix_seconds()).unwrap_or(0);
+    let id = format!("chatcmpl-{}", openai_response_nonce());
+
+    if req.stream {
+        // Stream-shaped delivery of the completed turn: one frame per
+        // `chat.completion.chunk`, closed with the sentinel `[DONE]`.
+        use axum::response::sse::{Event, Sse};
+        type SseItem = std::result::Result<Event, std::convert::Infallible>;
+        let mut items: Vec<SseItem> = stream_chunks(&req.model, &completion, &id, created)
+            .iter()
+            .map(|chunk| {
+                let data = serde_json::to_string(chunk).unwrap_or_default();
+                std::result::Result::Ok(Event::default().data(data))
+            })
+            .collect();
+        items.push(std::result::Result::Ok(Event::default().data("[DONE]")));
+        return Sse::new(futures_util::stream::iter(items)).into_response();
+    }
+
+    Json(response_from_completion(
+        &req.model,
+        &completion,
+        id,
+        created,
+    ))
+    .into_response()
+}
+
+/// `GET /v1/models` — list the configured model and its fallback chain
+/// in the OpenAI models-list shape.
+#[axum::debug_handler]
+async fn handle_v1_models(
+    State(state): State<ServerState>,
+) -> Json<gaussclaw_api_modes::ModelList> {
+    let cfg = state.config();
+    let created = u64::try_from(now_unix_seconds()).unwrap_or(0);
+    let owner = if cfg.provider.name.is_empty() {
+        "gaussclaw".to_string()
+    } else {
+        cfg.provider.name.clone()
+    };
+    let mut entries: Vec<(String, String)> = Vec::new();
+    if !cfg.provider.model.is_empty() {
+        let id = if cfg.provider.name.is_empty() {
+            cfg.provider.model.clone()
+        } else {
+            format!("{}/{}", cfg.provider.name, cfg.provider.model)
+        };
+        entries.push((id, owner.clone()));
+    }
+    if let Some(chain) = &cfg.provider.chain {
+        for fallback in &chain.fallback {
+            entries.push((fallback.clone(), owner.clone()));
+        }
+    }
+    Json(gaussclaw_api_modes::model_list(entries, created))
+}
+
+/// A monotonic-ish nonce for `chatcmpl-…` ids. Uniqueness only needs to
+/// hold within a process; nanoseconds-since-epoch suffices.
+fn openai_response_nonce() -> u128 {
+    use std::time::SystemTime;
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos())
 }
 
 #[axum::debug_handler]
@@ -1625,6 +1926,7 @@ pub fn router(state: ServerState) -> Router {
         )
         .route("/api/config/schema", get(handle_config_schema))
         .route("/api/sessions", get(handle_sessions))
+        .route("/api/search", get(handle_search))
         .route("/api/providers", get(handle_providers))
         .route("/api/tools", get(handle_tools))
         .route("/api/receipt/head", get(handle_receipt_head))
@@ -1660,6 +1962,12 @@ pub fn router(state: ServerState) -> Router {
         .route("/api/plugins", get(handle_plugins_list))
         .route("/api/replay/diff", axum::routing::post(handle_replay_diff))
         .route("/api/chat/ws", get(handle_chat_ws))
+        // OpenAI-compatible surface (Sprint 3)
+        .route(
+            "/v1/chat/completions",
+            axum::routing::post(handle_v1_chat_completions),
+        )
+        .route("/v1/models", get(handle_v1_models))
         // Frontend
         .route("/", get(handle_root))
         .route("/{*path}", get(handle_asset))
@@ -1843,6 +2151,109 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["id"], sess.id);
         assert_eq!(rows[0]["turns"], 1);
+    }
+
+    async fn search_uri(app: Router, uri: &str) -> serde_json::Value {
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn search_endpoint_finds_a_matching_turn() {
+        use std::sync::Arc;
+        let store = Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let sess = store.create_session("rest", "echo").await;
+        store
+            .append_turn(
+                &sess.id,
+                None,
+                "user",
+                "the quick brown fox jumps",
+                gauss_core::TaintLabel::User,
+            )
+            .await
+            .unwrap();
+        store
+            .append_turn(
+                &sess.id,
+                None,
+                "assistant",
+                "a lazy dog sleeps",
+                gauss_core::TaintLabel::User,
+            )
+            .await
+            .unwrap();
+
+        let app = router(test_state().with_store(store));
+        let body = search_uri(app, "/api/search?q=brown&mode=fts").await;
+        let rows = body["data"].as_array().expect("data array");
+        assert!(!rows.is_empty(), "fts search should find the 'brown' turn");
+        assert!(rows
+            .iter()
+            .any(|r| r["content"].as_str().unwrap_or("").contains("brown")));
+        assert_eq!(rows[0]["session_id"], sess.id);
+        assert!(rows[0]["score"].is_number());
+    }
+
+    #[tokio::test]
+    async fn search_blank_query_returns_empty() {
+        use std::sync::Arc;
+        let store = Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let app = router(test_state().with_store(store));
+        let body = search_uri(app, "/api/search?q=%20").await;
+        assert!(body["data"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_without_store_returns_empty() {
+        let app = router(test_state());
+        let body = search_uri(app, "/api/search?q=anything").await;
+        assert!(body["data"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_hybrid_mode_is_default_and_returns_hits() {
+        use std::sync::Arc;
+        let store = Arc::new(
+            gaussclaw_store::SessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let sess = store.create_session("rest", "echo").await;
+        store
+            .append_turn(
+                &sess.id,
+                None,
+                "user",
+                "deploy the production cluster tonight",
+                gauss_core::TaintLabel::User,
+            )
+            .await
+            .unwrap();
+        let app = router(test_state().with_store(store));
+        // No mode → hybrid (BM25 ∪ HNSW). Hybrid always returns up to k
+        // hits because the vector channel ranks every turn.
+        let body = search_uri(app, "/api/search?q=production%20cluster").await;
+        let rows = body["data"].as_array().expect("data array");
+        assert!(!rows.is_empty(), "hybrid search should return hits");
     }
 
     #[tokio::test]
@@ -2722,5 +3133,233 @@ taint = "trusted"
     fn server_state_default_has_no_agent() {
         let state = ServerState::new(Config::default(), None);
         assert!(state.agent().is_none());
+    }
+
+    #[tokio::test]
+    async fn providers_endpoint_lists_vendors_and_flags_active() {
+        let mut cfg = Config::default();
+        cfg.provider.name = "anthropic".into();
+        let app = router(ServerState::new(cfg, None));
+        let body = search_uri(app, "/api/providers").await;
+        let rows = body["data"].as_array().expect("data array");
+        assert_eq!(rows.len(), 20, "ships the twenty first-party vendors");
+        let anthropic = rows
+            .iter()
+            .find(|r| r["id"] == "anthropic")
+            .expect("anthropic present");
+        assert_eq!(anthropic["active"], true);
+        assert_eq!(anthropic["name"], "Anthropic");
+        // Exactly one active when the configured vendor is supported.
+        let active_count = rows.iter().filter(|r| r["active"] == true).count();
+        assert_eq!(active_count, 1);
+    }
+
+    #[tokio::test]
+    async fn providers_endpoint_flags_none_active_when_unset() {
+        // Default config has no provider configured.
+        let app = router(ServerState::new(Config::default(), None));
+        let body = search_uri(app, "/api/providers").await;
+        let rows = body["data"].as_array().expect("data array");
+        assert_eq!(rows.len(), 20);
+        assert!(rows.iter().all(|r| r["active"] == false));
+    }
+
+    #[tokio::test]
+    async fn tools_endpoint_surfaces_the_builtin_registry() {
+        let state = ServerState::new(Config::default(), None);
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/tools")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let tools = body["data"].as_array().expect("tools array");
+        // The default registry is non-trivial and every row carries the
+        // id / caps / reversible triple the dashboard renders.
+        assert!(
+            tools.len() >= 19,
+            "expected the full builtin registry, got {}",
+            tools.len()
+        );
+        for t in tools {
+            assert!(t["id"].as_str().is_some());
+            assert!(t["caps"].as_array().is_some());
+            assert!(t["reversible"].as_bool().is_some());
+        }
+        // Sorted by id for a deterministic UI.
+        let ids: Vec<&str> = tools.iter().filter_map(|t| t["id"].as_str()).collect();
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        assert_eq!(ids, sorted);
+    }
+
+    // ── OpenAI-compatible API modes (Sprint 3) ────────────────────────────
+
+    fn echo_agent_state() -> ServerState {
+        use gaussclaw_agent::{AgentLoop, EchoProvider, KernelHandle, TurnPolicy};
+        let provider: Arc<dyn gaussclaw_agent::ProviderHandle> = Arc::new(EchoProvider::default());
+        let policy = TurnPolicy::new(KernelHandle::permissive(), provider);
+        let agent = Arc::new(AgentLoop::new(policy));
+        ServerState::new(Config::default(), None).with_agent(agent)
+    }
+
+    async fn post_json_app(app: Router, uri: &str, body: &str) -> (StatusCode, serde_json::Value) {
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn v1_chat_completions_returns_openai_shape() {
+        let app = router(echo_agent_state());
+        let (status, body) = post_json_app(
+            app,
+            "/v1/chat/completions",
+            r#"{"model":"gpt-4o","messages":[{"role":"user","content":"ping"}]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["object"], "chat.completion");
+        // The model is echoed back as the client requested it.
+        assert_eq!(body["model"], "gpt-4o");
+        assert!(body["id"].as_str().unwrap().starts_with("chatcmpl-"));
+        assert_eq!(body["choices"][0]["message"]["role"], "assistant");
+        assert!(body["choices"][0]["message"]["content"].is_string());
+        assert_eq!(body["choices"][0]["index"], 0);
+        // Standard OpenAI usage triple, not the gauss audit accounting.
+        assert!(body["usage"]["prompt_tokens"].is_number());
+        assert!(body["usage"]["completion_tokens"].is_number());
+        assert!(body["usage"]["total_tokens"].is_number());
+        assert!(body["usage"]["chain_index"].is_null());
+    }
+
+    #[tokio::test]
+    async fn v1_chat_completions_without_agent_is_503() {
+        let app = router(ServerState::new(Config::default(), None));
+        let (status, body) = post_json_app(
+            app,
+            "/v1/chat/completions",
+            r#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["type"], "server_error");
+    }
+
+    #[tokio::test]
+    async fn v1_chat_completions_streaming_returns_sse_chunks() {
+        let app = router(echo_agent_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"stream":true}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(ct.starts_with("text/event-stream"), "content-type was {ct}");
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        // SSE frames carry chat.completion.chunk objects and close with
+        // the [DONE] sentinel.
+        assert!(
+            text.contains("chat.completion.chunk"),
+            "no chunk objects: {text}"
+        );
+        assert!(
+            text.contains("\"role\":\"assistant\""),
+            "no opening role frame"
+        );
+        assert!(text.contains("\"finish_reason\""), "no finish frame");
+        assert!(text.contains("data: [DONE]"), "no DONE sentinel: {text}");
+    }
+
+    #[tokio::test]
+    async fn v1_chat_completions_empty_messages_is_400() {
+        let app = router(echo_agent_state());
+        let (status, body) = post_json_app(
+            app,
+            "/v1/chat/completions",
+            r#"{"model":"m","messages":[]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+    }
+
+    #[tokio::test]
+    async fn v1_models_lists_configured_model_and_fallbacks() {
+        let mut cfg = Config::default();
+        cfg.provider.name = "anthropic".into();
+        cfg.provider.model = "claude-3.5-sonnet".into();
+        let state = ServerState::new(cfg, None);
+        let app = router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/models")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["object"], "list");
+        let data = body["data"].as_array().unwrap();
+        assert_eq!(data[0]["id"], "anthropic/claude-3.5-sonnet");
+        assert_eq!(data[0]["object"], "model");
+        assert_eq!(data[0]["owned_by"], "anthropic");
+    }
+
+    #[test]
+    fn cap_names_decodes_known_bits_and_flags_residual() {
+        let cap =
+            CapToken::from_bits(CapToken::NETWORK_GET.bits() | CapToken::FILESYSTEM_READ.bits());
+        let names = cap_names(cap);
+        assert!(names.contains(&"network:get".to_string()));
+        assert!(names.contains(&"filesystem:read".to_string()));
+        // An undecoded high bit surfaces as a hex residual rather than
+        // being silently dropped.
+        let unknown = CapToken::from_bits(1 << 40);
+        let names = cap_names(unknown);
+        assert_eq!(names.len(), 1);
+        assert!(names[0].starts_with("cap:0x"));
+        // Bottom decodes to no names.
+        assert!(cap_names(CapToken::BOTTOM).is_empty());
     }
 }

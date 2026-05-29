@@ -140,6 +140,114 @@ impl SessionStore {
         Ok(Self::with_memory(Arc::new(memory)))
     }
 
+    /// Build a store over a **persistent** embedded SurrealKV backend
+    /// rooted at `path`. Sessions, the lineage graph, and the receipt
+    /// chain survive process restarts; reopening the same path restores
+    /// the chain head so new turns extend the existing chain.
+    ///
+    /// Requires the `kv-surrealkv` feature.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::Backend`] if the on-disk store can't be
+    /// opened or its persisted state can't be restored.
+    #[cfg(feature = "kv-surrealkv")]
+    pub async fn open_surrealkv(path: impl AsRef<std::path::Path>) -> StoreResult<Self> {
+        let memory = SurrealMemory::open_surrealkv(path).await?;
+        let store = Self::with_memory(Arc::new(memory));
+        store.restore_index().await?;
+        Ok(store)
+    }
+
+    /// Rebuild the derived in-memory index (sessions, turns, lineage,
+    /// turn counters) from the persisted append log.
+    ///
+    /// The append log is the canonical record; the session list, turn
+    /// map, and lineage edges are derived projections of it. After
+    /// reopening a persistent backend they start empty, so a restart
+    /// would otherwise show "no sessions" even though every turn is
+    /// safely on disk. This replays the log once at startup to restore
+    /// them — closing the loop on "sessions survive restart".
+    ///
+    /// Reconstructed: turn records (verbatim), per-session turn lists,
+    /// parent→child links, lineage edges (the chain-bound `commit_hex`
+    /// recomputed from each turn's post-append head; signatures are not
+    /// persisted and so are absent), and `next_turn_id`. Session
+    /// metadata not carried in the log (surface) is left blank; the
+    /// model is recovered from the routed/actual cost when present and
+    /// `created` from the session's first turn.
+    ///
+    /// A no-op on a fresh/empty store. Idempotent only on a freshly
+    /// constructed store — call it once, right after open.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::Backend`] if the log can't be read.
+    pub async fn restore_index(&self) -> StoreResult<()> {
+        let records = self.memory.replay().await?;
+        if records.is_empty() {
+            return Ok(());
+        }
+        let mut st = self.state.lock().await;
+        for rec in records {
+            // Defensive: skip any payload that isn't a Turn (the log is
+            // ours, but never panic a startup path on a stray row).
+            let Ok(turn) = serde_json::from_slice::<Turn>(&rec.payload) else {
+                continue;
+            };
+            let turn_id = turn.id;
+            let session_id = turn.session_id.clone();
+            if turn_id > st.next_turn_id {
+                st.next_turn_id = turn_id;
+            }
+
+            // Session metadata — first turn (seq order) sets `created`.
+            {
+                let model = turn.cost.model_actual.clone();
+                let created = turn.ts.clone();
+                let sess = st.sessions.entry(session_id.clone()).or_insert_with(|| {
+                    let mut s = Session::new(session_id.clone(), "", "");
+                    s.created = created;
+                    s.turn_count = 0;
+                    s
+                });
+                sess.turn_count = sess.turn_count.saturating_add(1);
+                if sess.model.is_empty() && !model.is_empty() {
+                    sess.model = model;
+                }
+            }
+
+            st.session_turns
+                .entry(session_id)
+                .or_default()
+                .push(turn_id);
+
+            if let Some(parent) = turn.parent_id {
+                // Recompute the chain-bound commit hash exactly as
+                // `append_turn_inner` did: blake3(parent ‖ child ‖
+                // post-append head). The signature isn't persisted, so
+                // restored edges carry the commitment but no signature.
+                let mut canonical = Vec::with_capacity(8 + 8 + 32);
+                canonical.extend_from_slice(&parent.to_le_bytes());
+                canonical.extend_from_slice(&turn_id.to_le_bytes());
+                canonical.extend_from_slice(&rec.this_head);
+                let commit_hex = blake3::hash(&canonical).to_hex().to_string();
+                st.lineage.insert(
+                    turn_id,
+                    LineageEdge {
+                        from: parent,
+                        to: turn_id,
+                        commit_hex,
+                        signature_hex: None,
+                    },
+                );
+                st.parent_children.entry(parent).or_default().push(turn_id);
+            }
+
+            st.receipt_payloads.insert(turn_id, rec.payload);
+            st.turns.insert(turn_id, turn);
+        }
+        Ok(())
+    }
+
     /// Build a store over a caller-supplied [`SurrealMemory`] handle.
     #[must_use]
     pub fn with_memory(memory: Arc<SurrealMemory>) -> Self {
@@ -522,8 +630,9 @@ impl SessionStore {
         Ok(self.materialize_hits(hits).await)
     }
 
-    /// HNSW vector search for the deterministic mock embedding of `query`.
-    /// Phase 4 swaps the mock embedding for a provider model.
+    /// HNSW vector search over the feature-hashing embedding of `query`
+    /// (see [`crate::embed`]). A real semantic model is a drop-in at that
+    /// `text → Vec<f32>` boundary.
     pub async fn vector_search(&self, query_text: &str, k: usize) -> StoreResult<Vec<TurnHit>> {
         let q = mock_embed(query_text);
         let hits = self.memory.vector_search(&q, k).await?;

@@ -28,7 +28,7 @@ pub mod snapshot;
 pub mod surreal;
 
 #[cfg(feature = "surrealdb-embedded")]
-pub use surreal::SurrealMemory;
+pub use surreal::{ReplayRecord, SurrealMemory};
 
 pub use klru::{Node, PrefixTree, Stats as PrefixStats, DEFAULT_CAPACITY, DEFAULT_K};
 pub use schema::{Schema, TURN_RECORD_TABLE};
