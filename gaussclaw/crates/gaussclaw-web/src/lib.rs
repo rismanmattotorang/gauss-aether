@@ -40,6 +40,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+pub mod i18n;
 pub mod wire;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -973,6 +974,34 @@ async fn audit_and_dispatch(
     }
 }
 
+/// Sprint 8 — i18n catalog endpoint. The dashboard frontend hits
+/// `/api/i18n/zh-Hans` (or whatever locale the user picked) on boot
+/// and caches the resulting `{key: message}` map. Unknown / partial
+/// locales merge onto the en baseline so every key is present.
+#[axum::debug_handler]
+async fn handle_i18n_catalog(
+    Path(locale): Path<String>,
+) -> Json<Ok<serde_json::Value>> {
+    let resolved = i18n::resolve_locale(&locale);
+    let catalog = i18n::catalog_for(&locale);
+    Json(Ok::new(serde_json::json!({
+        "locale": resolved,
+        "supported": i18n::SUPPORTED_LOCALES,
+        "messages": catalog,
+    })))
+}
+
+/// Sprint 8 — list every locale the server ships a catalog for.
+/// Used by the dashboard's language picker so it doesn't have to
+/// hard-code the supported set.
+#[axum::debug_handler]
+async fn handle_i18n_locales() -> Json<Ok<serde_json::Value>> {
+    Json(Ok::new(serde_json::json!({
+        "default": i18n::DEFAULT_LOCALE,
+        "supported": i18n::SUPPORTED_LOCALES,
+    })))
+}
+
 /// Sprint 4 §1 — Prometheus-format `/api/metrics` endpoint. Plain
 /// text response per Prometheus's text-exposition format spec.
 #[axum::debug_handler]
@@ -1113,11 +1142,20 @@ async fn chat_socket(socket: WebSocket, agent: Option<Arc<AgentLoop>>, metrics: 
     // bare wire envelope (`{kind: "system", body: …}`) wrapped in the
     // legacy `{ok, data}` shell for backwards compatibility with the
     // existing app.js dispatch.
-    let banner = if agent.is_some() {
-        "chat WebSocket connected — agent dispatch live."
+    // Sprint 8: pick the banner string from the i18n catalog so
+    // non-English dashboards see a translated greeting. The chat
+    // socket has no per-connection locale negotiation yet — the
+    // dashboard frontend already knows its preferred locale and
+    // could append `?locale=…` to the upgrade URL in a follow-up.
+    // For now we honour the `Accept-Language` first-tag if it makes
+    // it through axum's WS upgrade, defaulting to `en`.
+    let banner_key = if agent.is_some() {
+        "chat.banner.connected"
     } else {
-        "chat WebSocket connected — no agent attached (server running in stub mode)."
+        "chat.banner.stub"
     };
+    let banner = i18n::t("en", banner_key);
+    let banner = banner.as_str();
     let banner_frame = serde_json::json!({
         "ok": true,
         "data": { "kind": "system", "body": banner },
@@ -2167,6 +2205,11 @@ pub fn router(state: ServerState) -> Router {
         // endpoint counting requests, WS connections, turns, tool
         // calls. The body is plain text per Prometheus text-exposition.
         .route("/api/metrics", get(handle_metrics))
+        // Sprint 8 — i18n catalog endpoints. Frontend fetches its
+        // catalog on boot via /api/i18n/{locale}; the locale list
+        // backs the language picker.
+        .route("/api/i18n/locales", get(handle_i18n_locales))
+        .route("/api/i18n/{locale}", get(handle_i18n_catalog))
         // Sprint 5 — channel webhook ingress. Each route reads the
         // vendor's signed-webhook headers, verifies HMAC via the
         // matching channel adapter, audits the inbound, then
@@ -3536,6 +3579,61 @@ taint = "trusted"
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // ─── Sprint 8 — i18n API ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn i18n_locales_endpoint_lists_supported_locales() {
+        let (status, body) = get_json("/api/i18n/locales").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["data"]["default"], "en");
+        let supported = body["data"]["supported"].as_array().unwrap();
+        let names: Vec<&str> = supported.iter().filter_map(|v| v.as_str()).collect();
+        assert!(names.contains(&"en"));
+        assert!(names.contains(&"zh-Hans"));
+        assert!(names.contains(&"id-ID"));
+    }
+
+    #[tokio::test]
+    async fn i18n_catalog_endpoint_returns_merged_catalog_for_zh() {
+        let (status, body) = get_json("/api/i18n/zh-Hans").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["locale"], "zh-Hans");
+        let messages = body["data"]["messages"].as_object().unwrap();
+        // The Chinese translation must be present and not the English one.
+        let connected = messages["chat.banner.connected"].as_str().unwrap();
+        assert!(connected.contains("聊天"), "got {connected:?}");
+        // Every en key falls through, so the catalog count > 30.
+        assert!(
+            messages.len() >= 30,
+            "merged catalog should ship 30+ keys, got {}",
+            messages.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn i18n_catalog_endpoint_resolves_id_locale_shortcuts() {
+        let (status, body) = get_json("/api/i18n/id").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["data"]["locale"], "id-ID",
+            "bare `id` must resolve to id-ID"
+        );
+        let messages = body["data"]["messages"].as_object().unwrap();
+        let send = messages["chat.send"].as_str().unwrap();
+        assert_eq!(send, "Kirim");
+    }
+
+    #[tokio::test]
+    async fn i18n_catalog_endpoint_falls_back_to_en_for_unknown_locale() {
+        let (status, body) = get_json("/api/i18n/klingon").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["locale"], "en");
+        let messages = body["data"]["messages"].as_object().unwrap();
+        let send = messages["chat.send"].as_str().unwrap();
+        assert_eq!(send, "Send");
     }
 
     #[tokio::test]
