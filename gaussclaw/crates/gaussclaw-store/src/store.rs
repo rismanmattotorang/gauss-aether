@@ -633,8 +633,9 @@ impl SessionStore {
         Ok(self.materialize_hits(hits).await)
     }
 
-    /// HNSW vector search for the deterministic mock embedding of `query`.
-    /// Phase 4 swaps the mock embedding for a provider model.
+    /// HNSW vector search over the feature-hashing embedding of `query`
+    /// (see [`crate::embed`]). A real semantic model is a drop-in at that
+    /// `text → Vec<f32>` boundary.
     pub async fn vector_search(&self, query_text: &str, k: usize) -> StoreResult<Vec<TurnHit>> {
         let q = mock_embed(query_text);
         let hits = self.memory.vector_search(&q, k).await?;

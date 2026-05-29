@@ -73,7 +73,7 @@ pub mod store;
 pub mod types;
 
 pub use cron_store::{ChainCronRecord, TrinityCronJobStore};
-pub use embed::{mock_embed, EMBED_DIM};
+pub use embed::{embed, mock_embed, EMBED_DIM};
 pub use store::{SessionStore, StoreError, StoreResult};
 pub use types::{
     now_rfc3339, ChainHead, LineageEdge, RouteRecord, Session, Turn, TurnCost, TurnHit,
