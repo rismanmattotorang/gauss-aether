@@ -170,8 +170,28 @@ impl SlackChannel {
             .admit(self.required_caps(), self.default_taint)
             .map_err(ChannelError::Denied)?;
 
-        let body = std::str::from_utf8(raw_body).unwrap_or("").to_string();
-        Ok(ChannelMessage::new(&self.id, sender, body).with_taint(self.default_taint))
+        // Extract the user text + originating channel from the Slack
+        // Events API envelope (`{event: {text, channel, …}}`). Parsing
+        // is lenient: anything that isn't a recognised event shape falls
+        // back to the raw body as text with no channel, so non-message
+        // callbacks (and tests) still produce a typed message.
+        let raw = std::str::from_utf8(raw_body).unwrap_or("");
+        let v: serde_json::Value = serde_json::from_str(raw).unwrap_or(serde_json::Value::Null);
+        let event = v.get("event");
+        let text = event
+            .and_then(|e| e.get("text"))
+            .and_then(serde_json::Value::as_str)
+            .map_or_else(|| raw.to_string(), str::to_string);
+        let channel = event
+            .and_then(|e| e.get("channel"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let mut msg = ChannelMessage::new(&self.id, sender, text).with_taint(self.default_taint);
+        if !channel.is_empty() {
+            msg = msg.with_meta("channel", serde_json::Value::String(channel));
+        }
+        Ok(msg)
     }
 
     /// Drain queued outbound messages.

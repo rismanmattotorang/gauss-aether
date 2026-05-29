@@ -2948,6 +2948,7 @@ dependencies = [
  "gauss-health",
  "gauss-traits",
  "gaussclaw-agent",
+ "gaussclaw-channels",
  "gaussclaw-cli",
  "gaussclaw-config",
  "gaussclaw-export",
@@ -2966,6 +2967,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml 0.8.2",
+ "tower",
  "tracing",
 ]
 

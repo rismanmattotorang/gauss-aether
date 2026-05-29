@@ -147,9 +147,14 @@ impl DiscordChannel {
 
         let payload: DiscordInteraction = serde_json::from_slice(raw_body)
             .map_err(|e| ChannelError::Transport(format!("discord parse: {e}")))?;
+        let channel_id = payload.channel_id.clone();
         let (sender, body) = payload.extract();
 
-        Ok(ChannelMessage::new(&self.id, sender, body).with_taint(self.default_taint))
+        let mut msg = ChannelMessage::new(&self.id, sender, body).with_taint(self.default_taint);
+        if let Some(cid) = channel_id {
+            msg = msg.with_meta("channel_id", serde_json::Value::String(cid));
+        }
+        Ok(msg)
     }
 
     /// Drain the outbox.
@@ -211,6 +216,9 @@ struct DiscordInteraction {
     member: Option<DiscordMember>,
     #[serde(default)]
     user: Option<DiscordUser>,
+    /// Channel the interaction came from — the reply target.
+    #[serde(default)]
+    channel_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

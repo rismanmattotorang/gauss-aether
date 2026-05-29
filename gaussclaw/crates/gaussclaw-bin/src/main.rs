@@ -22,6 +22,8 @@ use gaussclaw_cli::{
 };
 use gaussclaw_tui::StatusInfo;
 
+mod gateway;
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let cfg_path = cli.config.as_deref();
@@ -244,9 +246,14 @@ fn dispatch(
             ConfigCmd::Path => run_config_path(cfg_source.as_deref()),
         },
         Command::Gateway(sub) => match sub {
-            GatewayCmd::Start => stub("gateway start", 1, "gaussclaw-channels + gauss-gateway"),
-            GatewayCmd::Stop => stub("gateway stop", 1, "gaussclaw-channels"),
-            GatewayCmd::Status => stub("gateway status", 1, "gaussclaw-channels"),
+            GatewayCmd::Start => run_gateway(cfg),
+            GatewayCmd::Stop => {
+                eprintln!(
+                    "gaussclaw gateway runs in the foreground; stop it with Ctrl+C in its terminal."
+                );
+                Ok(())
+            }
+            GatewayCmd::Status => run_gateway_status(&cfg),
         },
         Command::Setup(args) => run_setup(&args, &cfg, cfg_source.as_deref()),
         Command::Update(_) => stub("update", 5, "gaussclaw-desktop updater + gauss-attest"),
@@ -372,6 +379,143 @@ fn run_import(args: ImportArgs) -> anyhow::Result<()> {
             eprintln!("  [{}] {}: {}", item.phase, item.area, item.action);
         }
     }
+    Ok(())
+}
+
+// ─── gateway ─────────────────────────────────────────────────────────────────
+
+/// Default gateway bind port.
+const GATEWAY_DEFAULT_PORT: u16 = 8787;
+
+/// SecretStore handles the gateway resolves from the environment.
+const GATEWAY_SECRET_HANDLES: &[&str] = &[
+    "SLACK_SIGNING_SECRET",
+    "SLACK_BOT_TOKEN",
+    "DISCORD_PUBLIC_KEY",
+    "DISCORD_BOT_TOKEN",
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_WEBHOOK_SECRET",
+];
+
+/// `gaussclaw gateway start` — run the messaging gateway in the
+/// foreground, exposing `/webhooks/{slack,discord,telegram}` and
+/// dispatching verified inbound messages through the agent.
+fn run_gateway(cfg: gaussclaw_config::Config) -> anyhow::Result<()> {
+    use std::sync::Arc;
+
+    let port = GATEWAY_DEFAULT_PORT;
+    let addr: std::net::SocketAddr = ([0, 0, 0, 0], port).into();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async move {
+        // Outbound transport (shared by every adapter) + env-backed secrets.
+        let http: Arc<dyn gaussclaw_tools::HttpClient> =
+            Arc::new(gaussclaw_http::ReqwestHttpClient::new().map_err(|e| {
+                anyhow::anyhow!("failed to build HTTP client for gateway: {e}")
+            })?);
+        let secrets: Arc<dyn gaussclaw_channels::SecretStore> =
+            Arc::new(gaussclaw_channels::EnvSecretStore);
+        let kernel = gaussclaw_agent::KernelHandle::permissive();
+
+        // Reply agent: same live provider path as `serve` / `chat`.
+        let (model, choice) = build_provider_choice(&cfg);
+        let (provider, picked) = gaussclaw_providers::pick_provider(&choice);
+        let audit = gaussclaw_agent::AuditTrace::new();
+        let policy = gaussclaw_agent::TurnPolicy::new(kernel.clone(), provider)
+            .with_audit(audit.clone());
+        let agent = Arc::new(gaussclaw_agent::AgentLoop::new(policy).with_audit(audit));
+
+        // Adapters, each wired to the shared outbound transport.
+        let slack = Arc::new(
+            gaussclaw_channels::SlackChannel::new(
+                secrets.clone(),
+                kernel.clone(),
+                "SLACK_SIGNING_SECRET",
+            )
+            .with_http(http.clone()),
+        );
+        let discord = Arc::new(
+            gaussclaw_channels::DiscordChannel::new(
+                secrets.clone(),
+                kernel.clone(),
+                "DISCORD_PUBLIC_KEY",
+            )
+            .with_http(http.clone()),
+        );
+        // Telegram verifies the inbound secret header only when one is
+        // configured in the environment.
+        let mut telegram = gaussclaw_channels::TelegramChannel::new(
+            secrets.clone(),
+            kernel.clone(),
+            "TELEGRAM_BOT_TOKEN",
+        )
+        .with_http(http.clone());
+        if std::env::var("TELEGRAM_WEBHOOK_SECRET").is_ok() {
+            telegram = telegram.with_webhook_secret("TELEGRAM_WEBHOOK_SECRET");
+        }
+        let telegram = Arc::new(telegram);
+
+        let state = gateway::GatewayState {
+            agent,
+            model,
+            slack,
+            discord,
+            telegram,
+        };
+        let configured: Vec<&str> = GATEWAY_SECRET_HANDLES
+            .iter()
+            .copied()
+            .filter(|h| secrets.get(h).is_some())
+            .collect();
+        eprintln!("gaussclaw gateway: listening on http://{addr}/ (vendor codec: {})", picked.as_str());
+        eprintln!(
+            "  routes: POST /webhooks/{{slack,discord,telegram}}  ·  GET /healthz"
+        );
+        eprintln!("  configured secrets: {}", if configured.is_empty() {
+            "(none — set the vendor env vars; see `gaussclaw gateway status`)".to_string()
+        } else {
+            configured.join(", ")
+        });
+
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        axum::serve(listener, gateway::gateway_router(state)).await?;
+        Ok::<(), anyhow::Error>(())
+    })
+}
+
+/// `gaussclaw gateway status` — report which vendor secrets are present
+/// so an operator can see which channels are ready to serve.
+fn run_gateway_status(_cfg: &gaussclaw_config::Config) -> anyhow::Result<()> {
+    use gaussclaw_channels::SecretStore;
+    let secrets = gaussclaw_channels::EnvSecretStore;
+    let ready = |handles: &[&str]| handles.iter().all(|h| secrets.get(h).is_some());
+    println!("gaussclaw gateway — channel readiness (from environment):");
+    println!(
+        "  slack     {}",
+        if ready(&["SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN"]) {
+            "ready"
+        } else {
+            "missing SLACK_SIGNING_SECRET and/or SLACK_BOT_TOKEN"
+        }
+    );
+    println!(
+        "  discord   {}",
+        if ready(&["DISCORD_PUBLIC_KEY", "DISCORD_BOT_TOKEN"]) {
+            "ready"
+        } else {
+            "missing DISCORD_PUBLIC_KEY and/or DISCORD_BOT_TOKEN"
+        }
+    );
+    println!(
+        "  telegram  {}",
+        if ready(&["TELEGRAM_BOT_TOKEN"]) {
+            "ready"
+        } else {
+            "missing TELEGRAM_BOT_TOKEN"
+        }
+    );
+    println!("\nStart the gateway with: gaussclaw gateway start");
     Ok(())
 }
 
@@ -1411,5 +1555,119 @@ mod tests {
         assert_eq!(sessions.len(), 1, "session index restored after restart");
         assert_eq!(sessions[0].id, session_id);
         assert_eq!(sessions[0].turn_count, 1);
+    }
+
+    // ── gateway server ────────────────────────────────────────────────────
+
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use gaussclaw_channels::{
+        DiscordChannel, InMemorySecretStore, SlackChannel, TelegramChannel,
+    };
+    use gaussclaw_tools::{HttpClient, HttpMethod, HttpResponse, MockHttpClient};
+    use tower::ServiceExt;
+
+    /// Build a gateway state whose adapters share `mock` for outbound and
+    /// `secrets` for credentials, driven by an EchoProvider agent.
+    fn test_gateway_state(
+        secrets: Arc<InMemorySecretStore>,
+        mock: Arc<MockHttpClient>,
+    ) -> gateway::GatewayState {
+        use gaussclaw_agent::{AgentLoop, EchoProvider, KernelHandle, TurnPolicy};
+        let provider: Arc<dyn gaussclaw_agent::ProviderHandle> = Arc::new(EchoProvider::default());
+        let agent = Arc::new(AgentLoop::new(TurnPolicy::new(
+            KernelHandle::permissive(),
+            provider,
+        )));
+        let kernel = KernelHandle::permissive();
+        let http: Arc<dyn HttpClient> = mock;
+        gateway::GatewayState {
+            agent,
+            model: "echo".into(),
+            slack: Arc::new(
+                SlackChannel::new(secrets.clone(), kernel.clone(), "SLACK_SIGNING_SECRET")
+                    .with_http(http.clone()),
+            ),
+            discord: Arc::new(
+                DiscordChannel::new(secrets.clone(), kernel.clone(), "DISCORD_PUBLIC_KEY")
+                    .with_http(http.clone()),
+            ),
+            telegram: Arc::new(
+                TelegramChannel::new(secrets, kernel, "TELEGRAM_BOT_TOKEN").with_http(http),
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn gateway_healthz_is_ok() {
+        let state =
+            test_gateway_state(Arc::new(InMemorySecretStore::default()), Arc::new(MockHttpClient::new()));
+        let app = gateway::gateway_router(state);
+        let resp = app
+            .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn gateway_telegram_webhook_dispatches_and_replies() {
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets.insert("TELEGRAM_BOT_TOKEN", b"TESTTOKEN".to_vec());
+        let mock = Arc::new(MockHttpClient::new());
+        // The agent reply is delivered via sendMessage; canned-ok it.
+        mock.expect(
+            HttpMethod::Post,
+            "https://api.telegram.org/botTESTTOKEN/sendMessage",
+            HttpResponse::new(200, std::collections::BTreeMap::new(), r#"{"ok":true}"#.into(), false),
+        );
+        let state = test_gateway_state(secrets, mock.clone());
+        let app = gateway::gateway_router(state);
+
+        let body = r#"{"update_id":1,"message":{"chat":{"id":99},"from":{"username":"alice"},"text":"hi"}}"#;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/telegram")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        // The verified message was dispatched and a reply delivered to
+        // chat 99 via the Telegram API.
+        let calls = mock.observed();
+        assert_eq!(calls.len(), 1, "expected one outbound sendMessage");
+        assert_eq!(calls[0].url, "https://api.telegram.org/botTESTTOKEN/sendMessage");
+        let sent: serde_json::Value =
+            serde_json::from_str(calls[0].body.as_deref().unwrap()).unwrap();
+        assert_eq!(sent["chat_id"], 99);
+    }
+
+    #[tokio::test]
+    async fn gateway_slack_bad_signature_is_401() {
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets.insert("SLACK_SIGNING_SECRET", b"shhh".to_vec());
+        let state = test_gateway_state(secrets, Arc::new(MockHttpClient::new()));
+        let app = gateway::gateway_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/slack")
+                    .header("x-slack-request-timestamp", "1700000000")
+                    .header("x-slack-signature", "v0=deadbeef")
+                    .body(Body::from(r#"{"event":{"text":"hi"}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }
