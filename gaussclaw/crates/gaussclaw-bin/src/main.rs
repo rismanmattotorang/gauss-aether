@@ -18,7 +18,7 @@
 use clap::Parser;
 use gaussclaw_cli::{
     ChatArgs, Cli, Command, ConfigCmd, CronCmd, DoctorArgs, GatewayCmd, ImportArgs, ModelCmd,
-    PluginsCmd, ProxyArgs, ReceiptCmd, SkillCmd, SnapshotCmd, ToolsCmd, WebArgs,
+    PluginsCmd, ProxyArgs, ReceiptCmd, SetupArgs, SkillCmd, SnapshotCmd, ToolsCmd, WebArgs,
 };
 use gaussclaw_tui::StatusInfo;
 
@@ -70,11 +70,13 @@ fn run_web(
         .enable_all()
         .build()?;
     rt.block_on(async move {
-        // Phase 2 wiring: build a single Arc<SessionStore> that backs
-        // /api/sessions, /api/receipt/head, and the chat WebSocket.
-        // In-memory backend for the demo binary; production deployments
-        // swap to a persistent SurrealMemory via SessionStore::with_memory.
-        let store = std::sync::Arc::new(gaussclaw_store::SessionStore::open_in_memory().await?);
+        // Build the Arc<SessionStore> backing /api/sessions,
+        // /api/receipt/head, and the chat WebSocket. When `[storage]
+        // path` is set (and the binary is built with `kv-surrealkv`,
+        // the default), use the persistent embedded SurrealKV backend so
+        // sessions + the receipt chain survive restarts; otherwise fall
+        // back to the ephemeral in-memory store.
+        let store = std::sync::Arc::new(open_session_store(&cfg).await?);
         // Sprint 5 §3: one persistent in-memory cron scheduler per
         // server lifecycle. Trinity-backed persistence wires in the
         // Sprint 5 §3 follow-on.
@@ -246,7 +248,7 @@ fn dispatch(
             GatewayCmd::Stop => stub("gateway stop", 1, "gaussclaw-channels"),
             GatewayCmd::Status => stub("gateway status", 1, "gaussclaw-channels"),
         },
-        Command::Setup(_) => stub("setup", 1, "gaussclaw-config + gaussclaw-migrate"),
+        Command::Setup(args) => run_setup(&args, &cfg, cfg_source.as_deref()),
         Command::Update(_) => stub("update", 5, "gaussclaw-desktop updater + gauss-attest"),
         Command::Doctor(args) => run_doctor(args),
         Command::Import(args) => run_import(args),
@@ -371,6 +373,43 @@ fn run_import(args: ImportArgs) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+// ─── storage wiring ──────────────────────────────────────────────────────────
+
+/// Open the session store for `serve`, honouring `[storage] path`.
+///
+/// Empty path → ephemeral in-memory store. Non-empty path → persistent
+/// embedded SurrealKV store (when built with `kv-surrealkv`, the
+/// default); without that feature we log and fall back to in-memory so
+/// the server still starts.
+async fn open_session_store(
+    cfg: &gaussclaw_config::Config,
+) -> anyhow::Result<gaussclaw_store::SessionStore> {
+    let path = cfg.storage.path.trim();
+    if path.is_empty() {
+        return Ok(gaussclaw_store::SessionStore::open_in_memory().await?);
+    }
+    #[cfg(feature = "kv-surrealkv")]
+    {
+        // SurrealKV roots its LSM store at this directory; create it
+        // (and any parents) up front so a first run on a fresh box works.
+        tokio::fs::create_dir_all(path).await.ok();
+        tracing::info!(
+            target: "gaussclaw_bin::serve",
+            "persistent storage: SurrealKV at {path}"
+        );
+        Ok(gaussclaw_store::SessionStore::open_surrealkv(path).await?)
+    }
+    #[cfg(not(feature = "kv-surrealkv"))]
+    {
+        tracing::warn!(
+            target: "gaussclaw_bin::serve",
+            "storage.path is set ({path}) but this binary was built without the \
+             kv-surrealkv feature; falling back to an ephemeral in-memory store"
+        );
+        Ok(gaussclaw_store::SessionStore::open_in_memory().await?)
+    }
 }
 
 // ─── provider wiring ─────────────────────────────────────────────────────────
@@ -610,6 +649,111 @@ fn run_config_path(cfg_path: Option<&std::path::Path>) -> anyhow::Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+// ─── setup wizard ────────────────────────────────────────────────────────────
+
+/// Default persistent-store path under the platform data directory.
+fn default_storage_path() -> String {
+    directories::ProjectDirs::from("ai", "gauss", "gaussclaw")
+        .map(|d| d.data_dir().join("store").to_string_lossy().into_owned())
+        .unwrap_or_else(|| "./gaussclaw-data/store".to_string())
+}
+
+/// Render an empty config value as `unset` for prompts.
+fn shown(s: &str) -> &str {
+    if s.is_empty() {
+        "unset"
+    } else {
+        s
+    }
+}
+
+/// Read one trimmed line from stdin after printing `label`.
+fn prompt_line(label: &str) -> anyhow::Result<String> {
+    use std::io::Write;
+    print!("{label}");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(line.trim().to_string())
+}
+
+/// `gaussclaw setup` — first-run wizard.
+///
+/// Walks the operator through provider, model, and storage selection,
+/// then writes a `config.toml` to the active (or default) config path.
+/// `--non-interactive` accepts sensible defaults without prompting
+/// (handy for CI / container images). Re-running edits the existing
+/// config in place rather than starting from scratch.
+fn run_setup(
+    args: &SetupArgs,
+    cfg: &gaussclaw_config::Config,
+    cfg_source: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    let target: std::path::PathBuf = cfg_source.map(std::path::Path::to_path_buf).unwrap_or_else(
+        || {
+            gaussclaw_config::search_path()
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| std::path::PathBuf::from("./gaussclaw.toml"))
+        },
+    );
+
+    // Edit a clone of the current config so re-running setup is idempotent.
+    let mut new_cfg = cfg.clone();
+
+    if args.non_interactive {
+        if new_cfg.storage.path.is_empty() {
+            new_cfg.storage.path = default_storage_path();
+        }
+    } else {
+        println!("GaussClaw setup — press Enter to keep the current value.\n");
+
+        let name = prompt_line(&format!("Provider [{}]: ", shown(&cfg.provider.name)))?;
+        if !name.is_empty() {
+            new_cfg.provider.name = name;
+        }
+
+        let model = prompt_line(&format!("Model [{}]: ", shown(&cfg.provider.model)))?;
+        if !model.is_empty() {
+            new_cfg.provider.model = model;
+        }
+
+        let default_store = if cfg.storage.path.is_empty() {
+            default_storage_path()
+        } else {
+            cfg.storage.path.clone()
+        };
+        let store = prompt_line(&format!("Storage path [{default_store}]: "))?;
+        new_cfg.storage.path = if store.is_empty() {
+            default_store
+        } else {
+            store
+        };
+    }
+
+    gaussclaw_config::save(&new_cfg, &target)?;
+    println!("\n✓ wrote {}", target.display());
+
+    // API-key hygiene hint.
+    if let Some(var) = match new_cfg.provider.name.to_ascii_lowercase().as_str() {
+        "anthropic" => Some("ANTHROPIC_API_KEY"),
+        "openai" => Some("OPENAI_API_KEY"),
+        _ => None,
+    } {
+        if std::env::var(var).map(|v| v.is_empty()).unwrap_or(true) {
+            println!("⚠ {var} is not set — export it before talking to a real model.");
+        } else {
+            println!("✓ {var} detected.");
+        }
+    }
+
+    println!("\nNext steps:");
+    println!("  gaussclaw doctor          # verify health");
+    println!("  gaussclaw                 # chat in the terminal");
+    println!("  gaussclaw serve           # web dashboard + OpenAI API on :8080");
     Ok(())
 }
 
@@ -1177,4 +1321,90 @@ fn run_proxy(args: ProxyArgs) -> anyhow::Result<()> {
         axum::serve(listener, gaussclaw_proxy::router(state)).await?;
         Ok::<(), anyhow::Error>(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_interactive_setup_writes_config_with_default_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config.toml");
+        let cfg = gaussclaw_config::Config::default();
+        run_setup(
+            &SetupArgs {
+                non_interactive: true,
+            },
+            &cfg,
+            Some(&target),
+        )
+        .unwrap();
+        // The file exists and round-trips with a non-empty storage path.
+        let (loaded, _report) = gaussclaw_config::load(Some(&target)).unwrap();
+        assert!(
+            !loaded.storage.path.is_empty(),
+            "non-interactive setup should default the storage path"
+        );
+    }
+
+    #[test]
+    fn non_interactive_setup_preserves_existing_storage_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config.toml");
+        let mut cfg = gaussclaw_config::Config::default();
+        cfg.storage.path = "/custom/store".into();
+        run_setup(
+            &SetupArgs {
+                non_interactive: true,
+            },
+            &cfg,
+            Some(&target),
+        )
+        .unwrap();
+        let (loaded, _report) = gaussclaw_config::load(Some(&target)).unwrap();
+        assert_eq!(loaded.storage.path, "/custom/store");
+    }
+
+    #[tokio::test]
+    async fn open_session_store_uses_in_memory_when_path_empty() {
+        let cfg = gaussclaw_config::Config::default();
+        assert!(cfg.storage.path.is_empty());
+        // Builds without touching the filesystem.
+        let store = open_session_store(&cfg).await.unwrap();
+        assert_eq!(store.chain_head().await.unwrap().length, 0);
+    }
+
+    /// The persistent backend keeps the receipt chain (the audit-
+    /// critical append log) across a restart: reopening the same
+    /// `[storage] path` restores the chain head so new turns extend the
+    /// existing chain rather than starting fresh.
+    #[cfg(feature = "kv-surrealkv")]
+    #[tokio::test]
+    async fn open_session_store_persists_chain_across_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store");
+        let mut cfg = gaussclaw_config::Config::default();
+        cfg.storage.path = path.to_string_lossy().into_owned();
+
+        // First open: create a session, append a turn, then drop.
+        let (len_before, head_before);
+        {
+            let store = open_session_store(&cfg).await.unwrap();
+            let sess = store.create_session("tui", "echo").await;
+            store
+                .append_turn(sess.id, None, "user", "hello", gauss_core::TaintLabel::User)
+                .await
+                .unwrap();
+            let head = store.chain_head().await.unwrap();
+            len_before = head.length;
+            head_before = head.digest_hex;
+            assert_eq!(len_before, 1);
+        }
+        // Reopen the same path: the chain head survived.
+        let store = open_session_store(&cfg).await.unwrap();
+        let reopened = store.chain_head().await.unwrap();
+        assert_eq!(reopened.length, len_before, "chain length survives reopen");
+        assert_eq!(reopened.digest_hex, head_before, "chain head survives reopen");
+    }
 }

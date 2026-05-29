@@ -93,6 +93,28 @@ pub struct Config {
     /// Defaults to `local`.
     #[serde(default)]
     pub terminal: TerminalConfig,
+
+    /// Backend storage location (Sprint 4). Absent / empty path →
+    /// ephemeral in-memory store (lost on restart).
+    #[serde(default)]
+    pub storage: StorageConfig,
+}
+
+/// `[storage]` section — Sprint 4.
+///
+/// Selects where session data, the lineage graph, and the receipt
+/// chain are persisted. With an empty `path` (the default) the server
+/// uses an ephemeral embedded in-memory store — fine for demos and
+/// tests, but everything is lost on restart. Set `path` to a directory
+/// to enable the persistent embedded SurrealKV backend (requires the
+/// binary to be built with the `kv-surrealkv` feature, which is on by
+/// default for `gaussclaw`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+#[non_exhaustive]
+pub struct StorageConfig {
+    /// Filesystem path to the persistent store. Empty → in-memory.
+    pub path: String,
 }
 
 /// `[terminal]` section — Sprint 6 §2.

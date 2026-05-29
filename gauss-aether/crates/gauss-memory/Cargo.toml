@@ -35,3 +35,4 @@ surrealdb    = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tempfile = { workspace = true }

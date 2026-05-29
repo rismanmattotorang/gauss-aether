@@ -140,6 +140,22 @@ impl SessionStore {
         Ok(Self::with_memory(Arc::new(memory)))
     }
 
+    /// Build a store over a **persistent** embedded SurrealKV backend
+    /// rooted at `path`. Sessions, the lineage graph, and the receipt
+    /// chain survive process restarts; reopening the same path restores
+    /// the chain head so new turns extend the existing chain.
+    ///
+    /// Requires the `kv-surrealkv` feature.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::Backend`] if the on-disk store can't be
+    /// opened or its persisted state can't be restored.
+    #[cfg(feature = "kv-surrealkv")]
+    pub async fn open_surrealkv(path: impl AsRef<std::path::Path>) -> StoreResult<Self> {
+        let memory = SurrealMemory::open_surrealkv(path).await?;
+        Ok(Self::with_memory(Arc::new(memory)))
+    }
+
     /// Build a store over a caller-supplied [`SurrealMemory`] handle.
     #[must_use]
     pub fn with_memory(memory: Arc<SurrealMemory>) -> Self {
