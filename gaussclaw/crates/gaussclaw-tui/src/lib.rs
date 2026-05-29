@@ -143,6 +143,38 @@ pub enum Tick {
 /// `App` owns it for its lifetime.
 pub type CancelCallback = Box<dyn Fn() + Send + Sync>;
 
+// ─── turn dispatch ────────────────────────────────────────────────────────────
+
+/// Outcome of one dispatched user turn.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum TurnOutcome {
+    /// The assistant reply text.
+    Reply(String),
+    /// The turn failed; the string is an operator-readable reason.
+    Error(String),
+}
+
+/// Runs a user turn for the TUI, off the render thread.
+///
+/// The TUI is a synchronous render loop, but a real turn is an async
+/// round-trip to a model provider. Rather than freeze the UI for the
+/// duration, the App hands the prompt to a `TurnDispatcher`, which runs
+/// the turn on its own thread/runtime and sends the result back over
+/// `tx` **exactly once**. The render loop keeps spinning (and stays
+/// cancellable) while the turn is in flight, polling the channel each
+/// tick.
+///
+/// Production runtimes (`gaussclaw-bin`) implement this over a
+/// `TurnPolicy` + reqwest-backed provider; tests implement it with an
+/// in-thread sender that resolves immediately.
+pub trait TurnDispatcher: Send + Sync {
+    /// Begin `prompt`. The implementation must send exactly one
+    /// [`TurnOutcome`] on `tx` when the turn settles. Dropping `tx`
+    /// without sending is treated by the App as a dispatcher fault.
+    fn dispatch(&self, prompt: String, tx: std::sync::mpsc::Sender<TurnOutcome>);
+}
+
 // ─── the app ────────────────────────────────────────────────────────────────
 
 /// The TUI state machine.
@@ -175,6 +207,14 @@ pub struct App<'a> {
     /// "Ctrl+C quits the TUI hard" behaviour for runtimes that don't
     /// drive an agent loop.
     on_cancel: Option<CancelCallback>,
+    /// Optional turn dispatcher. When set, a non-slash submission runs
+    /// a real provider turn instead of the local stub echo. `None`
+    /// preserves the stub behaviour for runtimes (and tests) that don't
+    /// wire an agent.
+    dispatcher: Option<std::sync::Arc<dyn TurnDispatcher>>,
+    /// Receiver for the in-flight turn started by [`Self::submit_current`].
+    /// `Some` exactly while a dispatched turn is outstanding.
+    in_flight_rx: Option<std::sync::mpsc::Receiver<TurnOutcome>>,
 }
 
 impl App<'_> {
@@ -209,7 +249,18 @@ impl App<'_> {
             slash_registry: gaussclaw_cli::slash::SlashRegistry::with_defaults(),
             turn_in_flight: false,
             on_cancel: None,
+            dispatcher: None,
+            in_flight_rx: None,
         }
+    }
+
+    /// Attach a [`TurnDispatcher`]. When set, a non-slash submission
+    /// dispatches a real provider turn (off the render thread) instead
+    /// of echoing the local stub. Returns `self` for builder chaining.
+    #[must_use]
+    pub fn with_dispatcher(mut self, dispatcher: std::sync::Arc<dyn TurnDispatcher>) -> Self {
+        self.dispatcher = Some(dispatcher);
+        self
     }
 
     /// Borrow the slash-command registry. Plugins / channel adapters
@@ -411,18 +462,83 @@ impl App<'_> {
             return;
         }
 
-        // Echo the user turn, then a stub assistant turn. Real dispatch lands
-        // once `gaussclaw-agent` exposes a `run_turn` API to the surface plane.
-        self.history.push(Entry::User(body));
-        let reply = format!(
-            "(stub) Real provider dispatch lands once `gaussclaw-agent::run_turn` is wired into the \
-             surface plane. Current model: {model}, taint floor: {taint}.",
-            model = self.status.model,
-            taint = self.status.taint_floor,
-        );
-        self.last_assistant = Some(reply.clone());
-        self.history.push(Entry::Assistant(reply));
-        self.status.turn = self.status.turn.saturating_add(1);
+        // Don't start a second turn while one is outstanding.
+        if self.turn_in_flight {
+            self.history.push(Entry::System(
+                "A turn is already running — press Esc to cancel it first.".into(),
+            ));
+            return;
+        }
+
+        self.history.push(Entry::User(body.clone()));
+
+        if let Some(dispatcher) = self.dispatcher.clone() {
+            // Real dispatch: hand the prompt to the dispatcher, which
+            // runs it off the render thread and reports back over the
+            // channel. The render loop polls `in_flight_rx` each tick.
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.in_flight_rx = Some(rx);
+            self.turn_in_flight = true;
+            dispatcher.dispatch(body, tx);
+        } else {
+            // No agent wired (e.g. snapshot tests, surfaces that only
+            // inspect local state): keep the legacy stub echo so the
+            // round-trip still exercises history + the turn counter.
+            let reply = format!(
+                "(stub) No provider attached to this surface. Run `gaussclaw serve` or wire a \
+                 TurnDispatcher. Current model: {model}, taint floor: {taint}.",
+                model = self.status.model,
+                taint = self.status.taint_floor,
+            );
+            self.last_assistant = Some(reply.clone());
+            self.history.push(Entry::Assistant(reply));
+            self.status.turn = self.status.turn.saturating_add(1);
+        }
+    }
+
+    /// Poll the in-flight turn, if any, for a settled outcome.
+    ///
+    /// Non-blocking: the render loop calls this each tick. Returns
+    /// `true` when an outcome was consumed (so the loop knows to
+    /// re-render), `false` otherwise. On a settled turn the assistant
+    /// reply (or an error breadcrumb) is appended to history, the turn
+    /// counter advances, and the in-flight state clears.
+    pub fn poll_turn(&mut self) -> bool {
+        let Some(rx) = self.in_flight_rx.as_ref() else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(TurnOutcome::Reply(text)) => {
+                self.last_assistant = Some(text.clone());
+                self.history.push(Entry::Assistant(text));
+                self.status.turn = self.status.turn.saturating_add(1);
+                self.finish_turn();
+                true
+            }
+            Ok(TurnOutcome::Error(msg)) => {
+                self.history
+                    .push(Entry::System(format!("turn failed: {msg}")));
+                self.finish_turn();
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                // The dispatcher dropped the sender without ever
+                // producing an outcome — surface it rather than hang
+                // in-flight forever.
+                self.history.push(Entry::System(
+                    "turn failed: dispatcher closed without a response.".into(),
+                ));
+                self.finish_turn();
+                true
+            }
+        }
+    }
+
+    /// Clear in-flight bookkeeping once a turn settles.
+    fn finish_turn(&mut self) {
+        self.in_flight_rx = None;
+        self.turn_in_flight = false;
     }
 
     /// Dispatch a slash command. The TUI ships every command that can
@@ -661,10 +777,18 @@ impl App<'_> {
     }
 
     fn render_input(&self, frame: &mut Frame<'_>, area: Rect) {
+        // While a turn is in flight, surface a working indicator in the
+        // border title (and that Esc cancels). Idle renders unchanged,
+        // so locked snapshots that never dispatch are unaffected.
+        let title = if self.turn_in_flight {
+            " input · ⋯ working (Esc to cancel) "
+        } else {
+            " input "
+        };
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray))
-            .title(" input ");
+            .title(title);
         let inner = block.inner(area);
         frame.render_widget(block, area);
         frame.render_widget(&self.input, inner);
@@ -799,6 +923,18 @@ pub fn buffer_text(buf: &Buffer) -> String {
 /// enables raw mode + bracketed paste, and restores them on exit (even
 /// on panic, via an internal Drop guard).
 pub fn run(initial: StatusInfo) -> Result<()> {
+    run_with_dispatcher(initial, None)
+}
+
+/// Run the TUI with an optional [`TurnDispatcher`].
+///
+/// `gaussclaw-bin` passes a dispatcher backed by a `TurnPolicy` +
+/// reqwest provider so the terminal holds a real conversation; passing
+/// `None` is equivalent to [`run`] and keeps the local stub echo.
+pub fn run_with_dispatcher(
+    initial: StatusInfo,
+    dispatcher: Option<std::sync::Arc<dyn TurnDispatcher>>,
+) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
@@ -807,6 +943,9 @@ pub fn run(initial: StatusInfo) -> Result<()> {
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     let mut app = App::new(initial);
+    if let Some(d) = dispatcher {
+        app = app.with_dispatcher(d);
+    }
 
     // Surface where we'll be persisting input history so operators know
     // exactly which file to grep or revoke.
@@ -825,6 +964,11 @@ pub fn run(initial: StatusInfo) -> Result<()> {
 fn run_event_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App<'_>) -> Result<()> {
     loop {
         terminal.draw(|f| app.render(f))?;
+        // The 250 ms poll timeout doubles as the in-flight turn tick:
+        // when `poll` returns false (no key), we still fall through and
+        // check whether a dispatched turn has settled, so a reply lands
+        // within a quarter-second of the provider returning even if the
+        // user isn't touching the keyboard.
         if crossterm::event::poll(Duration::from_millis(250))? {
             if let Event::Key(key) = crossterm::event::read()? {
                 match app.on_key(key) {
@@ -840,6 +984,8 @@ fn run_event_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App<'_>) -> 
                 }
             }
         }
+        // Drain any settled in-flight turn (no-op when none outstanding).
+        app.poll_turn();
     }
 }
 
@@ -1136,5 +1282,107 @@ mod tests {
         assert!(app.is_turn_in_flight());
         app.mark_turn_in_flight(false);
         assert!(!app.is_turn_in_flight());
+    }
+
+    // ── turn dispatch wiring ──────────────────────────────────────────────
+
+    /// A dispatcher that replies immediately on the calling thread, so
+    /// the next `poll_turn` observes the outcome deterministically.
+    struct ImmediateDispatcher(TurnOutcome);
+    impl TurnDispatcher for ImmediateDispatcher {
+        fn dispatch(&self, prompt: String, tx: std::sync::mpsc::Sender<TurnOutcome>) {
+            // Echo the prompt into a reply so we can assert the dispatcher
+            // saw the right input.
+            let outcome = match &self.0 {
+                TurnOutcome::Reply(_) => TurnOutcome::Reply(format!("got: {prompt}")),
+                TurnOutcome::Error(e) => TurnOutcome::Error(e.clone()),
+            };
+            let _ = tx.send(outcome);
+        }
+    }
+
+    fn app_with_dispatcher(outcome: TurnOutcome) -> App<'static> {
+        App::with_history(StatusInfo::default(), HistoryStore::in_memory())
+            .with_dispatcher(std::sync::Arc::new(ImmediateDispatcher(outcome)))
+    }
+
+    #[test]
+    fn dispatcher_path_marks_in_flight_and_defers_reply() {
+        let mut app = app_with_dispatcher(TurnOutcome::Reply(String::new()));
+        type_str(&mut app, "ping");
+        app.on_key(enter());
+        // The user line is in history and a turn is in flight — but no
+        // assistant entry yet (it arrives via poll_turn).
+        assert!(app.is_turn_in_flight());
+        assert!(matches!(app.history().last(), Some(Entry::User(b)) if b == "ping"));
+    }
+
+    #[test]
+    fn poll_turn_appends_reply_and_clears_in_flight() {
+        let mut app = app_with_dispatcher(TurnOutcome::Reply(String::new()));
+        type_str(&mut app, "ping");
+        app.on_key(enter());
+        assert!(app.poll_turn());
+        assert!(!app.is_turn_in_flight());
+        assert!(matches!(app.history().last(), Some(Entry::Assistant(b)) if b == "got: ping"));
+        // A second poll with nothing outstanding is a no-op.
+        assert!(!app.poll_turn());
+    }
+
+    #[test]
+    fn poll_turn_surfaces_dispatch_errors_as_system_entry() {
+        let mut app = app_with_dispatcher(TurnOutcome::Error("upstream 401".into()));
+        type_str(&mut app, "ping");
+        app.on_key(enter());
+        assert!(app.poll_turn());
+        assert!(!app.is_turn_in_flight());
+        assert!(
+            matches!(app.history().last(), Some(Entry::System(b)) if b.contains("upstream 401"))
+        );
+    }
+
+    #[test]
+    fn dropped_sender_without_outcome_is_reported() {
+        struct DropDispatcher;
+        impl TurnDispatcher for DropDispatcher {
+            fn dispatch(&self, _prompt: String, _tx: std::sync::mpsc::Sender<TurnOutcome>) {
+                // Drop tx without sending.
+            }
+        }
+        let mut app = App::with_history(StatusInfo::default(), HistoryStore::in_memory())
+            .with_dispatcher(std::sync::Arc::new(DropDispatcher));
+        type_str(&mut app, "ping");
+        app.on_key(enter());
+        assert!(app.poll_turn());
+        assert!(!app.is_turn_in_flight());
+        assert!(
+            matches!(app.history().last(), Some(Entry::System(b)) if b.contains("closed without"))
+        );
+    }
+
+    #[test]
+    fn second_submit_while_in_flight_is_rejected() {
+        let mut app = app_with_dispatcher(TurnOutcome::Reply(String::new()));
+        type_str(&mut app, "first");
+        app.on_key(enter());
+        assert!(app.is_turn_in_flight());
+        type_str(&mut app, "second");
+        app.on_key(enter());
+        // The second submission is refused with a system breadcrumb; the
+        // first turn is still the one in flight.
+        assert!(app.is_turn_in_flight());
+        assert!(
+            matches!(app.history().last(), Some(Entry::System(b)) if b.contains("already running"))
+        );
+    }
+
+    #[test]
+    fn no_dispatcher_keeps_stub_echo() {
+        let mut app = App::with_history(StatusInfo::default(), HistoryStore::in_memory());
+        type_str(&mut app, "ping");
+        app.on_key(enter());
+        // No dispatcher → immediate stub assistant reply, no in-flight state.
+        assert!(!app.is_turn_in_flight());
+        assert!(matches!(app.history().last(), Some(Entry::Assistant(b)) if b.contains("(stub)")));
     }
 }

@@ -120,6 +120,66 @@ fn run_web(
     })
 }
 
+/// Drives TUI user turns through a [`TurnPolicy`] on a background
+/// thread, keeping a running transcript so the terminal holds a real
+/// multi-turn conversation. The TUI render loop stays responsive and
+/// cancellable while a turn is in flight.
+struct AgentTurnDispatcher {
+    kernel: gaussclaw_agent::KernelHandle,
+    provider: std::sync::Arc<dyn gaussclaw_agent::ProviderHandle>,
+    model: String,
+    /// Conversation so far, replayed into every prompt for context.
+    transcript: std::sync::Arc<std::sync::Mutex<Vec<gaussclaw_agent::Message>>>,
+}
+
+impl gaussclaw_tui::TurnDispatcher for AgentTurnDispatcher {
+    fn dispatch(&self, prompt: String, tx: std::sync::mpsc::Sender<gaussclaw_tui::TurnOutcome>) {
+        use gaussclaw_tui::TurnOutcome;
+        let kernel = self.kernel.clone();
+        let provider = self.provider.clone();
+        let model = self.model.clone();
+        let transcript = self.transcript.clone();
+        // Run off the render thread on a single-thread runtime so the UI
+        // never blocks. The outcome goes back over `tx` exactly once.
+        std::thread::spawn(move || {
+            let messages = {
+                let mut hist = transcript
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                hist.push(gaussclaw_agent::Message::new("user", prompt));
+                hist.clone()
+            };
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    let _ = tx.send(TurnOutcome::Error(format!("runtime build: {e}")));
+                    return;
+                }
+            };
+            let policy = gaussclaw_agent::TurnPolicy::new(kernel, provider);
+            let prompt = gaussclaw_agent::Prompt::new(model, messages);
+            match rt.block_on(policy.run(prompt, gauss_core::TaintLabel::User)) {
+                Ok(completion) => {
+                    transcript
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(gaussclaw_agent::Message::new(
+                            "assistant",
+                            completion.text.clone(),
+                        ));
+                    let _ = tx.send(TurnOutcome::Reply(completion.text));
+                }
+                Err(e) => {
+                    let _ = tx.send(TurnOutcome::Error(format!("{e:?}")));
+                }
+            }
+        });
+    }
+}
+
 fn run_default_tui(cfg: &gaussclaw_config::Config) -> anyhow::Result<()> {
     let status = StatusInfo {
         session: "new".into(),
@@ -135,7 +195,20 @@ fn run_default_tui(cfg: &gaussclaw_config::Config) -> anyhow::Result<()> {
             u32::try_from(c.default_grant.len()).unwrap_or(u32::MAX)
         }),
     };
-    gaussclaw_tui::run(status)
+    // Select the vendor codec + live transport (same path as `chat` /
+    // `serve`) and drive the terminal through it. With no vendor
+    // configured this resolves to the EchoProvider, so the TUI still
+    // gives a working round-trip rather than a dead stub.
+    let (model, choice) = build_provider_choice(cfg);
+    let (provider, _picked) = gaussclaw_providers::pick_provider(&choice);
+    let dispatcher: std::sync::Arc<dyn gaussclaw_tui::TurnDispatcher> =
+        std::sync::Arc::new(AgentTurnDispatcher {
+            kernel: gaussclaw_agent::KernelHandle::permissive(),
+            provider,
+            model,
+            transcript: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        });
+    gaussclaw_tui::run_with_dispatcher(status, Some(dispatcher))
 }
 
 fn dispatch(
