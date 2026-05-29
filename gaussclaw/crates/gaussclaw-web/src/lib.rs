@@ -338,6 +338,78 @@ pub struct ServerState {
     /// verification. Loaded once from `gaussclaw.toml`; the webhook
     /// handlers look up the right secret by channel id.
     channel_secrets: Arc<gaussclaw_channels::InMemorySecretStore>,
+    /// Sprint 7 — in-process per-IP rate limiter. `None` disables
+    /// throttling (default); bins flip it on via
+    /// [`ServerState::with_rate_limit`].
+    rate_limit: Option<Arc<RateLimiter>>,
+}
+
+/// Token-bucket rate limiter keyed by client IP (best-effort: reads
+/// the `x-forwarded-for` chain first, then the raw socket address
+/// via `axum::extract::ConnectInfo`). One bucket per IP, configurable
+/// burst + refill rate.
+#[derive(Debug)]
+pub struct RateLimiter {
+    capacity: u32,
+    refill_per_sec: f32,
+    buckets: std::sync::Mutex<std::collections::HashMap<String, RateBucket>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RateBucket {
+    tokens: f32,
+    last_refill: std::time::Instant,
+}
+
+impl RateLimiter {
+    /// Build a limiter with `capacity` burst tokens and `refill_per_sec`
+    /// continuous refill rate. A sensible production default is
+    /// `RateLimiter::new(60, 1.0)` — 60 burst, ~60 sustained req/min.
+    #[must_use]
+    pub fn new(capacity: u32, refill_per_sec: f32) -> Arc<Self> {
+        Arc::new(Self {
+            capacity,
+            refill_per_sec: refill_per_sec.max(0.0),
+            buckets: std::sync::Mutex::new(std::collections::HashMap::new()),
+        })
+    }
+
+    /// Try to consume one token for `client`. Returns `true` when
+    /// the request is allowed; `false` when the bucket is empty.
+    pub fn try_acquire(&self, client: &str) -> bool {
+        let now = std::time::Instant::now();
+        let cap = self.capacity as f32;
+        let mut buckets = match self.buckets.lock() {
+            Ok(g) => g,
+            // Mutex poisoning: fail open so a single panicked thread
+            // doesn't take the whole limiter offline. The lock was
+            // already broken; subsequent requests get a fresh bucket
+            // on the next allocation.
+            Err(p) => p.into_inner(),
+        };
+        let bucket = buckets
+            .entry(client.to_string())
+            .or_insert(RateBucket {
+                tokens: cap,
+                last_refill: now,
+            });
+        let elapsed = now.duration_since(bucket.last_refill).as_secs_f32();
+        bucket.tokens = (bucket.tokens + elapsed * self.refill_per_sec).min(cap);
+        bucket.last_refill = now;
+        if bucket.tokens >= 1.0 {
+            bucket.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Snapshot the number of buckets currently tracked. Used by
+    /// `/api/metrics` and by tests; expensive only if the map is huge.
+    #[must_use]
+    pub fn bucket_count(&self) -> usize {
+        self.buckets.lock().map(|g| g.len()).unwrap_or(0)
+    }
 }
 
 /// Process-lifetime counters. Surfaced at `/api/metrics` in
@@ -460,6 +532,7 @@ impl ServerState {
             metrics: Metrics::new(),
             gateway: None,
             channel_secrets: Arc::new(gaussclaw_channels::InMemorySecretStore::default()),
+            rate_limit: None,
         }
     }
 
@@ -512,6 +585,23 @@ impl ServerState {
     #[must_use]
     pub fn gateway(&self) -> Option<Arc<gaussclaw_channels::ChannelGateway>> {
         self.gateway.clone()
+    }
+
+    /// Attach a Sprint-7 per-IP rate limiter. With one attached, the
+    /// rate-limit middleware reads the client IP from `x-forwarded-for`
+    /// (first hop) or the raw socket address, calls `try_acquire`, and
+    /// returns 429 Too Many Requests when the bucket is empty.
+    #[must_use]
+    pub fn with_rate_limit(mut self, limiter: Arc<RateLimiter>) -> Self {
+        self.rate_limit = Some(limiter);
+        self
+    }
+
+    /// Borrow the rate limiter, if any. Tests use this to seed a
+    /// bucket before sending requests.
+    #[must_use]
+    pub fn rate_limit(&self) -> Option<Arc<RateLimiter>> {
+        self.rate_limit.clone()
     }
 
     /// Push a structured log entry into the in-memory ring buffer.
@@ -736,6 +826,61 @@ async fn handle_webhook_slack(
         Err(e) => return bad_signature(e),
     };
     audit_and_dispatch(&state, "slack", &body, inbound, gateway).await
+}
+
+/// Discord Ed25519-signed webhook. Headers:
+/// `X-Signature-Timestamp` + `X-Signature-Ed25519`. The hex-encoded
+/// bot public key is pulled from the secret store under the
+/// `DISCORD_PUBLIC_KEY` handle.
+#[axum::debug_handler]
+async fn handle_webhook_discord(
+    State(state): State<ServerState>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let Some(gateway) = state.gateway.clone() else {
+        return gateway_unavailable();
+    };
+    let ts = header_str(&headers, "x-signature-timestamp");
+    let sig = header_str(&headers, "x-signature-ed25519");
+    let ch = gaussclaw_channels::DiscordChannel::new(
+        state.channel_secrets.clone(),
+        state.kernel.clone(),
+        "DISCORD_PUBLIC_KEY",
+    );
+    let inbound = match ch.handle_webhook(ts, sig, &body).await {
+        Ok(m) => m,
+        Err(e) => return bad_signature(e),
+    };
+    audit_and_dispatch(&state, "discord", &body, inbound, gateway).await
+}
+
+/// Telegram bot webhook. Optional `X-Telegram-Bot-Api-Secret-Token`
+/// header is verified against the secret store under the
+/// `TELEGRAM_WEBHOOK_SECRET` handle when present.
+#[axum::debug_handler]
+async fn handle_webhook_telegram(
+    State(state): State<ServerState>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let Some(gateway) = state.gateway.clone() else {
+        return gateway_unavailable();
+    };
+    let secret_header = headers
+        .get("x-telegram-bot-api-secret-token")
+        .and_then(|v| v.to_str().ok());
+    let ch = gaussclaw_channels::TelegramChannel::new(
+        state.channel_secrets.clone(),
+        state.kernel.clone(),
+        "TELEGRAM_BOT_TOKEN",
+    )
+    .with_webhook_secret("TELEGRAM_WEBHOOK_SECRET");
+    let inbound = match ch.handle_webhook(secret_header, &body).await {
+        Ok(m) => m,
+        Err(e) => return bad_signature(e),
+    };
+    audit_and_dispatch(&state, "telegram", &body, inbound, gateway).await
 }
 
 /// Generic webhook fallback for channel kinds we haven't wired a
@@ -2029,6 +2174,11 @@ pub fn router(state: ServerState) -> Router {
         // transport. 503 when no gateway is attached; 403 on
         // signature failure; 502 on delivery failure.
         .route("/webhook/slack", axum::routing::post(handle_webhook_slack))
+        .route("/webhook/discord", axum::routing::post(handle_webhook_discord))
+        .route(
+            "/webhook/telegram",
+            axum::routing::post(handle_webhook_telegram),
+        )
         .route(
             "/webhook/{channel}",
             axum::routing::post(handle_webhook_unknown),
@@ -2045,6 +2195,14 @@ pub fn router(state: ServerState) -> Router {
         // applies to POST/PATCH/PUT — WebSocket upgrades are not
         // affected (per-frame size is enforced separately by axum).
         //
+        // Sprint 7: per-IP rate-limit middleware. Runs *before*
+        // observability so a throttled request is counted (as a 429)
+        // but never gets to a handler. No-op when no RateLimiter is
+        // attached to the state.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit_middleware,
+        ))
         // Sprint 4 §1: request-id + counter middleware. Every inbound
         // request gets an `x-request-id` response header (echoes the
         // client's if supplied; mints a UUID v4 otherwise) and bumps
@@ -2058,6 +2216,44 @@ pub fn router(state: ServerState) -> Router {
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// Sprint 7 — per-IP rate-limit middleware. Reads the client IP from
+/// `x-forwarded-for` (first hop) when present, otherwise uses a
+/// placeholder ("unknown") so a misconfigured reverse-proxy
+/// deployment still gets *some* throttling rather than none. When no
+/// `RateLimiter` is attached to the state, this layer is a no-op.
+async fn rate_limit_middleware(
+    State(state): State<ServerState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let Some(limiter) = state.rate_limit.as_ref() else {
+        return next.run(req).await;
+    };
+    let client = req
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|chain| chain.split(',').next())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    if !limiter.try_acquire(&client) {
+        let mut resp = (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(Err::new(
+                "rate_limited",
+                format!("rate limit exceeded for {client}"),
+            )),
+        )
+            .into_response();
+        // Tell the client when to retry — one second is the smallest
+        // unit the bucket refills in, so it's always safe to advertise.
+        resp.headers_mut()
+            .insert("retry-after", HeaderValue::from_static("1"));
+        return resp;
+    }
+    next.run(req).await
 }
 
 /// Sprint 4 §1 — request-observability middleware. Mints a request id,
@@ -3340,6 +3536,153 @@ taint = "trusted"
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn discord_webhook_returns_503_without_gateway() {
+        let resp = router(test_state())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhook/discord")
+                    .header("x-signature-timestamp", "0")
+                    .header("x-signature-ed25519", "deadbeef")
+                    .body(Body::from(""))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn telegram_webhook_returns_503_without_gateway() {
+        let resp = router(test_state())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhook/telegram")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// Telegram with a configured webhook secret but a missing /
+    /// mismatched `X-Telegram-Bot-Api-Secret-Token` header is
+    /// rejected at HMAC verify.
+    #[tokio::test]
+    async fn telegram_webhook_rejects_missing_secret_header() {
+        use gaussclaw_agent::{AgentLoop, EchoProvider, KernelHandle, TurnPolicy};
+        use gaussclaw_channels::{ChannelGateway, OutboxTransport};
+        struct Noop;
+        #[async_trait::async_trait]
+        impl OutboxTransport for Noop {
+            fn channel_id(&self) -> &str {
+                "telegram"
+            }
+            async fn deliver(
+                &self,
+                _: &gaussclaw_channels::OutboundMessage,
+            ) -> gaussclaw_channels::ChannelResult<()> {
+                Ok(())
+            }
+        }
+        let provider = std::sync::Arc::new(EchoProvider::default());
+        let policy = TurnPolicy::new(KernelHandle::permissive(), provider);
+        let agent = std::sync::Arc::new(AgentLoop::new(policy));
+        let gateway = std::sync::Arc::new(
+            ChannelGateway::new(agent).with_outbox(std::sync::Arc::new(Noop)),
+        );
+        let state = test_state().with_gateway(gateway);
+        state.insert_channel_secret("TELEGRAM_WEBHOOK_SECRET", b"super-secret".to_vec());
+        let resp = router(state)
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhook/telegram")
+                    .header("x-telegram-bot-api-secret-token", "wrong-token")
+                    .body(Body::from(r#"{"update_id":1}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"]["code"], "bad_signature");
+    }
+
+    // ─── Sprint 7 — rate limiting ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn rate_limiter_allows_up_to_capacity() {
+        let limiter = RateLimiter::new(3, 0.0);
+        assert!(limiter.try_acquire("1.2.3.4"));
+        assert!(limiter.try_acquire("1.2.3.4"));
+        assert!(limiter.try_acquire("1.2.3.4"));
+        assert!(
+            !limiter.try_acquire("1.2.3.4"),
+            "fourth request must be rejected after capacity 3"
+        );
+    }
+
+    #[tokio::test]
+    async fn rate_limiter_buckets_are_independent_per_ip() {
+        let limiter = RateLimiter::new(2, 0.0);
+        assert!(limiter.try_acquire("a"));
+        assert!(limiter.try_acquire("a"));
+        assert!(!limiter.try_acquire("a"));
+        // A different IP gets its own fresh capacity.
+        assert!(limiter.try_acquire("b"));
+        assert!(limiter.try_acquire("b"));
+        assert!(!limiter.try_acquire("b"));
+    }
+
+    #[tokio::test]
+    async fn rate_limit_middleware_returns_429_when_bucket_empty() {
+        let limiter = RateLimiter::new(1, 0.0);
+        // Pre-empt the single token for the IP we're about to send from.
+        assert!(limiter.try_acquire("10.0.0.1"));
+        let state = test_state().with_rate_limit(limiter);
+        let resp = router(state)
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/status")
+                    .header("x-forwarded-for", "10.0.0.1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        let retry_after = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(retry_after, "1", "limiter must advertise Retry-After");
+    }
+
+    #[tokio::test]
+    async fn rate_limit_middleware_passes_through_under_capacity() {
+        let limiter = RateLimiter::new(10, 0.0);
+        let state = test_state().with_rate_limit(limiter);
+        let resp = router(state)
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/status")
+                    .header("x-forwarded-for", "10.0.0.2")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]

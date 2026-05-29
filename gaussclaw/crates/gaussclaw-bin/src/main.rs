@@ -183,11 +183,18 @@ fn run_web(
         // adapter-specific options key.
         let (gateway, channel_secrets) = build_channel_gateway(&cfg, agent.clone());
 
+        // Sprint 7: per-IP rate limiter wired on by default. 120
+        // burst tokens + 2 tokens/sec sustained ≈ 120 req/min. Bins
+        // that need a different policy can read `cfg.web.rate_limit`
+        // in a follow-up; this baseline keeps a single hostile peer
+        // from saturating the agent loop.
+        let rate_limit = gaussclaw_web::RateLimiter::new(120, 2.0);
         let mut state = gaussclaw_web::ServerState::new(cfg, source)
             .with_store(store)
             .with_cron(cron)
             .with_plugin_roots(gaussclaw_plugins::default_discovery_roots())
-            .with_agent(agent);
+            .with_agent(agent)
+            .with_rate_limit(rate_limit);
         if let Some(g) = gateway {
             state = state.with_gateway(g);
             for (handle, secret) in channel_secrets {
