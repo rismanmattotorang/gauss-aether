@@ -120,11 +120,7 @@ async fn slack_webhook(
 ) -> StatusCode {
     let ts = header(&headers, "x-slack-request-timestamp").to_string();
     let sig = header(&headers, "x-slack-signature").to_string();
-    match state
-        .slack
-        .handle_webhook(&ts, &sig, &body, "slack")
-        .await
-    {
+    match state.slack.handle_webhook(&ts, &sig, &body, "slack").await {
         std::result::Result::Ok(msg) => {
             if let Some(recipient) = reply_target(&msg, "channel") {
                 dispatch_and_reply(&state, state.slack.clone(), &msg, recipient).await;

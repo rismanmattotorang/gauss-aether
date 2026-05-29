@@ -127,7 +127,10 @@ mod tests {
             ab > ac,
             "expected shared-token similarity {ab} > unrelated {ac}"
         );
-        assert!(ab > 0.5, "near-identical sentences should be very close: {ab}");
+        assert!(
+            ab > 0.5,
+            "near-identical sentences should be very close: {ab}"
+        );
     }
 
     #[test]

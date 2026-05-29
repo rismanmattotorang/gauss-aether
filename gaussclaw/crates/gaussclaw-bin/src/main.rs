@@ -410,10 +410,10 @@ fn run_gateway(cfg: gaussclaw_config::Config) -> anyhow::Result<()> {
         .build()?;
     rt.block_on(async move {
         // Outbound transport (shared by every adapter) + env-backed secrets.
-        let http: Arc<dyn gaussclaw_tools::HttpClient> =
-            Arc::new(gaussclaw_http::ReqwestHttpClient::new().map_err(|e| {
-                anyhow::anyhow!("failed to build HTTP client for gateway: {e}")
-            })?);
+        let http: Arc<dyn gaussclaw_tools::HttpClient> = Arc::new(
+            gaussclaw_http::ReqwestHttpClient::new()
+                .map_err(|e| anyhow::anyhow!("failed to build HTTP client for gateway: {e}"))?,
+        );
         let secrets: Arc<dyn gaussclaw_channels::SecretStore> =
             Arc::new(gaussclaw_channels::EnvSecretStore);
         let kernel = gaussclaw_agent::KernelHandle::permissive();
@@ -422,8 +422,8 @@ fn run_gateway(cfg: gaussclaw_config::Config) -> anyhow::Result<()> {
         let (model, choice) = build_provider_choice(&cfg);
         let (provider, picked) = gaussclaw_providers::pick_provider(&choice);
         let audit = gaussclaw_agent::AuditTrace::new();
-        let policy = gaussclaw_agent::TurnPolicy::new(kernel.clone(), provider)
-            .with_audit(audit.clone());
+        let policy =
+            gaussclaw_agent::TurnPolicy::new(kernel.clone(), provider).with_audit(audit.clone());
         let agent = Arc::new(gaussclaw_agent::AgentLoop::new(policy).with_audit(audit));
 
         // Adapters, each wired to the shared outbound transport.
@@ -468,15 +468,19 @@ fn run_gateway(cfg: gaussclaw_config::Config) -> anyhow::Result<()> {
             .copied()
             .filter(|h| secrets.get(h).is_some())
             .collect();
-        eprintln!("gaussclaw gateway: listening on http://{addr}/ (vendor codec: {})", picked.as_str());
         eprintln!(
-            "  routes: POST /webhooks/{{slack,discord,telegram}}  ·  GET /healthz"
+            "gaussclaw gateway: listening on http://{addr}/ (vendor codec: {})",
+            picked.as_str()
         );
-        eprintln!("  configured secrets: {}", if configured.is_empty() {
-            "(none — set the vendor env vars; see `gaussclaw gateway status`)".to_string()
-        } else {
-            configured.join(", ")
-        });
+        eprintln!("  routes: POST /webhooks/{{slack,discord,telegram}}  ·  GET /healthz");
+        eprintln!(
+            "  configured secrets: {}",
+            if configured.is_empty() {
+                "(none — set the vendor env vars; see `gaussclaw gateway status`)".to_string()
+            } else {
+                configured.join(", ")
+            }
+        );
 
         let listener = tokio::net::TcpListener::bind(addr).await?;
         axum::serve(listener, gateway::gateway_router(state)).await?;
@@ -582,8 +586,8 @@ fn build_provider_choice(
         "openai" => std::env::var("OPENAI_API_KEY").unwrap_or_default(),
         _ => String::new(),
     };
-    let mut choice = gaussclaw_providers::ProviderChoice::new(cfg.provider.name.clone())
-        .with_api_key(env_key);
+    let mut choice =
+        gaussclaw_providers::ProviderChoice::new(cfg.provider.name.clone()).with_api_key(env_key);
     match gaussclaw_http::ReqwestProviderBackend::new() {
         Ok(backend) => choice = choice.with_backend(std::sync::Arc::new(backend)),
         Err(e) => tracing::error!(
@@ -836,14 +840,15 @@ fn run_setup(
     cfg: &gaussclaw_config::Config,
     cfg_source: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
-    let target: std::path::PathBuf = cfg_source.map(std::path::Path::to_path_buf).unwrap_or_else(
-        || {
-            gaussclaw_config::search_path()
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| std::path::PathBuf::from("./gaussclaw.toml"))
-        },
-    );
+    let target: std::path::PathBuf =
+        cfg_source
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| {
+                gaussclaw_config::search_path()
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| std::path::PathBuf::from("./gaussclaw.toml"))
+            });
 
     // Edit a clone of the current config so re-running setup is idempotent.
     let mut new_cfg = cfg.clone();
@@ -1549,7 +1554,10 @@ mod tests {
         let store = open_session_store(&cfg).await.unwrap();
         let reopened = store.chain_head().await.unwrap();
         assert_eq!(reopened.length, len_before, "chain length survives reopen");
-        assert_eq!(reopened.digest_hex, head_before, "chain head survives reopen");
+        assert_eq!(
+            reopened.digest_hex, head_before,
+            "chain head survives reopen"
+        );
 
         let sessions = store.list_recent_sessions(10).await;
         assert_eq!(sessions.len(), 1, "session index restored after restart");
@@ -1563,9 +1571,7 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use gaussclaw_channels::{
-        DiscordChannel, InMemorySecretStore, SlackChannel, TelegramChannel,
-    };
+    use gaussclaw_channels::{DiscordChannel, InMemorySecretStore, SlackChannel, TelegramChannel};
     use gaussclaw_tools::{HttpClient, HttpMethod, HttpResponse, MockHttpClient};
     use tower::ServiceExt;
 
@@ -1602,11 +1608,18 @@ mod tests {
 
     #[tokio::test]
     async fn gateway_healthz_is_ok() {
-        let state =
-            test_gateway_state(Arc::new(InMemorySecretStore::default()), Arc::new(MockHttpClient::new()));
+        let state = test_gateway_state(
+            Arc::new(InMemorySecretStore::default()),
+            Arc::new(MockHttpClient::new()),
+        );
         let app = gateway::gateway_router(state);
         let resp = app
-            .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -1621,7 +1634,12 @@ mod tests {
         mock.expect(
             HttpMethod::Post,
             "https://api.telegram.org/botTESTTOKEN/sendMessage",
-            HttpResponse::new(200, std::collections::BTreeMap::new(), r#"{"ok":true}"#.into(), false),
+            HttpResponse::new(
+                200,
+                std::collections::BTreeMap::new(),
+                r#"{"ok":true}"#.into(),
+                false,
+            ),
         );
         let state = test_gateway_state(secrets, mock.clone());
         let app = gateway::gateway_router(state);
@@ -1643,7 +1661,10 @@ mod tests {
         // chat 99 via the Telegram API.
         let calls = mock.observed();
         assert_eq!(calls.len(), 1, "expected one outbound sendMessage");
-        assert_eq!(calls[0].url, "https://api.telegram.org/botTESTTOKEN/sendMessage");
+        assert_eq!(
+            calls[0].url,
+            "https://api.telegram.org/botTESTTOKEN/sendMessage"
+        );
         let sent: serde_json::Value =
             serde_json::from_str(calls[0].body.as_deref().unwrap()).unwrap();
         assert_eq!(sent["chat_id"], 99);

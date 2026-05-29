@@ -25,26 +25,86 @@ pub struct VendorInfo {
 /// `together`, `xai`, `perplexity`, `anyscale`, `octoai`, `vllm`,
 /// `tgi`).
 pub const SUPPORTED_VENDORS: &[VendorInfo] = &[
-    VendorInfo { id: "anthropic", display: "Anthropic" },
-    VendorInfo { id: "openai", display: "OpenAI" },
-    VendorInfo { id: "google", display: "Google Gemini" },
-    VendorInfo { id: "cohere", display: "Cohere" },
-    VendorInfo { id: "mistral", display: "Mistral" },
-    VendorInfo { id: "together", display: "Together" },
-    VendorInfo { id: "groq", display: "Groq" },
-    VendorInfo { id: "cerebras", display: "Cerebras" },
-    VendorInfo { id: "fireworks", display: "Fireworks" },
-    VendorInfo { id: "deepseek", display: "DeepSeek" },
-    VendorInfo { id: "xai", display: "xAI" },
-    VendorInfo { id: "perplexity", display: "Perplexity" },
-    VendorInfo { id: "anyscale", display: "Anyscale" },
-    VendorInfo { id: "octoai", display: "OctoAI" },
-    VendorInfo { id: "huggingface", display: "HuggingFace" },
-    VendorInfo { id: "replicate", display: "Replicate" },
-    VendorInfo { id: "ollama", display: "Ollama" },
-    VendorInfo { id: "llama_cpp", display: "llama.cpp" },
-    VendorInfo { id: "vllm", display: "vLLM" },
-    VendorInfo { id: "tgi", display: "TGI" },
+    VendorInfo {
+        id: "anthropic",
+        display: "Anthropic",
+    },
+    VendorInfo {
+        id: "openai",
+        display: "OpenAI",
+    },
+    VendorInfo {
+        id: "google",
+        display: "Google Gemini",
+    },
+    VendorInfo {
+        id: "cohere",
+        display: "Cohere",
+    },
+    VendorInfo {
+        id: "mistral",
+        display: "Mistral",
+    },
+    VendorInfo {
+        id: "together",
+        display: "Together",
+    },
+    VendorInfo {
+        id: "groq",
+        display: "Groq",
+    },
+    VendorInfo {
+        id: "cerebras",
+        display: "Cerebras",
+    },
+    VendorInfo {
+        id: "fireworks",
+        display: "Fireworks",
+    },
+    VendorInfo {
+        id: "deepseek",
+        display: "DeepSeek",
+    },
+    VendorInfo {
+        id: "xai",
+        display: "xAI",
+    },
+    VendorInfo {
+        id: "perplexity",
+        display: "Perplexity",
+    },
+    VendorInfo {
+        id: "anyscale",
+        display: "Anyscale",
+    },
+    VendorInfo {
+        id: "octoai",
+        display: "OctoAI",
+    },
+    VendorInfo {
+        id: "huggingface",
+        display: "HuggingFace",
+    },
+    VendorInfo {
+        id: "replicate",
+        display: "Replicate",
+    },
+    VendorInfo {
+        id: "ollama",
+        display: "Ollama",
+    },
+    VendorInfo {
+        id: "llama_cpp",
+        display: "llama.cpp",
+    },
+    VendorInfo {
+        id: "vllm",
+        display: "vLLM",
+    },
+    VendorInfo {
+        id: "tgi",
+        display: "TGI",
+    },
 ];
 
 /// The supported vendor drivers (see [`SUPPORTED_VENDORS`]).

@@ -67,8 +67,9 @@ pub struct ChatCompletionRequest {
     /// Optional max output tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
-    /// Streaming flag. `true` is not yet supported (see
-    /// [`RequestError::StreamingUnsupported`]).
+    /// Streaming flag. When `true`, the response layer delivers
+    /// `chat.completion.chunk` Server-Sent Events instead of a single
+    /// JSON body.
     #[serde(default)]
     pub stream: bool,
 }
@@ -428,8 +429,7 @@ mod tests {
         let m: ChatMessage = serde_json::from_str(r#"{"role":"assistant"}"#).unwrap();
         assert_eq!(m.content, "");
         // Present string → preserved.
-        let m: ChatMessage =
-            serde_json::from_str(r#"{"role":"user","content":"hi"}"#).unwrap();
+        let m: ChatMessage = serde_json::from_str(r#"{"role":"user","content":"hi"}"#).unwrap();
         assert_eq!(m.content, "hi");
     }
 
@@ -460,15 +460,13 @@ mod tests {
 
     #[test]
     fn stream_chunks_open_body_and_finish() {
-        let completion = Completion::new(
-            "hello there friend",
-            "m",
-            "stop",
-            TokenCount::new(2, 3),
-        );
+        let completion = Completion::new("hello there friend", "m", "stop", TokenCount::new(2, 3));
         let chunks = stream_chunks("gpt-4o", &completion, "chatcmpl-x", 7);
         // First frame announces the role, last carries finish_reason.
-        assert_eq!(chunks.first().unwrap().choices[0].delta.role.as_deref(), Some("assistant"));
+        assert_eq!(
+            chunks.first().unwrap().choices[0].delta.role.as_deref(),
+            Some("assistant")
+        );
         assert!(chunks.first().unwrap().choices[0].finish_reason.is_none());
         let last = chunks.last().unwrap();
         assert_eq!(last.choices[0].finish_reason.as_deref(), Some("stop"));
@@ -480,7 +478,9 @@ mod tests {
             .collect();
         assert_eq!(reassembled, "hello there friend");
         // Every frame echoes the requested model + chunk object kind.
-        assert!(chunks.iter().all(|c| c.model == "gpt-4o" && c.object == "chat.completion.chunk"));
+        assert!(chunks
+            .iter()
+            .all(|c| c.model == "gpt-4o" && c.object == "chat.completion.chunk"));
     }
 
     #[test]
@@ -517,8 +517,7 @@ mod tests {
             "stop",
             TokenCount::new(11, 7),
         );
-        let resp =
-            response_from_completion("gpt-4o", &completion, "chatcmpl-test", 1_700_000_000);
+        let resp = response_from_completion("gpt-4o", &completion, "chatcmpl-test", 1_700_000_000);
         assert_eq!(resp.object, "chat.completion");
         // Model echoes what the *client* requested, not the engine's.
         assert_eq!(resp.model, "gpt-4o");

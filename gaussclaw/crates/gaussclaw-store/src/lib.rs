@@ -660,7 +660,9 @@ mod tests {
                 .await
                 .unwrap();
             child_id = child.id;
-            s.verify_chain().await.expect("chain verifies before reopen");
+            s.verify_chain()
+                .await
+                .expect("chain verifies before reopen");
         }
 
         // Reopen: open_surrealkv restores the index from the log.
@@ -689,10 +691,18 @@ mod tests {
 
         // A new turn extends the existing chain (next_turn_id restored).
         let (next, _) = s
-            .append_turn(&session_id, Some(child_id), "user", "again", TaintLabel::User)
+            .append_turn(
+                &session_id,
+                Some(child_id),
+                "user",
+                "again",
+                TaintLabel::User,
+            )
             .await
             .unwrap();
         assert!(next.id > child_id, "turn id continues past restored max");
-        s.verify_chain().await.expect("chain still verifies after a fresh append");
+        s.verify_chain()
+            .await
+            .expect("chain still verifies after a fresh append");
     }
 }

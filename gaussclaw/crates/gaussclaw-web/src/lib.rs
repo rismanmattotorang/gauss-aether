@@ -743,7 +743,10 @@ async fn handle_v1_chat_completions(
         // NoMessages (and any future request-validation variant) is a
         // client error.
         std::result::Result::Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ApiError::from_request_error(&e)))
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError::from_request_error(&e)),
+            )
                 .into_response();
         }
     };
@@ -794,7 +797,13 @@ async fn handle_v1_chat_completions(
         return Sse::new(futures_util::stream::iter(items)).into_response();
     }
 
-    Json(response_from_completion(&req.model, &completion, id, created)).into_response()
+    Json(response_from_completion(
+        &req.model,
+        &completion,
+        id,
+        created,
+    ))
+    .into_response()
 }
 
 /// `GET /v1/models` — list the configured model and its fallback chain
@@ -3285,8 +3294,14 @@ taint = "trusted"
         let text = String::from_utf8_lossy(&bytes);
         // SSE frames carry chat.completion.chunk objects and close with
         // the [DONE] sentinel.
-        assert!(text.contains("chat.completion.chunk"), "no chunk objects: {text}");
-        assert!(text.contains("\"role\":\"assistant\""), "no opening role frame");
+        assert!(
+            text.contains("chat.completion.chunk"),
+            "no chunk objects: {text}"
+        );
+        assert!(
+            text.contains("\"role\":\"assistant\""),
+            "no opening role frame"
+        );
         assert!(text.contains("\"finish_reason\""), "no finish frame");
         assert!(text.contains("data: [DONE]"), "no DONE sentinel: {text}");
     }
@@ -3294,8 +3309,12 @@ taint = "trusted"
     #[tokio::test]
     async fn v1_chat_completions_empty_messages_is_400() {
         let app = router(echo_agent_state());
-        let (status, body) =
-            post_json_app(app, "/v1/chat/completions", r#"{"model":"m","messages":[]}"#).await;
+        let (status, body) = post_json_app(
+            app,
+            "/v1/chat/completions",
+            r#"{"model":"m","messages":[]}"#,
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["error"]["type"], "invalid_request_error");
     }
@@ -3329,9 +3348,8 @@ taint = "trusted"
 
     #[test]
     fn cap_names_decodes_known_bits_and_flags_residual() {
-        let cap = CapToken::from_bits(
-            CapToken::NETWORK_GET.bits() | CapToken::FILESYSTEM_READ.bits(),
-        );
+        let cap =
+            CapToken::from_bits(CapToken::NETWORK_GET.bits() | CapToken::FILESYSTEM_READ.bits());
         let names = cap_names(cap);
         assert!(names.contains(&"network:get".to_string()));
         assert!(names.contains(&"filesystem:read".to_string()));

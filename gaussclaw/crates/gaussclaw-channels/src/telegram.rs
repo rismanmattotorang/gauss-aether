@@ -312,13 +312,16 @@ mod tests {
             "https://api.telegram.org/botBOTTOKEN/sendMessage",
             HttpResponse::new(200, BTreeMap::new(), r#"{"ok":true}"#.into(), false),
         );
-        let ch = TelegramChannel::new(secrets, kernel(), "TELEGRAM_BOT_TOKEN")
-            .with_http(mock.clone());
+        let ch =
+            TelegramChannel::new(secrets, kernel(), "TELEGRAM_BOT_TOKEN").with_http(mock.clone());
         ch.send(OutboundMessage::new("777", "ping")).await.unwrap();
 
         let calls = mock.observed();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].url, "https://api.telegram.org/botBOTTOKEN/sendMessage");
+        assert_eq!(
+            calls[0].url,
+            "https://api.telegram.org/botBOTTOKEN/sendMessage"
+        );
         // Nothing buffered — it went over the wire.
         assert!(ch.drain_outbox().await.is_empty());
     }
@@ -341,8 +344,7 @@ mod tests {
                 false,
             ),
         );
-        let ch =
-            TelegramChannel::new(secrets, kernel(), "TELEGRAM_BOT_TOKEN").with_http(mock);
+        let ch = TelegramChannel::new(secrets, kernel(), "TELEGRAM_BOT_TOKEN").with_http(mock);
         let err = ch.send(OutboundMessage::new("1", "x")).await.unwrap_err();
         assert!(matches!(err, ChannelError::Transport(m) if m.contains("chat not found")));
     }
@@ -351,7 +353,9 @@ mod tests {
     async fn send_without_http_buffers_to_outbox() {
         let secrets = Arc::new(InMemorySecretStore::default());
         let ch = TelegramChannel::new(secrets, kernel(), "TELEGRAM_BOT_TOKEN");
-        ch.send(OutboundMessage::new("1", "buffered")).await.unwrap();
+        ch.send(OutboundMessage::new("1", "buffered"))
+            .await
+            .unwrap();
         let drained = ch.drain_outbox().await;
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].body, "buffered");

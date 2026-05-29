@@ -203,15 +203,12 @@ impl SessionStore {
             {
                 let model = turn.cost.model_actual.clone();
                 let created = turn.ts.clone();
-                let sess = st
-                    .sessions
-                    .entry(session_id.clone())
-                    .or_insert_with(|| {
-                        let mut s = Session::new(session_id.clone(), "", "");
-                        s.created = created;
-                        s.turn_count = 0;
-                        s
-                    });
+                let sess = st.sessions.entry(session_id.clone()).or_insert_with(|| {
+                    let mut s = Session::new(session_id.clone(), "", "");
+                    s.created = created;
+                    s.turn_count = 0;
+                    s
+                });
                 sess.turn_count = sess.turn_count.saturating_add(1);
                 if sess.model.is_empty() && !model.is_empty() {
                     sess.model = model;

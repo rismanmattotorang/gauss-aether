@@ -317,8 +317,8 @@ mod tests {
             "https://slack.com/api/chat.postMessage",
             HttpResponse::new(200, BTreeMap::new(), r#"{"ok":true}"#.into(), false),
         );
-        let ch = SlackChannel::new(secrets, kernel(), "SLACK_SIGNING_SECRET")
-            .with_http(mock.clone());
+        let ch =
+            SlackChannel::new(secrets, kernel(), "SLACK_SIGNING_SECRET").with_http(mock.clone());
         ch.send(OutboundMessage::new("C999", "ping")).await.unwrap();
         let calls = mock.observed();
         assert_eq!(calls.len(), 1);

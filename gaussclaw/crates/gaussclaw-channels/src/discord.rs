@@ -324,8 +324,8 @@ mod tests {
             "https://discord.com/api/v10/channels/555/messages",
             HttpResponse::new(200, BTreeMap::new(), r#"{"id":"1"}"#.into(), false),
         );
-        let ch = DiscordChannel::new(secrets, kernel(), "DISCORD_PUBLIC_KEY")
-            .with_http(mock.clone());
+        let ch =
+            DiscordChannel::new(secrets, kernel(), "DISCORD_PUBLIC_KEY").with_http(mock.clone());
         ch.send(OutboundMessage::new("555", "ping")).await.unwrap();
         assert_eq!(mock.observed().len(), 1);
     }
