@@ -34,7 +34,9 @@
 //! scope for `cargo test`; the recipe for one is documented in
 //! `docs/OPENHARNESS_PARITY.md`.
 
-#![cfg(test)]
+// NB: the module is already gated by `#[cfg(test)]` at the declaration
+// site in lib.rs — repeating `#![cfg(test)]` here trips
+// `clippy::duplicated_attributes`.
 #![allow(clippy::doc_markdown)]
 
 use std::sync::Arc;
