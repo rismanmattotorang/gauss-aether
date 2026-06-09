@@ -57,7 +57,7 @@ impl SessionExecutor for LocalExecutor {
 
         let stdout_task = tokio::spawn(read_capped(stdout, cap));
         let stderr_task = tokio::spawn(read_capped(stderr, cap));
-        let status = child.wait().await?;
+        let status = wait_with_timeout(&mut child, request.timeout).await?;
         let (stdout_buf, stdout_trunc) = stdout_task
             .await
             .map_err(|e| ExecError::Backend(format!("stdout task: {e}")))??;
@@ -83,6 +83,28 @@ impl SessionExecutor for LocalExecutor {
             timestamp: now_unix(),
         };
         Ok((output, receipt))
+    }
+}
+
+/// Wait for the child, enforcing the request's optional wall-clock cap.
+///
+/// On expiry the child is killed *and reaped* before
+/// [`ExecError::Timeout`] is returned, so no orphan keeps running and
+/// no zombie lingers. Shared by the local, SSH and Docker backends.
+pub(crate) async fn wait_with_timeout(
+    child: &mut tokio::process::Child,
+    cap: Option<std::time::Duration>,
+) -> ExecResult<std::process::ExitStatus> {
+    match cap {
+        None => Ok(child.wait().await?),
+        Some(limit) => match tokio::time::timeout(limit, child.wait()).await {
+            Ok(status) => Ok(status?),
+            Err(_elapsed) => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                Err(ExecError::Timeout { limit })
+            }
+        },
     }
 }
 
@@ -223,6 +245,29 @@ mod tests {
         let (out, _) = exec.exec(req).await.unwrap();
         assert!(out.truncated);
         assert!(out.stdout.len() <= 64);
+    }
+
+    #[tokio::test]
+    async fn timeout_kills_hung_child() {
+        let exec = LocalExecutor::new();
+        let req = ExecRequest::new("/bin/sh", vec!["-c".into(), "sleep 30".into()])
+            .timeout(std::time::Duration::from_millis(100));
+        let started = std::time::Instant::now();
+        let err = exec.exec(req).await.unwrap_err();
+        assert!(matches!(err, ExecError::Timeout { .. }), "got {err:?}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "timeout must fire well before the child would exit"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_timeout_means_unlimited() {
+        let exec = LocalExecutor::new();
+        let req = ExecRequest::new("/bin/sh", vec!["-c".into(), "echo ok".into()]);
+        assert!(req.timeout.is_none());
+        let (out, _) = exec.exec(req).await.unwrap();
+        assert!(out.success());
     }
 
     #[tokio::test]

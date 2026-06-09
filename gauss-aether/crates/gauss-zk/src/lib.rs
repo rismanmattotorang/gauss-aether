@@ -153,7 +153,12 @@ pub fn verify(statement: &Statement, witness: &Witness) -> Result<(), ZkError> {
             // The witness payload here is the *concatenation* of every
             // prior payload (a "transcript"). We replay it.
             let mut chain = ReceiptChain::new();
-            let n = usize::try_from(*length).unwrap_or(0);
+            // A length that doesn't fit in usize (32-bit targets) can
+            // never be satisfied by an in-memory witness — reject it
+            // rather than silently verifying a zero-length prefix.
+            let Ok(n) = usize::try_from(*length) else {
+                return Err(ZkError::HeadAtLengthMismatch);
+            };
             if witness.payload.len() < n {
                 return Err(ZkError::HeadAtLengthMismatch);
             }
@@ -374,7 +379,12 @@ impl Prover for MerkleProver {
 
     fn verify_inclusion(&self, root: [u8; 32], proof: &MerkleProof) -> Result<(), ZkError> {
         let mut cur = proof.leaf;
-        let mut idx = usize::try_from(proof.index).unwrap_or(usize::MAX);
+        // An index that doesn't fit in usize (32-bit targets) cannot
+        // address any real leaf — reject instead of folding with a
+        // clamped index that might still hash to the root.
+        let Ok(mut idx) = usize::try_from(proof.index) else {
+            return Err(ZkError::CommitmentMismatch);
+        };
         for sibling in &proof.path {
             cur = if idx % 2 == 0 {
                 hash_pair(&cur, sibling)

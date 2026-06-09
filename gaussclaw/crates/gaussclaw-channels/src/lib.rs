@@ -309,12 +309,21 @@ pub fn hmac_verify(secret: &[u8], body: &[u8], provided_hex: &str) -> ChannelRes
 }
 
 pub(crate) fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {
-    if s.len() % 2 != 0 {
+    // Work on bytes, not `&str` ranges: slicing a `&str` at an arbitrary
+    // offset panics on non-ASCII input, and `s` arrives from an
+    // attacker-controlled signature header.
+    let bytes = s.as_bytes();
+    if bytes.len() % 2 != 0 || !s.is_ascii() {
         return Err(());
     }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i.saturating_add(2)], 16).map_err(|_e| ()))
+    bytes
+        .chunks_exact(2)
+        .map(|pair| {
+            let hi = (pair[0] as char).to_digit(16).ok_or(())?;
+            let lo = (pair[1] as char).to_digit(16).ok_or(())?;
+            #[allow(clippy::cast_possible_truncation)]
+            Ok((hi << 4 | lo) as u8)
+        })
         .collect()
 }
 
@@ -384,7 +393,10 @@ impl WebhookChannel {
             .admit(self.required_caps(), self.default_taint)
             .map_err(ChannelError::Denied)?;
 
-        let body_str = std::str::from_utf8(body).unwrap_or("").to_string();
+        // Lossy decode: a verified body with stray non-UTF-8 bytes keeps
+        // its readable content (replacement chars mark the damage) instead
+        // of being silently dropped wholesale.
+        let body_str = String::from_utf8_lossy(body).into_owned();
         Ok(ChannelMessage::new(&self.id, sender, body_str).with_taint(self.default_taint))
     }
 
@@ -631,6 +643,24 @@ mod tests {
     fn hmac_verify_rejects_a_bad_hex_signature() {
         let err = hmac_verify(b"shh", b"x", "not-hex").unwrap_err();
         assert!(matches!(err, ChannelError::BadSignature));
+    }
+
+    #[test]
+    fn hmac_verify_rejects_non_ascii_signature_without_panicking() {
+        // Multi-byte UTF-8 in the attacker-controlled header used to
+        // panic on a str char-boundary slice; it must be a clean reject.
+        for sig in ["日本語語", "éé", "aé", "日x", "sha256=日本語語"] {
+            let err = hmac_verify(b"shh", b"x", sig).unwrap_err();
+            assert!(matches!(err, ChannelError::BadSignature), "sig={sig:?}");
+        }
+    }
+
+    #[test]
+    fn hex_decode_round_trips_and_rejects_garbage() {
+        assert_eq!(hex_decode("00ff10"), Ok(vec![0x00, 0xff, 0x10]));
+        assert_eq!(hex_decode("ABCDEF"), Ok(vec![0xab, 0xcd, 0xef]));
+        assert!(hex_decode("abc").is_err(), "odd length");
+        assert!(hex_decode("zz").is_err(), "non-hex ascii");
     }
 
     #[tokio::test]

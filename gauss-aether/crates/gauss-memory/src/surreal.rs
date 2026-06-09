@@ -192,7 +192,7 @@ impl SurrealMemory {
             .check()
             .map_err(into_gauss_error)?;
         let rows: Vec<ReplayRow> = resp.take(0).map_err(into_gauss_error)?;
-        Ok(rows.into_iter().map(ReplayRow::into_record).collect())
+        rows.into_iter().map(ReplayRow::into_record).collect()
     }
 
     /// Internal helper: advance the chain head deterministically.
@@ -260,20 +260,38 @@ struct ReplayRow {
 }
 
 impl ReplayRow {
-    fn into_record(self) -> ReplayRecord {
+    /// Convert a database row into a replay record.
+    ///
+    /// A row whose `turn_id` or `seq` doesn't parse is corruption, not
+    /// a value to coerce to zero — zero is a legitimate id/sequence, so
+    /// a silent fallback would make corrupt rows indistinguishable from
+    /// real ones and quietly poison chain replay.
+    fn into_record(self) -> GaussResult<ReplayRecord> {
+        let turn_id = self.turn_id.parse::<u128>().map_err(|e| {
+            GaussError::Internal(format!(
+                "surreal: corrupt turn_id {:?} in turn_record: {e}",
+                self.turn_id
+            ))
+        })?;
+        let seq = u64::try_from(self.seq).map_err(|_| {
+            GaussError::Internal(format!(
+                "surreal: corrupt negative seq {} in turn_record {turn_id}",
+                self.seq
+            ))
+        })?;
         let mut this_head = [0u8; 32];
         if let Some(b) = self.this_head {
             let v = b.into_inner();
             let n = v.len().min(32);
             this_head[..n].copy_from_slice(&v[..n]);
         }
-        ReplayRecord {
-            turn_id: self.turn_id.parse::<u128>().unwrap_or(0),
+        Ok(ReplayRecord {
+            turn_id,
             payload: self.payload.map(Bytes::into_inner).unwrap_or_default(),
             taint: taint_from_str(&self.taint),
-            seq: u64::try_from(self.seq).unwrap_or(0),
+            seq,
             this_head,
-        }
+        })
     }
 }
 

@@ -146,7 +146,7 @@ pub fn merge_hybrid(
         by_turn
             .entry(h.turn_id)
             .and_modify(|existing| {
-                existing.score += h.score * beta;
+                existing.score = h.score.mul_add(beta, existing.score);
                 existing.source = RecallSource::Hybrid;
             })
             .or_insert_with(|| {
