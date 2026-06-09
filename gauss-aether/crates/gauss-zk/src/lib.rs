@@ -360,7 +360,7 @@ impl Prover for MerkleProver {
         let mut layer: Vec<[u8; 32]> = leaves.to_vec();
         let mut idx = index;
         while layer.len() > 1 {
-            let sibling_idx = if idx % 2 == 0 {
+            let sibling_idx = if idx.is_multiple_of(2) {
                 idx.saturating_add(1).min(layer.len().saturating_sub(1))
             } else {
                 idx.saturating_sub(1)

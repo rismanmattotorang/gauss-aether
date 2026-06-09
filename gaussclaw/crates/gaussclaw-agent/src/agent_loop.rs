@@ -1410,7 +1410,7 @@ mod tests {
         struct DenyAll;
         #[async_trait::async_trait]
         impl PreToolHook for DenyAll {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "deny_all"
             }
             async fn on_pre_tool(&self, _e: &PreToolEvent) -> HookOutcome {
@@ -1465,7 +1465,7 @@ mod tests {
         struct WarnTwice;
         #[async_trait::async_trait]
         impl PreToolHook for WarnTwice {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "warn"
             }
             async fn on_pre_tool(&self, _e: &PreToolEvent) -> HookOutcome {
@@ -1519,7 +1519,7 @@ mod tests {
         struct DenyAll;
         #[async_trait::async_trait]
         impl PreToolHook for DenyAll {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "deny_all"
             }
             async fn on_pre_tool(&self, _e: &PreToolEvent) -> HookOutcome {
@@ -1575,7 +1575,7 @@ mod tests {
         }
         #[async_trait::async_trait]
         impl ProviderHandle for Capture {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "capture"
             }
             async fn complete(&self, p: &Prompt) -> Result<Completion, ProviderError> {
@@ -1588,20 +1588,20 @@ mod tests {
                 ))
             }
         }
-        let capture = Arc::new(Capture {
-            seen: Mutex::new(Vec::new()),
-        });
-
         struct CtxEnricher;
         #[async_trait]
         impl PromptEnricher for CtxEnricher {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "ctx-test"
             }
             async fn enrich(&self) -> Option<String> {
                 Some("USE PROJECT NORMS".into())
             }
         }
+
+        let capture = Arc::new(Capture {
+            seen: Mutex::new(Vec::new()),
+        });
 
         let loop_ = AgentLoop::new(loop_policy(capture.clone() as Arc<dyn ProviderHandle>))
             .with_enricher(Arc::new(CtxEnricher));
@@ -1616,7 +1616,7 @@ mod tests {
             .await
             .expect("ok");
 
-        let seen = capture.seen.lock().unwrap();
+        let seen = capture.seen.lock().unwrap().clone();
         assert_eq!(seen.len(), 1);
         let first_msg = &seen[0].messages[0];
         assert_eq!(first_msg.role, "system");
@@ -1638,7 +1638,7 @@ mod tests {
         }
         #[async_trait::async_trait]
         impl ProviderHandle for Capture {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "capture"
             }
             async fn complete(&self, p: &Prompt) -> Result<Completion, ProviderError> {
@@ -1651,10 +1651,6 @@ mod tests {
                 ))
             }
         }
-        let capture = Arc::new(Capture {
-            seen: Mutex::new(Vec::new()),
-        });
-
         struct E(&'static str, &'static str);
         #[async_trait]
         impl PromptEnricher for E {
@@ -1665,6 +1661,10 @@ mod tests {
                 Some(self.1.into())
             }
         }
+
+        let capture = Arc::new(Capture {
+            seen: Mutex::new(Vec::new()),
+        });
 
         let loop_ = AgentLoop::new(loop_policy(capture.clone() as Arc<dyn ProviderHandle>))
             .with_enricher(Arc::new(E("first", "AAA")))
@@ -1680,7 +1680,7 @@ mod tests {
             .await
             .expect("ok");
 
-        let seen = capture.seen.lock().unwrap();
+        let seen = capture.seen.lock().unwrap().clone();
         let body = &seen[0].messages[0].content;
         let pos_aaa = body.find("AAA").unwrap();
         let pos_bbb = body.find("BBB").unwrap();
@@ -1701,7 +1701,7 @@ mod tests {
         }
         #[async_trait::async_trait]
         impl ProviderHandle for Capture {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "capture"
             }
             async fn complete(&self, p: &Prompt) -> Result<Completion, ProviderError> {
@@ -1714,20 +1714,20 @@ mod tests {
                 ))
             }
         }
-        let capture = Arc::new(Capture {
-            seen: Mutex::new(Vec::new()),
-        });
-
         struct Silent;
         #[async_trait]
         impl PromptEnricher for Silent {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "silent"
             }
             async fn enrich(&self) -> Option<String> {
                 None
             }
         }
+
+        let capture = Arc::new(Capture {
+            seen: Mutex::new(Vec::new()),
+        });
 
         let loop_ = AgentLoop::new(loop_policy(capture.clone() as Arc<dyn ProviderHandle>))
             .with_enricher(Arc::new(Silent));
@@ -1742,7 +1742,7 @@ mod tests {
             .await
             .expect("ok");
 
-        let seen = capture.seen.lock().unwrap();
+        let seen = capture.seen.lock().unwrap().clone();
         // The original prompt had exactly one user message; no
         // enrichment was injected.
         assert_eq!(seen[0].messages.len(), 1);

@@ -531,7 +531,7 @@ mod tests {
     use super::*;
     use gauss_core::TurnId;
 
-    /// Persistent SurrealKV store survives a close/reopen: the chain
+    /// Persistent `SurrealKV` store survives a close/reopen: the chain
     /// head and length are restored, and the next append extends the
     /// existing chain rather than restarting from genesis.
     #[cfg(feature = "kv-surrealkv")]

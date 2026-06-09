@@ -274,7 +274,9 @@ pub struct ParsedSlash {
 /// doesn't start with `/` or the head is empty.
 #[must_use]
 pub fn parse_slash(input: &str) -> Option<ParsedSlash> {
-    let raw = input.strip_prefix('/').unwrap_or(input.trim_start());
+    let raw = input
+        .strip_prefix('/')
+        .unwrap_or_else(|| input.trim_start());
     if raw == input {
         // Input did not start with `/`; treat as a non-slash line.
         return None;
@@ -372,7 +374,9 @@ impl SlashRegistry {
     /// emit this as the body of `/help`.
     #[must_use]
     pub fn help_text(&self) -> String {
-        let mut out = String::with_capacity(self.by_canonical.len() * 48);
+        use std::fmt::Write;
+
+        let mut out = String::with_capacity(self.by_canonical.len().saturating_mul(48));
         out.push_str("Available slash commands:\n");
         for cmd in self.iter() {
             let alias_note = if cmd.aliases.is_empty() {
@@ -380,12 +384,14 @@ impl SlashRegistry {
             } else {
                 format!(" (aliases: {})", cmd.aliases.join(", "))
             };
-            out.push_str(&format!(
-                "  /{name:<10} {desc}{alias}\n",
+            // Writing to a `String` is infallible.
+            let _ = writeln!(
+                out,
+                "  /{name:<10} {desc}{alias}",
                 name = cmd.name,
                 desc = cmd.description,
                 alias = alias_note
-            ));
+            );
         }
         out
     }

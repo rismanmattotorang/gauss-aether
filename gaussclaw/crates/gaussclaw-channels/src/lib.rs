@@ -313,7 +313,7 @@ pub(crate) fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {
     // offset panics on non-ASCII input, and `s` arrives from an
     // attacker-controlled signature header.
     let bytes = s.as_bytes();
-    if bytes.len() % 2 != 0 || !s.is_ascii() {
+    if !bytes.len().is_multiple_of(2) || !s.is_ascii() {
         return Err(());
     }
     bytes

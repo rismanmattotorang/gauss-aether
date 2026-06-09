@@ -94,7 +94,7 @@ impl Curator {
                 }
             })
             .collect();
-        stale.sort_by(|a, b| b.overdue_seconds.cmp(&a.overdue_seconds));
+        stale.sort_by_key(|s| std::cmp::Reverse(s.overdue_seconds));
         Ok(ScanReport { stale, scanned })
     }
 
@@ -109,8 +109,7 @@ impl Curator {
         for stale in &report.stale {
             let r = &stale.record;
             bytes_removed = bytes_removed.saturating_add(
-                u64::try_from(serde_json::to_vec(&r.value).map(|b| b.len()).unwrap_or(0))
-                    .unwrap_or(0),
+                u64::try_from(serde_json::to_vec(&r.value).map_or(0, |b| b.len())).unwrap_or(0),
             );
             self.store.delete(&r.peer, &r.namespace, &r.key).await?;
             archived = archived.saturating_add(1);

@@ -267,12 +267,12 @@ impl App<'_> {
     /// use this to register additional commands at startup. The TUI
     /// surfaces every entry in `/commands` output and uses the
     /// catalogue for the "did you mean?" suggestion on unknown input.
-    pub fn slash_registry(&self) -> &gaussclaw_cli::slash::SlashRegistry {
+    pub const fn slash_registry(&self) -> &gaussclaw_cli::slash::SlashRegistry {
         &self.slash_registry
     }
 
     /// Mutable handle to the registry — for plugin registration.
-    pub fn slash_registry_mut(&mut self) -> &mut gaussclaw_cli::slash::SlashRegistry {
+    pub const fn slash_registry_mut(&mut self) -> &mut gaussclaw_cli::slash::SlashRegistry {
         &mut self.slash_registry
     }
 
@@ -678,7 +678,7 @@ impl App<'_> {
         let mut best: Option<(&'static str, usize)> = None;
         for cmd in self.slash_registry.iter() {
             let d = levenshtein(head, cmd.name);
-            if d <= 2 && best.map_or(true, |(_, bd)| d < bd) {
+            if d <= 2 && best.is_none_or(|(_, bd)| d < bd) {
                 best = Some((cmd.name, d));
             }
         }

@@ -54,12 +54,12 @@ pub enum Predicate {
     /// All sub-predicates match.
     All {
         /// Conjuncts.
-        of: Vec<Predicate>,
+        of: Vec<Self>,
     },
     /// At least one sub-predicate matches.
     Any {
         /// Disjuncts.
-        of: Vec<Predicate>,
+        of: Vec<Self>,
     },
 }
 

@@ -42,7 +42,7 @@ impl ToyProvider {
 
     /// Return the number of times `generate` has been called so far.
     pub fn call_count(&self) -> usize {
-        self.cursor.lock().map(|g| *g).unwrap_or(0)
+        self.cursor.lock().map_or(0, |g| *g)
     }
 }
 

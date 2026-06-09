@@ -26,8 +26,10 @@
 //!
 //! 2. **No coupling to gaussclaw-skill from gaussclaw-agent.** The
 //!    enricher trait lives here; the concrete implementations
-//!    ([`ContextFileEnricher`], [`MarkdownSkillEnricher`]) live in
-//!    gaussclaw-skill so we don't add a back-edge in the dep graph.
+//!    ([`ContextFileEnricher`](crate::enrich_impls::ContextFileEnricher),
+//!    [`MarkdownSkillEnricher`](crate::enrich_impls::MarkdownSkillEnricher))
+//!    live in [`crate::enrich_impls`] so we don't add a back-edge in
+//!    the dep graph.
 //!
 //! 3. **Idempotent + cacheable.** An enricher returns `Option<String>`;
 //!    the loop dedupes against the prior call so a no-change result
@@ -36,7 +38,8 @@
 //! ## Composition with Auto-Compaction
 //!
 //! Enricher output lands as a *leading* system message, so the
-//! [`WindowedCompactor`] (which preserves the leading system message
+//! [`WindowedCompactor`](crate::compaction::WindowedCompactor) (which
+//! preserves the leading system message
 //! verbatim) never collapses it. Enrichers can therefore inject
 //! durable instructions without worrying about loss under context
 //! pressure.
@@ -181,8 +184,8 @@ mod tests {
             }),
         ];
         let msg = collect_enrichments(&enrichers).await.expect("some");
-        assert!(msg.content.contains("A"));
-        assert!(msg.content.contains("C"));
+        assert!(msg.content.contains('A'));
+        assert!(msg.content.contains('C'));
         assert!(!msg.content.contains("<!-- prompt-enricher: skip -->"));
     }
 }

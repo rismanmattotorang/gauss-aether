@@ -80,9 +80,10 @@ impl ProviderChoice {
 }
 
 /// Returned with the provider so callers can surface the actual
-/// selected vendor in their status payload / log output. Avoids
-/// re-querying `ProviderHandle::name()` (which is `&'static str` on
-/// some impls and only valid for the lifetime of the handle).
+/// selected vendor in their status payload / log output.
+///
+/// Avoids re-querying `ProviderHandle::name()` (which is `&'static str`
+/// on some impls and only valid for the lifetime of the handle).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PickedProvider {
