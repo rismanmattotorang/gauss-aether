@@ -147,6 +147,16 @@ on a real GaussClaw instance, not synthesised after the fact.
 
 Optional differential-privacy noise. Federated trajectory pool included.
 
+### ⏱️ Bounded everything
+
+Runaway work is a failure mode, not a surprise. Every executor backend
+(local, Docker, SSH) honours a per-request wall-clock timeout — a hung
+tool is killed and reaped, never left pinning a slot. The agent loop
+caps both its iterations *and* its cumulative tool calls per turn, so a
+misbehaving provider can't drive unbounded execution. Webhook signature
+parsing is constant-time and panic-free on adversarial input, and the
+TUI transcript buffer prunes itself instead of growing without bound.
+
 ### 🦀 One binary. No interpreter. No surprises.
 
 `gaussclaw` is one static Rust binary. No Python at runtime. No
@@ -198,8 +208,8 @@ suite — 299 tests, ~3 seconds — re-run on every PR.
 
 GaussClaw is the agent. **Gauss-Aether** is the engine.
 
-The repository ships both: 19 `gaussclaw-*` crates (the agent surfaces,
-channels, tools, providers, exporters) on top of 22 `gauss-*` crates
+The repository ships both: 26 `gaussclaw-*` crates (the agent surfaces,
+channels, tools, providers, exporters) on top of 28 `gauss-*` crates
 (the kernel, the turn engine, the memory store, the audit chain, the
 sandbox, the verifier).
 

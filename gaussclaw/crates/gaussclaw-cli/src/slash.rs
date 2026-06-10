@@ -274,13 +274,10 @@ pub struct ParsedSlash {
 /// doesn't start with `/` or the head is empty.
 #[must_use]
 pub fn parse_slash(input: &str) -> Option<ParsedSlash> {
-    let raw = input
-        .strip_prefix('/')
-        .unwrap_or_else(|| input.trim_start());
-    if raw == input {
-        // Input did not start with `/`; treat as a non-slash line.
-        return None;
-    }
+    // Tolerate leading whitespace but require the `/` itself: the old
+    // fallback misparsed "  hello" as a command named "hello" and
+    // "  /help" as a command named "/help".
+    let raw = input.trim_start().strip_prefix('/')?;
     let (head_raw, rest_raw) = raw
         .split_once(char::is_whitespace)
         .map_or((raw, ""), |(h, r)| (h, r));

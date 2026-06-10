@@ -38,7 +38,7 @@ if you want to build something else.
 
 ## What's in the workspace
 
-Twenty-two single-responsibility crates under [`crates/`](./crates/),
+Twenty-eight single-responsibility crates under [`crates/`](./crates/),
 organised in seven layers:
 
 ```text

@@ -363,6 +363,12 @@ pub struct LoopOutcome {
 /// Default iteration cap. Hermes uses ~32; we mirror.
 pub const DEFAULT_MAX_ITERATIONS: u32 = 32;
 
+/// Default cumulative tool-call cap per run. `max_iterations` bounds
+/// the outer loop, but a provider that emits dozens of calls per
+/// completion could still run thousands of tools in one turn — this
+/// caps the total.
+pub const DEFAULT_MAX_TOOL_CALLS: u32 = 256;
+
 // ─── the loop ─────────────────────────────────────────────────────────────
 
 /// The iterative loop driver. Composes on top of an existing
@@ -374,6 +380,11 @@ pub struct AgentLoop {
     /// Maximum iterations before the loop bails out with
     /// `stop_reason = "max_iterations"`.
     pub max_iterations: u32,
+    /// Cumulative cap on tool calls across the whole run; the loop
+    /// stops with `stop_reason = "max_tool_calls"` before exceeding
+    /// it. Defends against a provider that emits an unbounded number
+    /// of calls per completion.
+    pub max_tool_calls: u32,
     /// Optional ordered list of fallback providers. When the primary
     /// returns a [`ProviderError`], the loop walks this list in order
     /// before surfacing the error to the caller.
@@ -421,6 +432,7 @@ impl AgentLoop {
         Self {
             policy,
             max_iterations: DEFAULT_MAX_ITERATIONS,
+            max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
             fallback: Vec::new(),
             hooks: None,
             compactor: None,
@@ -471,6 +483,13 @@ impl AgentLoop {
         self
     }
 
+    /// Override the cumulative tool-call cap.
+    #[must_use]
+    pub const fn with_max_tool_calls(mut self, max: u32) -> Self {
+        self.max_tool_calls = max;
+        self
+    }
+
     /// Append a fallback provider. On primary failure the loop tries
     /// each fallback in registration order before bubbling the error.
     #[must_use]
@@ -510,10 +529,12 @@ impl AgentLoop {
             .await;
         }
 
-        let mut messages = prompt.messages.clone();
-        let model = prompt.model.clone();
-        let max_tokens = prompt.max_tokens;
-        let temperature = prompt.temperature;
+        // The caller's prompt becomes the running stack directly —
+        // each iteration borrows it for the provider call and appends
+        // assistant/tool messages in place, so a long conversation is
+        // never re-cloned per iteration (previously O(n²) over the
+        // run).
+        let mut iter_prompt = prompt;
 
         // PromptEnricher fan-out. Runs once per loop. The combined
         // output lands as the very first system message so the
@@ -521,12 +542,13 @@ impl AgentLoop {
         // message verbatim) never collapses it.
         if !self.enrichers.is_empty() {
             if let Some(enrichment) = crate::enrich::collect_enrichments(&self.enrichers).await {
-                messages.insert(0, enrichment);
+                iter_prompt.messages.insert(0, enrichment);
             }
         }
 
         let mut assistants: Vec<Completion> = Vec::new();
         let mut iterations: u32 = 0;
+        let mut tool_calls_total: u32 = 0;
 
         loop {
             if sink.should_cancel() {
@@ -561,7 +583,7 @@ impl AgentLoop {
             // its own idempotence — calling it on an already-compacted
             // stack is a no-op.
             if let Some(c) = self.compactor.as_ref() {
-                if let Some(rec) = c.maybe_compact(&mut messages) {
+                if let Some(rec) = c.maybe_compact(&mut iter_prompt.messages) {
                     let CompactionRecord {
                         collapsed,
                         retained,
@@ -597,15 +619,8 @@ impl AgentLoop {
                 }
             }
 
-            // Build the iteration's prompt from the running stack.
-            let iter_prompt = Prompt {
-                model: model.clone(),
-                messages: messages.clone(),
-                max_tokens,
-                temperature,
-            };
-
-            // Call provider with fallback chain.
+            // Call provider with fallback chain. `iter_prompt` *is*
+            // the running stack — no per-iteration rebuild.
             let completion = match self
                 .run_with_fallback(&iter_prompt, taint, session_id, sink, iterations)
                 .await
@@ -654,9 +669,29 @@ impl AgentLoop {
                 });
             }
 
+            // Cumulative tool-call cap: stop before dispatching a
+            // batch that would blow past it. A compromised provider
+            // can otherwise drive unbounded tool execution within the
+            // iteration budget.
+            let batch = u32::try_from(tool_calls.len()).unwrap_or(u32::MAX);
+            if tool_calls_total.saturating_add(batch) > self.max_tool_calls {
+                let stop = "max_tool_calls".to_owned();
+                sink.emit(LoopEvent::Done {
+                    stop_reason: stop.clone(),
+                    iterations,
+                })
+                .await;
+                return Ok(LoopOutcome {
+                    assistants,
+                    iterations,
+                    stop_reason: stop,
+                });
+            }
+            tool_calls_total = tool_calls_total.saturating_add(batch);
+
             // Append the assistant message that ASKED for the tool, so
             // the next provider iteration sees its own prior reasoning.
-            messages.push(Message {
+            iter_prompt.messages.push(Message {
                 role: "assistant".into(),
                 content: completion.text.clone(),
             });
@@ -722,7 +757,7 @@ impl AgentLoop {
                             if let Some(id) = &tc.id {
                                 content = format!("[tool_call_id={id}] {content}");
                             }
-                            messages.push(Message {
+                            iter_prompt.messages.push(Message {
                                 role: "tool".into(),
                                 content,
                             });
@@ -765,7 +800,7 @@ impl AgentLoop {
                 if let Some(id) = &tc.id {
                     content = format!("[tool_call_id={id}] {content}");
                 }
-                messages.push(Message {
+                iter_prompt.messages.push(Message {
                     role: "tool".into(),
                     content,
                 });
