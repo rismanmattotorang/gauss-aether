@@ -199,8 +199,8 @@ See [`gauss-aether/README.md`](gauss-aether/README.md) and
 | Code signing on desktop | unsigned | **Signed + notarised on 3 OSes** |
 | Migration from Hermes | n/a | **One command** |
 
-Every claim above is backed by a property test in the conformance
-suite — 299 tests, ~3 seconds — re-run on every PR.
+Every claim above is backed by property tests in the conformance
+crates; the full workspace suite — ~1,400 tests — re-runs on every PR.
 
 ---
 

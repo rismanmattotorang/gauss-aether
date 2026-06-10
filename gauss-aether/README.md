@@ -16,7 +16,7 @@ if you want to build something else.
 
 [![Axioms](https://img.shields.io/badge/axioms-A1--A9-blueviolet.svg)]()
 [![Theorems](https://img.shields.io/badge/theorems-T1--T12-blue.svg)]()
-[![Tests](https://img.shields.io/badge/conformance-299%20green-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-1397%20green-brightgreen.svg)]()
 [![Unsafe](https://img.shields.io/badge/unsafe__code-forbid-orange.svg)]()
 
 ---
@@ -128,8 +128,8 @@ M  memory            ← gauss-memory       F  audit chain      ← gauss-audit
 
 ## Axioms and theorems
 
-Every property below has a one-to-one conformance test. The full
-299-test suite runs in about three seconds.
+Every property below has a one-to-one conformance test; the full
+workspace suite is ~1,400 tests.
 
 | ID | Statement | Crate | Test |
 |---|---|---|---|
@@ -195,7 +195,7 @@ gateway wire types — in [`../docs/QUICKSTART.md`](../docs/QUICKSTART.md).
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings    # pedantic + nursery
-cargo test --workspace                                   # 299 tests, ~3 s
+cargo test --workspace                                   # ~1,400 tests
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 cargo deny check                                         # supply-chain + license
 ```
