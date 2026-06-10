@@ -54,13 +54,11 @@ jobs:
         # response that deviates from its baseline (because a PR
         # changed provider behaviour without bumping the probe set)
         # fails the test.
+        # `cargo test` accepts one `--lib` and one TESTNAME filter per
+        # invocation, so the two crates run as two commands.
         run: |
-          cargo test \
-            -p gauss-poly --lib \
-            -p gaussclaw-conformance --lib \
-            polyhedral_probe \
-            polyhedral_provider \
-            -- --include-ignored
+          cargo test -p gauss-poly --lib polyhedral_probe -- --include-ignored
+          cargo test -p gaussclaw-conformance --lib polyhedral_provider -- --include-ignored
 
       - name: Verify the probe set was checked-in (if changed)
         # If the PR's diff includes provider source changes but the
