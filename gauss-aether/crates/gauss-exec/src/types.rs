@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use gauss_core::CapToken;
@@ -61,6 +62,11 @@ pub struct ExecRequest {
     pub cwd: Option<PathBuf>,
     /// Soft cap on captured stdout/stderr bytes — `None` for unlimited.
     pub max_output_bytes: Option<usize>,
+    /// Wall-clock cap for the whole run — `None` for unlimited. On
+    /// expiry the child is killed and [`ExecError::Timeout`] returned,
+    /// so a hung tool can't pin an executor slot forever.
+    #[serde(default)]
+    pub timeout: Option<Duration>,
 }
 
 impl ExecRequest {
@@ -73,6 +79,7 @@ impl ExecRequest {
             env: BTreeMap::new(),
             cwd: None,
             max_output_bytes: Some(1 << 20),
+            timeout: None,
         }
     }
 
@@ -94,6 +101,13 @@ impl ExecRequest {
     #[must_use]
     pub fn max_output(mut self, bytes: usize) -> Self {
         self.max_output_bytes = Some(bytes);
+        self
+    }
+
+    /// Set the wall-clock cap (chainable).
+    #[must_use]
+    pub const fn timeout(mut self, limit: Duration) -> Self {
+        self.timeout = Some(limit);
         self
     }
 }
@@ -162,6 +176,12 @@ pub enum ExecError {
     /// Backend-side failure.
     #[error("backend: {0}")]
     Backend(String),
+    /// The run exceeded [`ExecRequest::timeout`]; the child was killed.
+    #[error("timed out after {limit:?}")]
+    Timeout {
+        /// The wall-clock cap that expired.
+        limit: Duration,
+    },
 }
 
 /// Crate-wide result alias.

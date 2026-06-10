@@ -48,9 +48,8 @@ impl AnchorPolicy {
 
     /// True iff an anchor should be emitted at the given 1-based append count.
     #[must_use]
-    #[allow(clippy::arithmetic_side_effects)] // `every_n_appends >= 1` by ctor.
     pub const fn should_anchor_at(&self, count: u64) -> bool {
-        count != 0 && count % self.every_n_appends == 0
+        count != 0 && count.is_multiple_of(self.every_n_appends)
     }
 }
 

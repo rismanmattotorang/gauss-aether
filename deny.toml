@@ -33,8 +33,12 @@ allow = [
   "BSD-2-Clause",
   "BSD-3-Clause",
   "ISC",
-  "Unicode-DFS-2016",
   "Unicode-3.0",
+  # CDLA-Permissive-2.0 is a permissive *data* licence (no copyleft,
+  # no attribution beyond keeping the licence text). It covers the
+  # Mozilla CA-certificate bundle that webpki-root-certs embeds,
+  # pulled in via reqwest -> rustls-platform-verifier.
+  "CDLA-Permissive-2.0",
   "CC0-1.0",
   "Zlib",
   # MPL-2.0 is weak-copyleft and only requires source disclosure of

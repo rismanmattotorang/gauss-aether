@@ -383,8 +383,9 @@ impl AuditTrace {
         self.record(AuditEntry::Compacted(CompactionAuditRecord {
             session: session.into(),
             iteration,
-            collapsed: collapsed as u32,
-            retained: retained as u32,
+            // Counts beyond u32::MAX are clamped — audit fidelity over panic.
+            collapsed: u32::try_from(collapsed).unwrap_or(u32::MAX),
+            retained: u32::try_from(retained).unwrap_or(u32::MAX),
             before_chars: before_chars as u64,
             after_chars: after_chars as u64,
             ts: rfc3339_now(),

@@ -54,10 +54,11 @@ fn empty_msg(channel: &str, sender: &str, body: String) -> ChannelMessage {
 
 /// Mattermost incoming-webhook adapter.
 ///
-/// Signature scheme mirrors Slack: `X-Mattermost-Request-Signature:
-/// v0=<hex>`, signing base is `v0:<X-Mattermost-Request-Timestamp>:
-/// <body>`. (Mattermost's official signing protocol is configurable;
-/// we lock the shape against the documented default.)
+/// Signature scheme mirrors Slack:
+/// `X-Mattermost-Request-Signature: v0=<hex>`, signing base is
+/// `v0:<X-Mattermost-Request-Timestamp>:<body>`. (Mattermost's
+/// official signing protocol is configurable; we lock the shape
+/// against the documented default.)
 pub struct MattermostChannel {
     id: String,
     signing_secret_handle: String,
@@ -675,7 +676,7 @@ mod tests {
             let idx = ((buf << (6 - bits)) & 0x3f) as usize;
             out.push(char::from(ALPHABET[idx]));
         }
-        while out.len() % 4 != 0 {
+        while !out.len().is_multiple_of(4) {
             out.push('=');
         }
         out

@@ -738,8 +738,7 @@ impl TurnPolicy {
 
         // Persist the user message BEFORE admit. Identical to the audit
         // discipline: even a refused turn leaves a chain-anchored record.
-        let mut parent_id: Option<u64> = None;
-        if let (Some(store), Some(sid)) = (&self.store, session_id) {
+        let parent_id: Option<u64> = if let (Some(store), Some(sid)) = (&self.store, session_id) {
             let last_user = prompt
                 .messages
                 .iter()
@@ -750,8 +749,10 @@ impl TurnPolicy {
                 .append_turn(sid, None, "user", last_user, taint)
                 .await
                 .map_err(|e| TurnError::Invalid(format!("store: {e}")))?;
-            parent_id = Some(user_turn.id);
-        }
+            Some(user_turn.id)
+        } else {
+            None
+        };
 
         self.kernel.admit(self.effective_required_cap(), taint)?;
         let completion = if let Some(ts) = token_sink {

@@ -282,7 +282,7 @@ struct DryRunPreview;
 
 #[async_trait]
 impl PreToolHook for DryRunPreview {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "dry-run-preview"
     }
     async fn on_pre_tool(&self, event: &PreToolEvent) -> HookOutcome {
@@ -319,7 +319,7 @@ const SHELL_DENY_SUBSTRINGS: &[&str] = &[
 
 #[async_trait]
 impl PreToolHook for ShellGuard {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "shell-guard"
     }
     async fn on_pre_tool(&self, event: &PreToolEvent) -> HookOutcome {
@@ -348,7 +348,7 @@ struct AuditLogNoop;
 
 #[async_trait]
 impl PostToolHook for AuditLogNoop {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "audit-log"
     }
     async fn on_post_tool(&self, _event: &PostToolEvent) {}
@@ -736,9 +736,8 @@ mod tests {
             description: String::new(),
         };
         let built = f.build(&decl).expect("resolve");
-        let pre = match built {
-            BuiltHook::Pre(p) => p,
-            _ => panic!("expected Pre"),
+        let BuiltHook::Pre(pre) = built else {
+            panic!("expected Pre");
         };
         let outcome = pre
             .on_pre_tool(&PreToolEvent::new(
@@ -765,9 +764,8 @@ mod tests {
             target_tools: vec![],
             description: String::new(),
         };
-        let pre = match f.build(&decl).unwrap() {
-            BuiltHook::Pre(p) => p,
-            _ => panic!("expected Pre"),
+        let BuiltHook::Pre(pre) = f.build(&decl).unwrap() else {
+            panic!("expected Pre");
         };
         for dangerous in ["rm -rf /", "echo x ; rm -rf /", "mkfs.ext4 /dev/sda"] {
             let outcome = pre
@@ -783,7 +781,7 @@ mod tests {
     #[tokio::test]
     async fn default_factory_shell_guard_allows_safe_shells() {
         let f = DefaultHookFactory;
-        let pre = match f
+        let BuiltHook::Pre(pre) = f
             .build(&HookDeclaration {
                 id: "shell-guard".into(),
                 lifecycle: HookLifecycle::PreTool,
@@ -792,9 +790,8 @@ mod tests {
                 description: String::new(),
             })
             .unwrap()
-        {
-            BuiltHook::Pre(p) => p,
-            _ => panic!("expected Pre"),
+        else {
+            panic!("expected Pre");
         };
         for safe in ["ls", "echo hi", "cargo test"] {
             let outcome = pre
@@ -810,7 +807,7 @@ mod tests {
     #[tokio::test]
     async fn default_factory_shell_guard_ignores_other_tools() {
         let f = DefaultHookFactory;
-        let pre = match f
+        let BuiltHook::Pre(pre) = f
             .build(&HookDeclaration {
                 id: "shell-guard".into(),
                 lifecycle: HookLifecycle::PreTool,
@@ -819,9 +816,8 @@ mod tests {
                 description: String::new(),
             })
             .unwrap()
-        {
-            BuiltHook::Pre(p) => p,
-            _ => panic!("expected Pre"),
+        else {
+            panic!("expected Pre");
         };
         // Even a "rm -rf /" arg to a non-shell tool is Allow — shell-
         // guard's job is to be a shell backstop, not a generic deny.
@@ -911,9 +907,8 @@ mod tests {
                 description: String::new(),
             })
             .unwrap();
-        let pre = match built {
-            BuiltHook::Pre(p) => p,
-            _ => panic!(),
+        let BuiltHook::Pre(pre) = built else {
+            panic!("expected Pre");
         };
         assert_eq!(pre.name(), "first");
     }

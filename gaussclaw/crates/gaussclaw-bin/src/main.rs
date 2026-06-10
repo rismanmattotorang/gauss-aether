@@ -124,7 +124,7 @@ fn run_web(
     })
 }
 
-/// Drives TUI user turns through a [`TurnPolicy`] on a background
+/// Drives TUI user turns through a [`gaussclaw_agent::TurnPolicy`] on a background
 /// thread, keeping a running transcript so the terminal holds a real
 /// multi-turn conversation. The TUI render loop stays responsive and
 /// cancellable while a turn is in flight.
@@ -893,7 +893,7 @@ fn run_setup(
         "openai" => Some("OPENAI_API_KEY"),
         _ => None,
     } {
-        if std::env::var(var).map(|v| v.is_empty()).unwrap_or(true) {
+        if std::env::var(var).map_or(true, |v| v.is_empty()) {
             println!("⚠ {var} is not set — export it before talking to a real model.");
         } else {
             println!("✓ {var} detected.");
@@ -1261,13 +1261,7 @@ fn run_plugins(sub: PluginsCmd) -> anyhow::Result<()> {
                     }
                 }
             }
-            PluginsCmd::Enable { kind, name } => {
-                let _ = parse_kind(&kind)?;
-                eprintln!(
-                    "note: plugin enable/disable persistence lands in Sprint 7 §3 (the dashboard PluginsPage). For now the CLI just acknowledges the intent ({kind}/{name})."
-                );
-            }
-            PluginsCmd::Disable { kind, name } => {
+            PluginsCmd::Enable { kind, name } | PluginsCmd::Disable { kind, name } => {
                 let _ = parse_kind(&kind)?;
                 eprintln!(
                     "note: plugin enable/disable persistence lands in Sprint 7 §3 (the dashboard PluginsPage). For now the CLI just acknowledges the intent ({kind}/{name})."

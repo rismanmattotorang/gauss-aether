@@ -25,6 +25,8 @@
 //! 4. **Path-traversal guard.** Symlinks at the file leaf are
 //!    refused, mirroring the rule [`MarkdownSkill::from_dir`] applies.
 //!
+//! [`MarkdownSkill::from_dir`]: crate::MarkdownSkill::from_dir
+//!
 //! ## Naming convention
 //!
 //! The default file names are `CLAUDE.md` (Anthropic-compatible) and
@@ -114,8 +116,8 @@ impl ContextFileFinder {
         self
     }
 
-    /// Walk `start` and up to [`Self::max_depth`] ancestors looking
-    /// for any of [`Self::names`]. Returns the files in root-to-leaf
+    /// Walk `start` and up to `max_depth` ancestors looking for any
+    /// of the configured names. Returns the files in root-to-leaf
     /// order so the leaf-most file is last (most-specific wins for
     /// callers that concatenate).
     ///
@@ -183,17 +185,20 @@ impl ContextFileFinder {
 /// into a system message.
 #[must_use]
 pub fn join_context(files: &[ContextFile]) -> String {
+    use std::fmt::Write;
     let mut out = String::new();
     for (i, f) in files.iter().enumerate() {
         if i > 0 {
             out.push_str("\n\n---\n\n");
         }
-        out.push_str(&format!(
-            "<!-- context-file: {} (depth={}{}) -->\n",
+        // Writing to a `String` is infallible.
+        let _ = writeln!(
+            out,
+            "<!-- context-file: {} (depth={}{}) -->",
             f.path.display(),
             f.depth,
             if f.truncated { ", truncated" } else { "" }
-        ));
+        );
         out.push_str(&f.body);
     }
     out
@@ -218,7 +223,7 @@ fn read_capped(path: &Path, cap: usize) -> Result<(String, bool), SkillError> {
             }
             break;
         }
-        let space = cap - buf.len();
+        let space = cap.saturating_sub(buf.len());
         let want = chunk.len().min(space);
         let n = f
             .read(&mut chunk[..want])
@@ -245,8 +250,7 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
+                .map_or(0, |d| d.as_nanos()),
         ));
         std::fs::create_dir_all(&p).unwrap();
         p

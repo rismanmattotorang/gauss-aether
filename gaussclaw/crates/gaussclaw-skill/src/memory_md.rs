@@ -72,7 +72,7 @@ pub struct MemorySection {
 impl MemoryFile {
     /// Build an empty file with the default cap.
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             sections: Vec::new(),
             preamble: String::new(),
@@ -90,7 +90,7 @@ impl MemoryFile {
 
     /// Parse from raw markdown text.
     #[must_use]
-    pub fn from_str(raw: &str) -> Self {
+    pub fn parse(raw: &str) -> Self {
         let mut sections: Vec<MemorySection> = Vec::new();
         let mut preamble = String::new();
         let mut current: Option<MemorySection> = None;
@@ -131,7 +131,7 @@ impl MemoryFile {
     /// Read `path` if it exists; return [`MemoryFile::new`] otherwise.
     pub fn load_or_default(path: &Path) -> Result<Self, SkillError> {
         match fs::read_to_string(path) {
-            Ok(s) => Ok(Self::from_str(&s)),
+            Ok(s) => Ok(Self::parse(&s)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::new()),
             Err(e) => Err(SkillError::InvalidSchema(format!(
                 "read MEMORY.md {}: {e}",
@@ -150,7 +150,7 @@ impl MemoryFile {
         }
         for (i, s) in self.sections.iter().enumerate() {
             if i > 0 {
-                out.push_str("\n");
+                out.push('\n');
             }
             out.push_str("## ");
             out.push_str(&s.heading);
@@ -165,13 +165,13 @@ impl MemoryFile {
 
     /// Section count.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.sections.len()
     }
 
     /// `true` when the file has no sections and no preamble.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.sections.is_empty() && self.preamble.is_empty()
     }
 
@@ -283,8 +283,7 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
+                .map_or(0, |d| d.as_nanos()),
         ));
         std::fs::create_dir_all(&p).unwrap();
         p
@@ -306,7 +305,7 @@ Avoid the `unstable-foo` flag; it bricks the linker.
 
     #[test]
     fn from_str_parses_sections_and_preamble() {
-        let m = MemoryFile::from_str(SAMPLE);
+        let m = MemoryFile::parse(SAMPLE);
         assert_eq!(m.sections.len(), 3);
         assert!(m.preamble.contains("Preamble line one"));
         assert_eq!(m.sections[0].heading, "User");
@@ -316,14 +315,14 @@ Avoid the `unstable-foo` flag; it bricks the linker.
 
     #[test]
     fn empty_input_yields_empty_file() {
-        let m = MemoryFile::from_str("");
+        let m = MemoryFile::parse("");
         assert!(m.is_empty());
         assert_eq!(m.len(), 0);
     }
 
     #[test]
     fn section_lookup_is_exact() {
-        let m = MemoryFile::from_str(SAMPLE);
+        let m = MemoryFile::parse(SAMPLE);
         assert!(m.section("User").is_some());
         assert!(m.section("user").is_none(), "case-sensitive lookup");
         assert!(m.section("Missing").is_none());
@@ -331,7 +330,7 @@ Avoid the `unstable-foo` flag; it bricks the linker.
 
     #[test]
     fn upsert_replaces_existing_in_place() {
-        let mut m = MemoryFile::from_str(SAMPLE);
+        let mut m = MemoryFile::parse(SAMPLE);
         m.upsert_section("User", "Alice now prefers verbose replies.");
         let s = m.section("User").unwrap();
         assert!(s.body.contains("verbose"));
@@ -341,7 +340,7 @@ Avoid the `unstable-foo` flag; it bricks the linker.
 
     #[test]
     fn upsert_inserts_new_at_end() {
-        let mut m = MemoryFile::from_str(SAMPLE);
+        let mut m = MemoryFile::parse(SAMPLE);
         m.upsert_section("New", "fresh learning");
         assert_eq!(m.sections.last().unwrap().heading, "New");
         assert_eq!(m.sections.len(), 4);
@@ -349,7 +348,7 @@ Avoid the `unstable-foo` flag; it bricks the linker.
 
     #[test]
     fn remove_section_returns_true_only_when_removed() {
-        let mut m = MemoryFile::from_str(SAMPLE);
+        let mut m = MemoryFile::parse(SAMPLE);
         assert!(m.remove_section("Project"));
         assert_eq!(m.sections.len(), 2);
         assert!(!m.remove_section("Project"));
@@ -357,16 +356,16 @@ Avoid the `unstable-foo` flag; it bricks the linker.
 
     #[test]
     fn render_round_trip_preserves_sections() {
-        let m = MemoryFile::from_str(SAMPLE);
+        let m = MemoryFile::parse(SAMPLE);
         let rendered = m.render();
-        let m2 = MemoryFile::from_str(&rendered);
+        let m2 = MemoryFile::parse(&rendered);
         assert_eq!(m.sections, m2.sections);
         assert_eq!(m.preamble, m2.preamble);
     }
 
     #[test]
     fn enforce_cap_drops_oldest_first() {
-        let mut m = MemoryFile::from_str(SAMPLE);
+        let mut m = MemoryFile::parse(SAMPLE);
         m.cap_bytes = 80; // small enough to force drops
         let dropped = m.enforce_cap();
         assert!(dropped >= 1);
@@ -378,7 +377,7 @@ Avoid the `unstable-foo` flag; it bricks the linker.
 
     #[test]
     fn enforce_cap_no_op_when_already_under() {
-        let mut m = MemoryFile::from_str(SAMPLE);
+        let mut m = MemoryFile::parse(SAMPLE);
         m.cap_bytes = 10_000;
         let dropped = m.enforce_cap();
         assert_eq!(dropped, 0);
@@ -395,7 +394,7 @@ Avoid the `unstable-foo` flag; it bricks the linker.
     fn save_and_reload_round_trip() {
         let dir = tmpdir("io");
         let path = dir.join("MEMORY.md");
-        let mut m = MemoryFile::from_str(SAMPLE);
+        let mut m = MemoryFile::parse(SAMPLE);
         let dropped = m.save_to(&path).unwrap();
         assert_eq!(dropped, 0);
         let m2 = MemoryFile::load_or_default(&path).unwrap();
@@ -418,7 +417,7 @@ Avoid the `unstable-foo` flag; it bricks the linker.
 
     #[test]
     fn as_map_returns_heading_keyed_map() {
-        let m = MemoryFile::from_str(SAMPLE);
+        let m = MemoryFile::parse(SAMPLE);
         let map = m.as_map();
         assert!(map.contains_key("User"));
         assert!(map.get("User").unwrap().contains("Alice"));

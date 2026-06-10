@@ -105,6 +105,10 @@ impl Default for StatusInfo {
 
 // ─── history ────────────────────────────────────────────────────────────────
 
+/// Cap on retained transcript entries; the oldest are pruned past this.
+/// 10k entries keeps days of conversation while bounding memory.
+pub const MAX_HISTORY_ENTRIES: usize = 10_000;
+
 /// A single line in the conversation pane.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
@@ -267,12 +271,12 @@ impl App<'_> {
     /// use this to register additional commands at startup. The TUI
     /// surfaces every entry in `/commands` output and uses the
     /// catalogue for the "did you mean?" suggestion on unknown input.
-    pub fn slash_registry(&self) -> &gaussclaw_cli::slash::SlashRegistry {
+    pub const fn slash_registry(&self) -> &gaussclaw_cli::slash::SlashRegistry {
         &self.slash_registry
     }
 
     /// Mutable handle to the registry — for plugin registration.
-    pub fn slash_registry_mut(&mut self) -> &mut gaussclaw_cli::slash::SlashRegistry {
+    pub const fn slash_registry_mut(&mut self) -> &mut gaussclaw_cli::slash::SlashRegistry {
         &mut self.slash_registry
     }
 
@@ -305,7 +309,7 @@ impl App<'_> {
 
     /// Push an entry onto the history pane.
     pub fn push(&mut self, entry: Entry) {
-        self.history.push(entry);
+        self.push_history(entry);
     }
 
     /// Replace the status bar payload (called when kernel state changes).
@@ -333,7 +337,7 @@ impl App<'_> {
                 if let Some(cb) = self.on_cancel.as_ref() {
                     cb();
                 }
-                self.history.push(Entry::System(
+                self.push_history(Entry::System(
                     "Cancel requested. The loop will wind down at the next boundary.".into(),
                 ));
                 return Tick::CancelInFlight;
@@ -352,7 +356,7 @@ impl App<'_> {
                     if self.turn_in_flight {
                         if let Some(cb) = self.on_cancel.as_ref() {
                             cb();
-                            self.history.push(Entry::System(
+                            self.push_history(Entry::System(
                                 "Cancel requested. Press Ctrl+C again after the loop returns to quit.".into(),
                             ));
                             return Tick::CancelInFlight;
@@ -362,7 +366,7 @@ impl App<'_> {
                 }
                 KeyCode::Char('l') => {
                     self.history.clear();
-                    self.history.push(Entry::System("Session cleared.".into()));
+                    self.push_history(Entry::System("Session cleared.".into()));
                     return Tick::Continue;
                 }
                 KeyCode::Char('p') => {
@@ -403,7 +407,12 @@ impl App<'_> {
                 return Tick::Continue;
             }
             KeyCode::PageUp => {
-                self.scroll_offset = self.scroll_offset.saturating_add(1);
+                // Clamp to the rendered line count so the offset can't
+                // creep arbitrarily past the end of history (which
+                // blanks the pane and then eats PageDown presses).
+                let max =
+                    u16::try_from(self.history_line_count().saturating_sub(1)).unwrap_or(u16::MAX);
+                self.scroll_offset = self.scroll_offset.saturating_add(1).min(max);
                 return Tick::Continue;
             }
             KeyCode::PageDown => {
@@ -416,6 +425,33 @@ impl App<'_> {
         // Otherwise hand off to the textarea (multiline editor).
         self.input.input(key);
         Tick::Continue
+    }
+
+    /// Append a history entry, pruning the oldest entries past
+    /// [`MAX_HISTORY_ENTRIES`] so a long-lived session can't grow the
+    /// transcript buffer without bound.
+    fn push_history(&mut self, entry: Entry) {
+        if self.history.len() >= MAX_HISTORY_ENTRIES {
+            let excess = self
+                .history
+                .len()
+                .saturating_sub(MAX_HISTORY_ENTRIES.saturating_sub(1));
+            self.history.drain(..excess);
+        }
+        self.history.push(entry);
+    }
+
+    /// Total rendered history lines (each entry body line counts one).
+    fn history_line_count(&self) -> usize {
+        self.history
+            .iter()
+            .map(|e| {
+                let body = match e {
+                    Entry::User(b) | Entry::Assistant(b) | Entry::System(b) => b,
+                };
+                body.lines().count().max(1)
+            })
+            .sum()
     }
 
     fn input_is_empty_or_recalled(&self) -> bool {
@@ -464,13 +500,13 @@ impl App<'_> {
 
         // Don't start a second turn while one is outstanding.
         if self.turn_in_flight {
-            self.history.push(Entry::System(
+            self.push_history(Entry::System(
                 "A turn is already running — press Esc to cancel it first.".into(),
             ));
             return;
         }
 
-        self.history.push(Entry::User(body.clone()));
+        self.push_history(Entry::User(body.clone()));
 
         if let Some(dispatcher) = self.dispatcher.clone() {
             // Real dispatch: hand the prompt to the dispatcher, which
@@ -491,7 +527,7 @@ impl App<'_> {
                 taint = self.status.taint_floor,
             );
             self.last_assistant = Some(reply.clone());
-            self.history.push(Entry::Assistant(reply));
+            self.push_history(Entry::Assistant(reply));
             self.status.turn = self.status.turn.saturating_add(1);
         }
     }
@@ -510,7 +546,7 @@ impl App<'_> {
         match rx.try_recv() {
             Ok(TurnOutcome::Reply(text)) => {
                 self.last_assistant = Some(text.clone());
-                self.history.push(Entry::Assistant(text));
+                self.push_history(Entry::Assistant(text));
                 self.status.turn = self.status.turn.saturating_add(1);
                 self.finish_turn();
                 true
@@ -526,7 +562,7 @@ impl App<'_> {
                 // The dispatcher dropped the sender without ever
                 // producing an outcome — surface it rather than hang
                 // in-flight forever.
-                self.history.push(Entry::System(
+                self.push_history(Entry::System(
                     "turn failed: dispatcher closed without a response.".into(),
                 ));
                 self.finish_turn();
@@ -550,8 +586,11 @@ impl App<'_> {
         let (head, rest) = cmd
             .split_once(char::is_whitespace)
             .map_or((cmd, ""), |(h, r)| (h.trim(), r.trim()));
+        // Case-insensitive command match: `/HELP` and `/Help` behave
+        // like `/help` (every match arm below is lowercase).
+        let head = head.to_ascii_lowercase();
 
-        let body = match head {
+        let body = match head.as_str() {
             "help" | "?" => HELP_TEXT.into(),
 
             "quit" | "exit" => {
@@ -669,7 +708,7 @@ impl App<'_> {
                 }
             }
         };
-        self.history.push(Entry::System(body));
+        self.push_history(Entry::System(body));
     }
 
     /// Cheap edit-distance "did you mean?" against the slash registry.
@@ -678,7 +717,7 @@ impl App<'_> {
         let mut best: Option<(&'static str, usize)> = None;
         for cmd in self.slash_registry.iter() {
             let d = levenshtein(head, cmd.name);
-            if d <= 2 && best.map_or(true, |(_, bd)| d < bd) {
+            if d <= 2 && best.is_none_or(|(_, bd)| d < bd) {
                 best = Some((cmd.name, d));
             }
         }

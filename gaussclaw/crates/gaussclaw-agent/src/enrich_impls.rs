@@ -143,6 +143,8 @@ impl PromptEnricher for MarkdownSkillEnricher {
     }
 
     async fn enrich(&self) -> Option<String> {
+        use std::fmt::Write;
+
         let skills = MarkdownSkill::discover_in(&self.root).ok()?;
         let allow = self.allow.as_ref();
         let filtered: Vec<&MarkdownSkill> = skills
@@ -158,10 +160,11 @@ impl PromptEnricher for MarkdownSkillEnricher {
             if i > 0 {
                 out.push_str("\n\n");
             }
-            out.push_str(&format!("## {name}\n", name = s.name));
+            // Writing to a `String` is infallible.
+            let _ = writeln!(out, "## {name}", name = s.name);
             if let Some(desc) = s.description() {
                 if !desc.is_empty() {
-                    out.push_str(&format!("_{desc}_\n\n"));
+                    let _ = write!(out, "_{desc}_\n\n");
                 }
             }
             out.push_str(s.body.trim());
@@ -251,8 +254,7 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
+                .map_or(0, |d| d.as_nanos()),
         ));
         std::fs::create_dir_all(&p).unwrap();
         p

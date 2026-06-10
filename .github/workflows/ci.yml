@@ -74,10 +74,12 @@ jobs:
       - run: cargo deny check advisories bans licenses sources
 
   msrv:
-    name: MSRV (1.83)
+    # Tracks `workspace.package.rust-version` in Cargo.toml — keep the
+    # two in lockstep when bumping the MSRV.
+    name: MSRV (1.89)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.83.0
+      - uses: dtolnay/rust-toolchain@1.89.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --all-targets

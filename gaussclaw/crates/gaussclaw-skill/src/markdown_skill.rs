@@ -228,7 +228,7 @@ fn split_frontmatter(raw: &str) -> (BTreeMap<String, String>, &str) {
     };
     let front = &rest[..end_idx];
     // Body starts after the closing fence + newline.
-    let body_start = end_idx + "\n---".len();
+    let body_start = end_idx.saturating_add("\n---".len());
     let body_after = &rest[body_start..];
     let body = body_after
         .strip_prefix('\n')

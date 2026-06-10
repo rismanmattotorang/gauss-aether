@@ -66,10 +66,11 @@ use serde::{Deserialize, Serialize};
 
 // ─── events ────────────────────────────────────────────────────────────────
 
-/// Event passed to `PreToolHook::on_pre_tool`. Carries the tool name,
-/// the (already kernel-admitted) capability requirement, the input
-/// arguments, and the incoming taint. The event is `&` — hooks observe
-/// but never mutate.
+/// Event passed to `PreToolHook::on_pre_tool`.
+///
+/// Carries the tool name, the (already kernel-admitted) capability
+/// requirement, the input arguments, and the incoming taint. The event
+/// is `&` — hooks observe but never mutate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct PreToolEvent {
@@ -165,9 +166,10 @@ impl PostToolEvent {
 ///   block; the bus records the message and continues.
 /// * `Deny(reason)` — the hook refuses the call; the bus short-circuits
 ///   and the loop driver returns the reason instead of calling the tool.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum HookOutcome {
     /// Hook is content.
+    #[default]
     Allow,
     /// Hook surfaces a warning string.
     Warn(String),
@@ -196,7 +198,7 @@ impl HookOutcome {
 
     /// Borrow the warning / deny reason, if any.
     #[must_use]
-    pub fn reason(&self) -> Option<&str> {
+    pub const fn reason(&self) -> Option<&str> {
         match self {
             Self::Allow => None,
             Self::Warn(r) | Self::Deny(r) => Some(r.as_str()),
@@ -242,12 +244,6 @@ pub struct PreFireReport {
     pub warnings: Vec<String>,
     /// Number of hooks that ran (including the denier, if any).
     pub fired: usize,
-}
-
-impl Default for HookOutcome {
-    fn default() -> Self {
-        Self::Allow
-    }
 }
 
 /// One entry in the priority-ordered hook list.
@@ -385,7 +381,7 @@ mod tests {
     }
     #[async_trait]
     impl PostToolHook for CountingPost {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "counter"
         }
         async fn on_post_tool(&self, _e: &PostToolEvent) {

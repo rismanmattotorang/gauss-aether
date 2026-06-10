@@ -726,13 +726,16 @@ async fn handle_v1_chat_completions(
     };
 
     // WAL-before-effect: record the inbound request before any work.
+    // The chain witnesses the canonical request JSON — an empty
+    // payload here would make forensic replay impossible.
     let plane = state.kernel.plane_for(SurfaceRequest::UserSync);
+    let req_bytes = serde_json::to_vec(&req).unwrap_or_default();
     state
         .audit
         .record_inbound(
             "/v1/chat/completions",
             "openai-api",
-            b"",
+            &req_bytes,
             TaintLabel::User,
             plane,
         )
@@ -789,7 +792,14 @@ async fn handle_v1_chat_completions(
         let mut items: Vec<SseItem> = stream_chunks(&req.model, &completion, &id, created)
             .iter()
             .map(|chunk| {
-                let data = serde_json::to_string(chunk).unwrap_or_default();
+                // A chunk that fails to serialize must surface as an
+                // OpenAI-shaped error frame, not an empty `data:` line
+                // that breaks client SSE parsers.
+                let data = serde_json::to_string(chunk).unwrap_or_else(|e| {
+                    format!(
+                        r#"{{"error":{{"message":"chunk serialization failed: {e}","type":"server_error"}}}}"#
+                    )
+                });
                 std::result::Result::Ok(Event::default().data(data))
             })
             .collect();
@@ -1868,7 +1878,10 @@ fn serve_embedded(path: &str) -> Response {
     } else {
         path
     };
-    if key.contains("..") {
+    // `RustEmbed::get` only resolves embedded keys, so traversal can't
+    // reach the filesystem — but reject the suspicious shapes anyway
+    // (defence in depth, and cleaner 400s than embed-miss 404s).
+    if key.contains("..") || key.starts_with('/') || key.contains('\0') {
         return (
             StatusCode::BAD_REQUEST,
             Json(Err::new("bad_request", "invalid path")),

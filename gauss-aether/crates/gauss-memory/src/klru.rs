@@ -15,9 +15,9 @@
 //!   keyed by the radix-prefix path.
 //!
 //! Cold-start target: a warm-cache hit completes in `≤ 10 ms` p95 even on a
-//! ~1000-turn chain — the bench harness in
-//! [`gauss-conformance::theorem_t12_delta_warm_switch`] regresses against
-//! that bound.
+//! ~1000-turn chain — the bench harness in the `gauss-conformance`
+//! crate (`theorem_t12_delta_warm_switch`) regresses against that
+//! bound.
 //!
 //! The cache is generic over the materialised state `S: Clone` so callers
 //! can store transcripts, ADT canonical forms, or summarised plans.

@@ -560,12 +560,12 @@ impl Overlay {
 
                 // Each row occupies two lines (primary + secondary).
                 // Reserve the last line for the help footer.
-                let row_lines: usize = 2;
-                let footer_lines: usize = 2;
+                let row_lines: u16 = 2;
+                let footer_lines: u16 = 2;
                 let visible_rows = inner_area
                     .height
-                    .saturating_sub(footer_lines as u16)
-                    .saturating_div(row_lines as u16) as usize;
+                    .saturating_sub(footer_lines)
+                    .saturating_div(row_lines) as usize;
                 let visible_rows = visible_rows.max(1);
                 // Adjust viewport_top to keep cursor visible. (Mut
                 // via interior shadow — render is &self, so we only

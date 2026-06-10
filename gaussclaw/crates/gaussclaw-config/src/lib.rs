@@ -132,11 +132,12 @@ pub struct TerminalConfig {
 }
 
 /// `terminal.backend` value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum TerminalBackend {
     /// In-process execution (default).
+    #[default]
     Local,
     /// Docker container.
     Docker,
@@ -144,12 +145,6 @@ pub enum TerminalBackend {
     Ssh,
     /// Modal sandbox.
     Modal,
-}
-
-impl Default for TerminalBackend {
-    fn default() -> Self {
-        Self::Local
-    }
 }
 
 impl TerminalBackend {
@@ -328,23 +323,19 @@ pub struct LoadReport {
 /// Returns `(config, report)` so callers can log which file was used.
 pub fn load(override_path: Option<&Path>) -> Result<(Config, LoadReport), ConfigError> {
     let mut probed = Vec::new();
-    let mut found: Option<PathBuf> = None;
 
-    if let Some(p) = override_path {
+    let found: Option<PathBuf> = if let Some(p) = override_path {
         probed.push(p.to_path_buf());
         if !p.exists() {
             return Err(ConfigError::NotFound(p.to_path_buf()));
         }
-        found = Some(p.to_path_buf());
+        Some(p.to_path_buf())
     } else {
-        for candidate in search_path() {
+        search_path().into_iter().find(|candidate| {
             probed.push(candidate.clone());
-            if candidate.is_file() {
-                found = Some(candidate);
-                break;
-            }
-        }
-    }
+            candidate.is_file()
+        })
+    };
 
     let mut fig = Figment::new();
     if let Some(ref path) = found {

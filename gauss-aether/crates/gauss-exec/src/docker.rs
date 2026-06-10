@@ -175,7 +175,7 @@ impl SessionExecutor for DockerExecutor {
 
         let stdout_task = tokio::spawn(crate::local::read_capped_pub(stdout, cap));
         let stderr_task = tokio::spawn(crate::local::read_capped_pub(stderr, cap));
-        let status = child.wait().await?;
+        let status = crate::local::wait_with_timeout(&mut child, request.timeout).await?;
         let (stdout_buf, stdout_trunc) = stdout_task
             .await
             .map_err(|e| ExecError::Backend(format!("stdout task: {e}")))??;
