@@ -217,13 +217,20 @@ impl ApprovalSurface for ChannelSurface {
         request: ApprovalRequest,
         deadline: Duration,
     ) -> GaussResult<ApprovalDecision> {
-        self.outbox
-            .send(request)
-            .await
-            .map_err(|e| GaussError::Io(format!("approval queue closed: {e}")))?;
-        // Drain one decision from the inbox under the deadline.
+        // The deadline covers the whole round-trip. A bounded `send`
+        // awaits queue capacity, so a stuffed queue (approver not
+        // draining) must degrade to the same fail-closed `Timeout` as
+        // an unanswered request — not block the turn indefinitely.
+        let started = std::time::Instant::now();
+        match timeout(deadline, self.outbox.send(request)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(GaussError::Io(format!("approval queue closed: {e}"))),
+            Err(_) => return Ok(ApprovalDecision::Timeout),
+        }
+        // Drain one decision from the inbox under the remaining budget.
+        let remaining = deadline.saturating_sub(started.elapsed());
         let mut inbox = self.inbox.lock().await;
-        match timeout(deadline, inbox.recv()).await {
+        match timeout(remaining, inbox.recv()).await {
             Ok(Some(decision)) => Ok(decision),
             Ok(None) => Err(GaussError::Io("approval inbox channel closed".into())),
             Err(_) => Ok(ApprovalDecision::Timeout),
@@ -320,6 +327,33 @@ mod tests {
         );
         let fut = surface.request_approval(req, Duration::from_millis(50));
         // Advance virtual time past the deadline.
+        tokio::time::advance(Duration::from_millis(100)).await;
+        let d = fut.await.unwrap();
+        assert_eq!(d, ApprovalDecision::Timeout);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn channel_surface_full_queue_times_out_instead_of_blocking() {
+        // Capacity-1 surface with no approver draining: the first
+        // request occupies the queue, so the second one's `send` can
+        // never complete. The deadline must fail it closed (Timeout)
+        // rather than letting the turn block forever.
+        let (surface, _req_rx) = ChannelSurface::new(1);
+        let stuffing = ApprovalRequest::new(
+            TurnId::new(7),
+            dummy_action(),
+            Risk::RequireApproval,
+            "stuffing",
+        );
+        surface.outbox.send(stuffing).await.unwrap();
+
+        let req = ApprovalRequest::new(
+            TurnId::new(8),
+            dummy_action(),
+            Risk::RequireApproval,
+            "blocked",
+        );
+        let fut = surface.request_approval(req, Duration::from_millis(50));
         tokio::time::advance(Duration::from_millis(100)).await;
         let d = fut.await.unwrap();
         assert_eq!(d, ApprovalDecision::Timeout);

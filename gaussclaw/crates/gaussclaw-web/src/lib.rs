@@ -273,8 +273,16 @@ impl LogBuffer {
     }
 
     /// Append an entry; drops the oldest if at capacity.
+    ///
+    /// Lock poisoning is recovered rather than propagated: a panic in
+    /// some other holder must not take the whole dashboard down over a
+    /// diagnostics buffer, and `VecDeque<LogEntry>` has no invariant a
+    /// half-completed push can break.
     pub fn push(&self, entry: LogEntry) {
-        let mut g = self.inner.lock().expect("poisoned");
+        let mut g = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if g.len() == self.capacity {
             g.pop_front();
         }
@@ -283,7 +291,10 @@ impl LogBuffer {
 
     /// Number of stored entries.
     pub fn len(&self) -> usize {
-        self.inner.lock().expect("poisoned").len()
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// True if the buffer is empty.
@@ -294,7 +305,10 @@ impl LogBuffer {
     /// Snapshot the most recent `limit` entries (newest first).
     #[must_use]
     pub fn recent(&self, limit: usize) -> Vec<LogEntry> {
-        let g = self.inner.lock().expect("poisoned");
+        let g = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         g.iter().rev().take(limit).cloned().collect()
     }
 }
@@ -519,13 +533,24 @@ async fn handle_config_post() -> (StatusCode, Json<Err>) {
     )
 }
 
+/// Query parameters for `GET /api/sessions`.
+#[derive(Debug, serde::Deserialize)]
+struct SessionsQuery {
+    /// Max rows to return (default 50, capped at 200).
+    limit: Option<usize>,
+}
+
 #[axum::debug_handler]
-async fn handle_sessions(State(state): State<ServerState>) -> Json<Ok<Vec<SessionRow>>> {
+async fn handle_sessions(
+    State(state): State<ServerState>,
+    axum::extract::Query(q): axum::extract::Query<SessionsQuery>,
+) -> Json<Ok<Vec<SessionRow>>> {
     // Phase 2 wires the session store. When attached, return live recent
     // sessions; otherwise an empty list.
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let rows = if let Some(store) = state.store() {
         store
-            .list_recent_sessions(50)
+            .list_recent_sessions(limit)
             .await
             .into_iter()
             .map(|s| SessionRow {
