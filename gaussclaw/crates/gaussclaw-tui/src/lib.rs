@@ -805,13 +805,26 @@ impl App<'_> {
             })
             .collect();
 
+        // Bottom-pinned scroll: `scroll_offset` counts rows back from
+        // the latest entry (0 = follow the conversation). Paragraph's
+        // scroll is top-anchored, so convert by measuring how many
+        // wrapped rows the content occupies vs. the viewport.
+        let inner_height = usize::from(area.height.saturating_sub(2)); // TOP+BOTTOM borders
+        let inner_width = usize::from(area.width).max(1);
+        let total_rows: usize = lines
+            .iter()
+            .map(|l| l.width().max(1).div_ceil(inner_width))
+            .sum();
+        let max_scroll = total_rows.saturating_sub(inner_height);
+        let top = max_scroll.saturating_sub(usize::from(self.scroll_offset));
+
         let block = Block::default()
             .borders(Borders::TOP | Borders::BOTTOM)
             .border_style(Style::default().fg(Color::DarkGray));
         let widget = Paragraph::new(lines)
             .block(block)
             .wrap(Wrap { trim: false })
-            .scroll((self.scroll_offset, 0));
+            .scroll((u16::try_from(top).unwrap_or(u16::MAX), 0));
         frame.render_widget(widget, area);
     }
 
@@ -1067,6 +1080,49 @@ mod tests {
         let app = App::new(StatusInfo::default());
         assert_eq!(app.history().len(), 1);
         matches::<&Entry, _>(&app.history()[0], |e| matches!(e, Entry::System(_)));
+    }
+
+    #[test]
+    fn history_pane_follows_latest_entry() {
+        // When the transcript overflows the pane, the *latest* entry must
+        // be visible (bottom-pinned follow), not the oldest.
+        let mut app = App::new(StatusInfo::default());
+        for i in 0..60 {
+            app.push(Entry::System(format!("entry-number-{i}")));
+        }
+        let text = buffer_text(&snapshot_render(&app, 60, 14));
+        assert!(
+            text.contains("entry-number-59"),
+            "latest entry must be on screen:\n{text}"
+        );
+        assert!(
+            !text.contains("entry-number-0 "),
+            "oldest entry must have scrolled off:\n{text}"
+        );
+    }
+
+    #[test]
+    fn page_up_scrolls_back_and_page_down_returns() {
+        let mut app = App::new(StatusInfo::default());
+        for i in 0..60 {
+            app.push(Entry::System(format!("entry-number-{i}")));
+        }
+        for _ in 0..30 {
+            app.on_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+        }
+        let scrolled = buffer_text(&snapshot_render(&app, 60, 14));
+        assert!(
+            !scrolled.contains("entry-number-59"),
+            "after paging up the latest entry should be off-screen:\n{scrolled}"
+        );
+        for _ in 0..60 {
+            app.on_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+        }
+        let back = buffer_text(&snapshot_render(&app, 60, 14));
+        assert!(
+            back.contains("entry-number-59"),
+            "paging back down must return to the latest entry:\n{back}"
+        );
     }
 
     #[test]
