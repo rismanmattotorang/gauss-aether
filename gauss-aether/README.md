@@ -33,6 +33,7 @@ if you want to build something else.
 - **A polyhedral provider verifier.** Swap LLM providers at build time with a probe-set equivalence certificate. **Theorem T7.**
 - **A lock-free three-plane scheduler.** Conversation / daemon / approval planes share an `AtomicU64` budget; starvation bounded by `B/ρ`. **Axiom A4, Theorem T4.**
 - **Trinity Memory.** SurrealDB-backed append log + BM25 full-text + HNSW vector + K-LRU cache + Myers diff. Hybrid recall miss rate `ε_fts · ε_vec ≤ 0.015`. **Axiom A5, Theorem T5.**
+- **Weight-frozen self-improvement (Gauss-Agent0).** The `gauss-rsi` engine accrues capability in an external, verifiable knowledge-and-skill state composed from frozen frontier models: convergence-proven (Theorem 1), synergy-guaranteed (Theorem 2), no-regret routed (Theorem 3), with verifier-gated admission and one-operation rollback. Runs against live SurrealDB + provider backends via `gaussclaw-rsi`.
 
 ---
 
@@ -107,6 +108,7 @@ organised in seven layers:
 | [`gauss-dp`](./crates/gauss-dp/) | Differentially-private trajectory exporter — Laplace + Gaussian mechanisms. |
 | [`gauss-learnt`](./crates/gauss-learnt/) | Learnt risk classifier Φ̂ — logistic scorer that *floors* the SAG rule table. |
 | [`gauss-robust`](./crates/gauss-robust/) | Robust declassifiers — adversarially-adaptive taint downgrades. |
+| [`gauss-rsi`](./crates/gauss-rsi/) | Gauss-Agent0 weight-frozen recursive self-improvement engine — state operator Φ, productivity/convergence theory (Thm 1), DualRAG fusion, cost-aware LinUCB router (Thm 3), SAHOO drift gate, tiered verifier + PAC skill certification, and the (sync + async) RSI loop engine. See [`../AGENT0_INTEGRATION.md`](../AGENT0_INTEGRATION.md). |
 
 ---
 

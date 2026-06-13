@@ -83,6 +83,8 @@ pub mod event;
 pub mod fusion;
 pub mod gdi;
 pub mod kg;
+#[cfg(feature = "async")]
+pub mod live;
 pub mod productivity;
 pub mod router;
 pub mod state;
@@ -107,6 +109,8 @@ pub use kg::{
     AdmitBatch, Claim, ClaimStatus, Concept, ConceptId, InMemoryKnowledgeStore, KnowledgeStore,
     ModelId, ModelRec, Path, Provenance, Skill, SnapshotId, SCHEMA_SURREALQL,
 };
+#[cfg(feature = "async")]
+pub use live::{retrieve_async, AsyncExpert, AsyncKnowledgeStore, AsyncRsiEngine};
 pub use productivity::ProductivityFactors;
 pub use router::{cost_adjusted_reward, routing_advantage, ArmWeight, Dispatch, LinUcbRouter};
 pub use state::{ClaimId, CountingMeasure, Delta, Measure, SkillId, State};

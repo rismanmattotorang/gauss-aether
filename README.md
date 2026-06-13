@@ -128,7 +128,11 @@ guarantees is a live, monitored number on the dashboard. Every admitted
 fact carries provenance (which models, which premises, which verifier
 tier, which cycle), so a self-improving agent finally has an audit trail.
 
-This is the loop GaussClaw's memory system was always missing. See
+This is the loop GaussClaw's memory system was always missing. It runs
+against live backends today: the knowledge store persists in SurrealDB,
+experts dispatch through the same provider drivers (OpenRouter and the
+twenty vendors) the agent already uses, and the LinUCB router plugs into
+the live model router — exercised end-to-end in the test suite. See
 [`AGENT0_INTEGRATION.md`](AGENT0_INTEGRATION.md) for the architecture and
 the paper [`Gauss-Agent0-PaperV1.0.pdf`](Gauss-Agent0-PaperV1.0.pdf) for
 the theory.
@@ -254,8 +258,9 @@ crates; the full workspace suite — ~1,400 tests — re-runs on every PR.
 
 GaussClaw is the agent. **Gauss-Aether** is the engine.
 
-The repository ships both: 26 `gaussclaw-*` crates (the agent surfaces,
-channels, tools, providers, exporters) on top of 29 `gauss-*` crates
+The repository ships both: 27 `gaussclaw-*` crates (the agent surfaces,
+channels, tools, providers, exporters, and `gaussclaw-rsi` — the live
+backends for the self-improvement loop) on top of 29 `gauss-*` crates
 (the kernel, the turn engine, the memory store, the audit chain, the
 sandbox, the verifier, and `gauss-rsi` — the Gauss-Agent0
 self-improvement engine).

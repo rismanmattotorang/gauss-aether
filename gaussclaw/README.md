@@ -124,6 +124,12 @@ Nineteen single-responsibility crates under [`crates/`](./crates/):
 | [`gaussclaw-config`](./crates/gaussclaw-config/) | Hermes-compatible TOML configuration. |
 | [`gaussclaw-migrate`](./crates/gaussclaw-migrate/) | `gaussclaw import hermes` migration driver. |
 
+### Self-improvement (Gauss-Agent0)
+
+| Crate | Role |
+|---|---|
+| [`gaussclaw-rsi`](./crates/gaussclaw-rsi/) | Live-backend wiring for the [`gauss-rsi`](../gauss-aether/crates/gauss-rsi/) engine: a SurrealDB-backed knowledge store, a `ProviderExpert` wrapping any vendor/OpenRouter driver as a frozen frontier expert, and the LinUCB router as a live `SelectionStrategy` for `NotDiamondProvider`. Closes the long-standing "no skill-synthesis loop" gap with a convergence-proven, verifier-gated, rollback-able loop. See [`../AGENT0_INTEGRATION.md`](../AGENT0_INTEGRATION.md). |
+
 ### Tools and skills
 
 | Crate | Role |

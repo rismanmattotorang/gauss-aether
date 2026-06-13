@@ -79,6 +79,24 @@ pub struct Provenance {
 }
 
 impl Provenance {
+    /// Construct provenance for an admitted item.
+    #[must_use]
+    pub fn new(
+        models: Vec<ModelId>,
+        model_families: BTreeSet<String>,
+        premises: Vec<ClaimId>,
+        verifier_tier: u8,
+        cycle: u32,
+    ) -> Self {
+        Self {
+            models,
+            model_families,
+            premises,
+            verifier_tier,
+            cycle,
+        }
+    }
+
     /// Whether this item's derivation spans at least two model families — the
     /// per-item synergy predicate of Theorem 2(b).
     #[must_use]
@@ -105,6 +123,28 @@ pub struct Claim {
     pub provenance: Provenance,
 }
 
+impl Claim {
+    /// Construct a claim.
+    #[must_use]
+    pub fn new(
+        id: ClaimId,
+        content: String,
+        embedding: Vec<f32>,
+        confidence: f64,
+        status: ClaimStatus,
+        provenance: Provenance,
+    ) -> Self {
+        Self {
+            id,
+            content,
+            embedding,
+            confidence,
+            status,
+            provenance,
+        }
+    }
+}
+
 /// A certifiable skill (paper Listing 5, `skill` table).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -129,6 +169,37 @@ pub struct Skill {
     pub m_tests: u32,
     /// Admission cycle index.
     pub cycle: u32,
+}
+
+impl Skill {
+    /// Construct a skill.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: SkillId,
+        name: String,
+        signature: String,
+        code: String,
+        lang: String,
+        embedding: Vec<f32>,
+        pass_rate: f64,
+        ci_low: f64,
+        m_tests: u32,
+        cycle: u32,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            signature,
+            code,
+            lang,
+            embedding,
+            pass_rate,
+            ci_low,
+            m_tests,
+            cycle,
+        }
+    }
 }
 
 /// A concept node (paper Listing 5, `concept` table): the seed of the graph
@@ -171,6 +242,14 @@ pub struct Path {
     pub score: f64,
 }
 
+impl Path {
+    /// Construct a graph-path result.
+    #[must_use]
+    pub fn new(claims: Vec<ClaimId>, score: f64) -> Self {
+        Self { claims, score }
+    }
+}
+
 /// The admitted batch of one cycle (the `Aₜ` of Eq. 2), with full items so the
 /// store can record provenance and edges.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -182,6 +261,22 @@ pub struct AdmitBatch {
     pub skills: Vec<Skill>,
     /// `derived_from` edges `(child, parent)` recorded for the synergy trail.
     pub derived_from: Vec<(ClaimId, ClaimId)>,
+}
+
+impl AdmitBatch {
+    /// Construct an admit batch.
+    #[must_use]
+    pub fn new(
+        claims: Vec<Claim>,
+        skills: Vec<Skill>,
+        derived_from: Vec<(ClaimId, ClaimId)>,
+    ) -> Self {
+        Self {
+            claims,
+            skills,
+            derived_from,
+        }
+    }
 }
 
 /// The KnowledgeGraph state interface (paper §IV.C). Supplies the finite,

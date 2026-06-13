@@ -57,6 +57,7 @@ members = [
     "gaussclaw/crates/gaussclaw-lsp-client",
     "gaussclaw/crates/gaussclaw-kanban",
     "gaussclaw/crates/gaussclaw-conformance",
+    "gaussclaw/crates/gaussclaw-rsi",
     "gaussclaw/crates/gaussclaw-bin",
 ]
 
@@ -125,6 +126,7 @@ gaussclaw-acp            = { path = "gaussclaw/crates/gaussclaw-acp",           
 gaussclaw-lsp-client     = { path = "gaussclaw/crates/gaussclaw-lsp-client",     version = "0.0.1" }
 gaussclaw-kanban         = { path = "gaussclaw/crates/gaussclaw-kanban",         version = "0.0.1" }
 gaussclaw-conformance    = { path = "gaussclaw/crates/gaussclaw-conformance",    version = "0.0.1" }
+gaussclaw-rsi            = { path = "gaussclaw/crates/gaussclaw-rsi",            version = "0.0.1" }
 
 # Async
 async-trait = "0.1"
