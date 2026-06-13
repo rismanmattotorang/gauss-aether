@@ -2805,10 +2805,12 @@ dependencies = [
 name = "gauss-rsi"
 version = "0.0.1"
 dependencies = [
+ "async-trait",
  "gauss-core",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -3231,6 +3233,24 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "gaussclaw-rsi"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "gauss-core",
+ "gauss-rsi",
+ "gaussclaw-agent",
+ "gaussclaw-providers",
+ "gaussclaw-providers-meta",
+ "serde",
+ "serde_json",
+ "surrealdb",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

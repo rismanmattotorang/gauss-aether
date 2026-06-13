@@ -59,6 +59,17 @@ pub struct PackedContext {
     pub premise_count: usize,
 }
 
+impl PackedContext {
+    /// Construct a packed context.
+    #[must_use]
+    pub fn new(items: Vec<ClaimId>, premise_count: usize) -> Self {
+        Self {
+            items,
+            premise_count,
+        }
+    }
+}
+
 /// Run DualRAG for one query: vector path (k-NN over `qvec`) + graph path
 /// (beam search from `seeds`) → RRF fusion → premises-first packing.
 ///

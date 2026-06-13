@@ -167,6 +167,29 @@ pub struct ClaimCandidate {
     pub touches_probe: bool,
 }
 
+impl ClaimCandidate {
+    /// Construct a candidate's verification signals.
+    #[must_use]
+    #[allow(clippy::fn_params_excessive_bools)]
+    pub fn new(
+        tier1_checkable: bool,
+        tier1_passes: bool,
+        cites_sources: bool,
+        votes: Vec<ExpertVote>,
+        tier3_judge_approves: bool,
+        touches_probe: bool,
+    ) -> Self {
+        Self {
+            tier1_checkable,
+            tier1_passes,
+            cites_sources,
+            votes,
+            tier3_judge_approves,
+            touches_probe,
+        }
+    }
+}
+
 /// Apply the tiered verification of paper §IV.G to a factual claim, strongest
 /// tier first. Returns the [`Verdict`].
 ///

@@ -5,11 +5,17 @@
 > `STRATEGY.md` / `ROADMAP.md`.
 >
 > **Status:** Phases 0–6 landed in the `gauss-rsi` crate (deterministic,
-> I/O-free engine core — 83 unit/integration tests, clippy + rustdoc clean
-> under the workspace pedantic+nursery+`-D warnings` profile). The remaining
-> work is *live-backend wiring* (embedded SurrealDB, live OpenRouter, Axum
-> routes, Ratatui rendering, `gauss-bench` drivers), which layers additively
-> over the proven core. See the per-phase ✅ markers below.
+> I/O-free engine core — 86 unit/integration tests). **Live-backend wiring is
+> now landed too**, in the new `gaussclaw-rsi` crate: an async engine surface
+> (`AsyncRsiEngine` / `AsyncExpert` / `AsyncKnowledgeStore`), a live
+> SurrealDB-backed knowledge store, a provider-backed expert
+> (`ProviderExpert`), and the LinUCB router as a live
+> `SelectionStrategy` plugged into `NotDiamondProvider` — validated by an
+> end-to-end test suite (15 tests, incl. 4 live-SurrealDB loop tests + a
+> router-transparency test). All clippy + rustdoc + fmt clean under the
+> workspace pedantic+nursery+`-D warnings` profile. Remaining: Axum/Ratatui
+> rendering of the `surface` DTOs and `gauss-bench` benchmark drivers (UI/eval
+> presentation only). See the per-phase ✅ markers below.
 
 ---
 
@@ -157,7 +163,7 @@ DB — so they can be proven in isolation before integration.
 **Exit gate:** property tests for regret monotonicity, `ΔR ≥ 0`, and RRF
 ranking invariants.
 
-### Phase 2 — KnowledgeGraph state ✅ *(landed: `gauss-rsi::kg` models + `SCHEMA_SURREALQL` + in-memory store; live `gauss-memory` backend pending)*
+### Phase 2 — KnowledgeGraph state ✅ *(landed: `gauss-rsi::kg` models + `SCHEMA_SURREALQL` + in-memory store; **live SurrealDB store landed** as `gaussclaw-rsi::SurrealKnowledgeStore`)*
 
 Add the Agent0 `claim` / `skill` / `concept` / `model` / `task` / `snapshot`
 tables and the typed edge tables (`about`, `relates`, `supports`,
@@ -166,7 +172,7 @@ tables and the typed edge tables (`about`, `relates`, `supports`,
 claim carrying provenance + cycle index. *(Assumption 2; finite auditable
 state.)* Reuse the reserved HNSW index. Rollback = `gauss-checkpoint`.
 
-### Phase 3 — DualRAG retrieval ✅ *(landed: `gauss-rsi::dualrag` over the store + fusion; live OpenRouter/`providers-meta` wiring pending)*
+### Phase 3 — DualRAG retrieval ✅ *(landed: `gauss-rsi::dualrag` + async `retrieve_async`; **live router wiring landed** — `gaussclaw-rsi::LinUcbStrategy` drives `NotDiamondProvider`; experts via `ProviderExpert`)*
 
 `router` plugged in as a `gaussclaw-providers-meta::SelectionStrategy`;
 `fusion` driving graph-path beam search + HNSW vector path over
@@ -181,7 +187,7 @@ quorum; Tier-3 LLM judge with capped confidence. PAC skill certification
 GDI estimator into `gauss-sag` / `gauss-learnt` as a drift classifier;
 re-audit stream at rate `η` (Proposition 2 quarantine).
 
-### Phase 5 — RSI Loop Engine (Φ end-to-end) ✅ *(landed: `gauss-rsi::engine`, deterministic; async Tokio wiring + kernel-admit/`gauss-audit` receipts pending)*
+### Phase 5 — RSI Loop Engine (Φ end-to-end) ✅ *(landed: `gauss-rsi::engine` (sync) **and `gauss-rsi::live::AsyncRsiEngine`** driving live async backends end-to-end; kernel-admit/`gauss-audit` receipt wiring pending)*
 
 `gauss-rsi::engine` iterating Algorithm 1 over Tokio: curriculum batch →
 route → DualRAG → generate → critique → verify → admit/checkpoint → GDI

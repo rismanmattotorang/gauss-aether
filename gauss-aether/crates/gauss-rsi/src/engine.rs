@@ -44,6 +44,24 @@ pub struct Query {
     pub context_features: Vec<f64>,
 }
 
+impl Query {
+    /// Construct a query.
+    #[must_use]
+    pub fn new(
+        id: u64,
+        embedding: Vec<f32>,
+        seeds: Vec<ConceptId>,
+        context_features: Vec<f64>,
+    ) -> Self {
+        Self {
+            id,
+            embedding,
+            seeds,
+            context_features,
+        }
+    }
+}
+
 /// A candidate knowledge claim emitted by an expert, with its verification
 /// signals (the input the tiered VerifierAgent consumes).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -55,6 +73,18 @@ pub struct CandidateClaim {
     pub signals: ClaimCandidate,
     /// `derived_from` premise parents to record on admission.
     pub premises: Vec<ClaimId>,
+}
+
+impl CandidateClaim {
+    /// Construct a candidate claim with its verification signals and premises.
+    #[must_use]
+    pub fn new(claim: Claim, signals: ClaimCandidate, premises: Vec<ClaimId>) -> Self {
+        Self {
+            claim,
+            signals,
+            premises,
+        }
+    }
 }
 
 /// A candidate skill emitted by an expert, with its PAC evaluation statistics.
@@ -71,6 +101,19 @@ pub struct CandidateSkill {
     pub delta: f64,
 }
 
+impl CandidateSkill {
+    /// Construct a candidate skill with its PAC evaluation statistics.
+    #[must_use]
+    pub fn new(skill: Skill, p_hat: f64, m: u32, delta: f64) -> Self {
+        Self {
+            skill,
+            p_hat,
+            m,
+            delta,
+        }
+    }
+}
+
 /// One expert's output for a query.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -81,6 +124,18 @@ pub struct ExpertOutput {
     pub claims: Vec<CandidateClaim>,
     /// Candidate skills.
     pub skills: Vec<CandidateSkill>,
+}
+
+impl ExpertOutput {
+    /// Construct an expert output.
+    #[must_use]
+    pub fn new(answer_key: u64, claims: Vec<CandidateClaim>, skills: Vec<CandidateSkill>) -> Self {
+        Self {
+            answer_key,
+            claims,
+            skills,
+        }
+    }
 }
 
 /// A frozen frontier expert (paper Definition 1). Generation is the only
@@ -144,6 +199,18 @@ pub struct CycleInput {
     pub drift: DriftComponents,
     /// Whether all critical constraints hold (`CPS = 1`).
     pub critical_ok: bool,
+}
+
+impl CycleInput {
+    /// Construct a cycle input.
+    #[must_use]
+    pub fn new(queries: Vec<Query>, drift: DriftComponents, critical_ok: bool) -> Self {
+        Self {
+            queries,
+            drift,
+            critical_ok,
+        }
+    }
 }
 
 /// The outcome of one cycle.
@@ -445,19 +512,19 @@ impl<S: KnowledgeStore> RsiEngine<S> {
 }
 
 /// Saturating `usize -> u32` for counting masses.
-fn saturating_u32(n: usize) -> u32 {
+pub(crate) fn saturating_u32(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 
 /// A tiny deterministic LCG so exploration draws are reproducible (the engine
 /// core is RNG-free in spirit: the same seed replays identically).
 #[derive(Debug, Clone)]
-struct Lcg {
+pub(crate) struct Lcg {
     state: u64,
 }
 
 impl Lcg {
-    const fn new(seed: u64) -> Self {
+    pub(crate) const fn new(seed: u64) -> Self {
         Self { state: seed }
     }
 
@@ -468,14 +535,14 @@ impl Lcg {
             .wrapping_add(1_442_695_040_888_963_407);
     }
 
-    fn next_f64(&mut self) -> f64 {
+    pub(crate) fn next_f64(&mut self) -> f64 {
         self.step();
         #[allow(clippy::cast_precision_loss)]
         let mantissa = (self.state >> 11) as f64;
         mantissa / (9_007_199_254_740_992.0_f64) // 2^53
     }
 
-    fn next_index(&mut self, n: usize) -> usize {
+    pub(crate) fn next_index(&mut self, n: usize) -> usize {
         if n == 0 {
             return 0;
         }

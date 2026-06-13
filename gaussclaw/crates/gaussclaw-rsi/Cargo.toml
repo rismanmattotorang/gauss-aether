@@ -1,0 +1,29 @@
+[package]
+name        = "gaussclaw-rsi"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+description = "Live-backend wiring for the Gauss-Agent0 RSI engine: SurrealDB knowledge store, provider-backed experts, and a LinUCB selection strategy for the live router."
+
+[lints]
+workspace = true
+
+[dependencies]
+gauss-core               = { workspace = true }
+gauss-rsi                = { workspace = true }
+gaussclaw-agent          = { workspace = true }
+gaussclaw-providers      = { workspace = true }
+gaussclaw-providers-meta = { workspace = true }
+async-trait  = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+surrealdb    = { workspace = true }
+tokio        = { workspace = true }
+tracing      = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
