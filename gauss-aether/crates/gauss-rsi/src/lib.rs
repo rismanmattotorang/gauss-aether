@@ -101,7 +101,6 @@ pub use eval::{
     KnowledgeSkillDelta, SystemUnderTest, Telemetry,
 };
 pub use event::CycleEvent;
-pub use surface::{Answer, ControlVerb, CycleStatus, ExpertAttribution, TuiPanel};
 pub use fusion::{pack_premises_first, reciprocal_rank_fusion, RankedList, DEFAULT_RRF_K};
 pub use gdi::{DriftComponents, DriftGate, DriftVerdict, DriftWeights};
 pub use kg::{
@@ -111,6 +110,7 @@ pub use kg::{
 pub use productivity::ProductivityFactors;
 pub use router::{cost_adjusted_reward, routing_advantage, ArmWeight, Dispatch, LinUcbRouter};
 pub use state::{ClaimId, CountingMeasure, Delta, Measure, SkillId, State};
+pub use surface::{Answer, ControlVerb, CycleStatus, ExpertAttribution, TuiPanel};
 pub use verify::{
     certify_skill, cross_family_quorum, pac_lower_bound, verify_claim, ClaimCandidate, ExpertVote,
     PacCertificate, Verdict, VerifierConfig,

@@ -320,8 +320,7 @@ impl<S: KnowledgeStore> RsiEngine<S> {
             self.process_query(q, t, &mut emitted, &mut admitted, &mut batch);
         }
 
-        let admitted_mass =
-            saturating_u32(batch.claims.len().saturating_add(batch.skills.len()));
+        let admitted_mass = saturating_u32(batch.claims.len().saturating_add(batch.skills.len()));
         #[allow(clippy::cast_lossless)]
         let admitted_mass_f = f64::from(admitted_mass);
         let gdi = input.drift.gdi(&self.drift_gate.weights);
@@ -334,8 +333,9 @@ impl<S: KnowledgeStore> RsiEngine<S> {
                 drift: input.drift,
                 gdi,
             });
-            self.events
-                .push(CycleEvent::RolledBack { to: self.last_checkpoint.0 });
+            self.events.push(CycleEvent::RolledBack {
+                to: self.last_checkpoint.0,
+            });
             let report = CycleReport {
                 cycle: t,
                 admitted_mass: 0.0,
@@ -663,8 +663,14 @@ mod tests {
             drift: DriftComponents::new(0.0, 0.0, 0.0, 0.0),
             critical_ok: true,
         });
-        assert!(e.events().iter().any(|ev| matches!(ev, CycleEvent::Started { .. })));
-        assert!(e.events().iter().any(|ev| matches!(ev, CycleEvent::Admitted { .. })));
+        assert!(e
+            .events()
+            .iter()
+            .any(|ev| matches!(ev, CycleEvent::Started { .. })));
+        assert!(e
+            .events()
+            .iter()
+            .any(|ev| matches!(ev, CycleEvent::Admitted { .. })));
         let _ = SkillId(0); // keep the import meaningful for future skill tests
     }
 }

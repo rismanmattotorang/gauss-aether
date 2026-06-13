@@ -4,8 +4,12 @@
 > `gauss-aether/SPECS.md`, `gauss-aether/ROADMAP.md`, and the GaussClaw
 > `STRATEGY.md` / `ROADMAP.md`.
 >
-> **Status:** Phase 0 in progress (this document + the `gauss-rsi` engine
-> skeleton). Phases 1–6 specified below.
+> **Status:** Phases 0–6 landed in the `gauss-rsi` crate (deterministic,
+> I/O-free engine core — 83 unit/integration tests, clippy + rustdoc clean
+> under the workspace pedantic+nursery+`-D warnings` profile). The remaining
+> work is *live-backend wiring* (embedded SurrealDB, live OpenRouter, Axum
+> routes, Ratatui rendering, `gauss-bench` drivers), which layers additively
+> over the proven core. See the per-phase ✅ markers below.
 
 ---
 
@@ -116,7 +120,7 @@ Following this repo's culture (axiom/theorem-traced phases, deterministic
 no-I/O cores, conformance-gated exits). Each phase names the paper result it
 discharges and the crate it lands in.
 
-### Phase 0 — Engine foundations *(this commit)*
+### Phase 0 — Engine foundations ✅ *(landed: `gauss-rsi` `state`/`productivity`/`converge`/`gdi`/`event`)*
 
 **Goal:** a deterministic, I/O-free mathematical core for the RSI loop, so
 every later phase wires real backends behind already-proven algorithms.
@@ -136,7 +140,7 @@ every later phase wires real backends behind already-proven algorithms.
 **Exit gate:** `cargo build/test/clippy -p gauss-rsi` green under the
 workspace's pedantic+nursery+`-D warnings` profile.
 
-### Phase 1 — Routing + retrieval-fusion algorithms *(started this commit)*
+### Phase 1 — Routing + retrieval-fusion algorithms ✅ *(landed: `gauss-rsi` `router`/`fusion`)*
 
 **Goal:** the two self-contained Agent0 algorithms that need no live LLM or
 DB — so they can be proven in isolation before integration.
@@ -153,7 +157,7 @@ DB — so they can be proven in isolation before integration.
 **Exit gate:** property tests for regret monotonicity, `ΔR ≥ 0`, and RRF
 ranking invariants.
 
-### Phase 2 — KnowledgeGraph schema on `gauss-memory`
+### Phase 2 — KnowledgeGraph state ✅ *(landed: `gauss-rsi::kg` models + `SCHEMA_SURREALQL` + in-memory store; live `gauss-memory` backend pending)*
 
 Add the Agent0 `claim` / `skill` / `concept` / `model` / `task` / `snapshot`
 tables and the typed edge tables (`about`, `relates`, `supports`,
@@ -162,14 +166,14 @@ tables and the typed edge tables (`about`, `relates`, `supports`,
 claim carrying provenance + cycle index. *(Assumption 2; finite auditable
 state.)* Reuse the reserved HNSW index. Rollback = `gauss-checkpoint`.
 
-### Phase 3 — DualRAG + LinUCB router wired to live backends
+### Phase 3 — DualRAG retrieval ✅ *(landed: `gauss-rsi::dualrag` over the store + fusion; live OpenRouter/`providers-meta` wiring pending)*
 
 `router` plugged in as a `gaussclaw-providers-meta::SelectionStrategy`;
 `fusion` driving graph-path beam search + HNSW vector path over
 `gauss-memory`. OpenRouter pool from Appendix C wired through
 `gaussclaw-providers-meta::OpenRouterProvider`.
 
-### Phase 4 — VerifierAgent + CriticAgent
+### Phase 4 — VerifierAgent + CriticAgent ✅ *(landed: `gauss-rsi::verify` + `gauss-rsi::critic`; Tier-1 exec on `gauss-exec`/`gauss-sandbox` pending)*
 
 Tier-1 (exec) on `gauss-exec` inside `gauss-sandbox`; Tier-2 cross-family
 quorum; Tier-3 LLM judge with capped confidence. PAC skill certification
@@ -177,7 +181,7 @@ quorum; Tier-3 LLM judge with capped confidence. PAC skill certification
 GDI estimator into `gauss-sag` / `gauss-learnt` as a drift classifier;
 re-audit stream at rate `η` (Proposition 2 quarantine).
 
-### Phase 5 — RSI Loop Engine (Φ end-to-end)
+### Phase 5 — RSI Loop Engine (Φ end-to-end) ✅ *(landed: `gauss-rsi::engine`, deterministic; async Tokio wiring + kernel-admit/`gauss-audit` receipts pending)*
 
 `gauss-rsi::engine` iterating Algorithm 1 over Tokio: curriculum batch →
 route → DualRAG → generate → critique → verify → admit/checkpoint → GDI
@@ -185,7 +189,7 @@ gate → convergence detector. Every mutating step routed through the kernel
 admit gate; every admission emits a `gauss-audit` receipt. New caps
 (ADR-gated): `KNOWLEDGE_WRITE`, `RSI_CYCLE_RUN`.
 
-### Phase 6 — Surfaces + pre-registered evaluation
+### Phase 6 — Surfaces + pre-registered evaluation ✅ *(landed: `gauss-rsi::eval` + `gauss-rsi::surface` DTOs/logic; Axum/Ratatui rendering + `gauss-bench` drivers pending)*
 
 RSI dashboard panels (paper Appendix D / Table V) in `gaussclaw-tui` and the
 `gaussclaw-web` dashboard; REST/WS endpoints (Appendix E) in

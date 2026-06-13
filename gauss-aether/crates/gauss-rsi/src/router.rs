@@ -128,10 +128,7 @@ impl LinUcbRouter {
     #[must_use]
     pub fn route_greedy(&self, phi: &[f64], fanout: usize, gamma: f64) -> Dispatch {
         let ucbs: Vec<f64> = (0..self.arms()).map(|i| self.ucb(i, phi)).collect();
-        let best = ucbs
-            .iter()
-            .copied()
-            .fold(f64::NEG_INFINITY, f64::max);
+        let best = ucbs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         // Near-optimal set I(q) = { i : ucbᵢ ≥ ucb_best − γ }, best-first.
         let mut near: Vec<usize> = (0..self.arms())
             .filter(|&i| ucbs[i] >= best - gamma)
@@ -144,7 +141,10 @@ impl LinUcbRouter {
         });
         near.truncate(fanout.max(1));
         // Softmax weights wᵢ ∝ exp(ucbᵢ) over the selected set.
-        let max_sel = near.iter().map(|&i| ucbs[i]).fold(f64::NEG_INFINITY, f64::max);
+        let max_sel = near
+            .iter()
+            .map(|&i| ucbs[i])
+            .fold(f64::NEG_INFINITY, f64::max);
         let exps: Vec<f64> = near.iter().map(|&i| (ucbs[i] - max_sel).exp()).collect();
         let z: f64 = exps.iter().sum();
         let arms = near
@@ -342,7 +342,10 @@ mod tests {
             .collect();
         let dr = routing_advantage(&routed, &per_arm);
         assert!(dr >= -1e-12, "ΔR = {dr}");
-        assert!(dr > 0.0, "heterogeneous pool should give strictly positive ΔR");
+        assert!(
+            dr > 0.0,
+            "heterogeneous pool should give strictly positive ΔR"
+        );
     }
 
     #[test]

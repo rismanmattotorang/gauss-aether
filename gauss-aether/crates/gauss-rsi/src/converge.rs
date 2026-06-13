@@ -216,7 +216,7 @@ mod tests {
         let mut d = ConvergenceDetector::new(0.01, 3);
         assert!(!d.observe(0.005)); // streak 1
         assert!(!d.observe(0.005)); // streak 2
-        // A productive cycle resets the streak.
+                                    // A productive cycle resets the streak.
         assert!(!d.observe(0.5));
         assert_eq!(d.streak(), 0);
         assert!(!d.observe(0.001)); // 1

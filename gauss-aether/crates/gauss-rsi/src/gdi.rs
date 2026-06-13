@@ -138,7 +138,11 @@ impl DriftGate {
     /// if any critical constraint is violated the gate rolls back regardless
     /// of the GDI value.
     #[must_use]
-    pub fn evaluate(&self, drift: &DriftComponents, critical_constraints_hold: bool) -> DriftVerdict {
+    pub fn evaluate(
+        &self,
+        drift: &DriftComponents,
+        critical_constraints_hold: bool,
+    ) -> DriftVerdict {
         if !critical_constraints_hold || drift.gdi(&self.weights) > self.tau {
             DriftVerdict::Rollback
         } else {

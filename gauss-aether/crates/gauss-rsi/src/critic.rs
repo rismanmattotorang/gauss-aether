@@ -94,7 +94,11 @@ impl ReauditSampler {
         if items.is_empty() || self.eta <= 0.0 {
             return Vec::new();
         }
-        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )]
         let take = ((items.len() as f64) * self.eta).ceil() as usize;
         let take = take.min(items.len());
         let start = usize::try_from(self.cursor)

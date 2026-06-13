@@ -116,7 +116,8 @@ mod tests {
         // breaks by ascending key, deterministically.
         let a = [5_u32];
         let b = [3_u32];
-        let fused = reciprocal_rank_fusion(&[RankedList::new(&a), RankedList::new(&b)], DEFAULT_RRF_K);
+        let fused =
+            reciprocal_rank_fusion(&[RankedList::new(&a), RankedList::new(&b)], DEFAULT_RRF_K);
         assert_eq!(fused[0].0, 3);
         assert_eq!(fused[1].0, 5);
     }

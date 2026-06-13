@@ -241,9 +241,15 @@ mod tests {
     #[test]
     fn quorum_counts_distinct_families_only() {
         // Two agreeing votes but same family => quorum of 2 not met.
-        assert!(!cross_family_quorum(&votes(&[("openai", true), ("openai", true)]), 2));
+        assert!(!cross_family_quorum(
+            &votes(&[("openai", true), ("openai", true)]),
+            2
+        ));
         // Two distinct families agree => met.
-        assert!(cross_family_quorum(&votes(&[("openai", true), ("anthropic", true)]), 2));
+        assert!(cross_family_quorum(
+            &votes(&[("openai", true), ("anthropic", true)]),
+            2
+        ));
     }
 
     #[test]
@@ -256,7 +262,10 @@ mod tests {
             tier3_judge_approves: false,
             touches_probe: false,
         };
-        assert_eq!(verify_claim(&c, &VerifierConfig::default()), Verdict::Pass { tier: 1 });
+        assert_eq!(
+            verify_claim(&c, &VerifierConfig::default()),
+            Verdict::Pass { tier: 1 }
+        );
     }
 
     #[test]
@@ -269,7 +278,10 @@ mod tests {
             tier3_judge_approves: false,
             touches_probe: false,
         };
-        assert_eq!(verify_claim(&c, &VerifierConfig::default()), Verdict::Pass { tier: 2 });
+        assert_eq!(
+            verify_claim(&c, &VerifierConfig::default()),
+            Verdict::Pass { tier: 2 }
+        );
     }
 
     #[test]
@@ -283,7 +295,10 @@ mod tests {
             touches_probe: true,
         };
         // Even though every tier would pass, the probe touch fails it outright.
-        assert!(matches!(verify_claim(&c, &VerifierConfig::default()), Verdict::Fail { .. }));
+        assert!(matches!(
+            verify_claim(&c, &VerifierConfig::default()),
+            Verdict::Fail { .. }
+        ));
     }
 
     #[test]
@@ -296,6 +311,9 @@ mod tests {
             tier3_judge_approves: false,
             touches_probe: false,
         };
-        assert_eq!(verify_claim(&c, &VerifierConfig::default()), Verdict::Abstain);
+        assert_eq!(
+            verify_claim(&c, &VerifierConfig::default()),
+            Verdict::Abstain
+        );
     }
 }

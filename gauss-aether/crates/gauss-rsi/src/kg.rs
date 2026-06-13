@@ -352,7 +352,11 @@ impl KnowledgeStore for InMemoryKnowledgeStore {
         for seed in seeds {
             if let Some(claims) = self.about.get(seed) {
                 for &c in claims {
-                    if self.claims.get(&c).is_some_and(|cl| cl.status == ClaimStatus::Verified) {
+                    if self
+                        .claims
+                        .get(&c)
+                        .is_some_and(|cl| cl.status == ClaimStatus::Verified)
+                    {
                         frontier.push(Path {
                             claims: vec![c],
                             score: self.claims.get(&c).map_or(0.0, |cl| cl.confidence),
@@ -568,6 +572,9 @@ mod tests {
         let q = store.quarantine_cascade(ClaimId(1));
         assert!(q.contains(&ClaimId(2)));
         assert!(q.contains(&ClaimId(3)));
-        assert_eq!(store.claim(ClaimId(3)).unwrap().status, ClaimStatus::Falsified);
+        assert_eq!(
+            store.claim(ClaimId(3)).unwrap().status,
+            ClaimStatus::Falsified
+        );
     }
 }
