@@ -47,6 +47,7 @@ pub mod converge;
 pub mod event;
 pub mod fusion;
 pub mod gdi;
+pub mod kg;
 pub mod productivity;
 pub mod router;
 pub mod state;
@@ -55,6 +56,10 @@ pub use converge::{cycles_to_tolerance, expected_gap, ConvergenceDetector, RhoEs
 pub use event::CycleEvent;
 pub use fusion::{pack_premises_first, reciprocal_rank_fusion, RankedList, DEFAULT_RRF_K};
 pub use gdi::{DriftComponents, DriftGate, DriftVerdict, DriftWeights};
+pub use kg::{
+    AdmitBatch, Claim, ClaimStatus, Concept, ConceptId, InMemoryKnowledgeStore, KnowledgeStore,
+    ModelId, ModelRec, Path, Provenance, Skill, SnapshotId, SCHEMA_SURREALQL,
+};
 pub use productivity::ProductivityFactors;
 pub use router::{cost_adjusted_reward, routing_advantage, ArmWeight, Dispatch, LinUcbRouter};
 pub use state::{ClaimId, CountingMeasure, Delta, Measure, SkillId, State};
