@@ -46,6 +46,7 @@
 pub mod converge;
 pub mod critic;
 pub mod dualrag;
+pub mod engine;
 pub mod event;
 pub mod fusion;
 pub mod gdi;
@@ -58,6 +59,10 @@ pub mod verify;
 pub use converge::{cycles_to_tolerance, expected_gap, ConvergenceDetector, RhoEstimator};
 pub use critic::{frontier_curriculum, in_frontier_band, self_consistency, ReauditSampler};
 pub use dualrag::{retrieve, DualRagParams, PackedContext};
+pub use engine::{
+    CandidateClaim, CandidateSkill, CycleInput, CycleReport, EngineConfig, Expert, ExpertOutput,
+    Query, RsiEngine,
+};
 pub use event::CycleEvent;
 pub use fusion::{pack_premises_first, reciprocal_rank_fusion, RankedList, DEFAULT_RRF_K};
 pub use gdi::{DriftComponents, DriftGate, DriftVerdict, DriftWeights};
