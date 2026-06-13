@@ -163,7 +163,7 @@ pub struct ClaimCandidate {
     /// Whether a Tier-3 rubric judge approves (soft constraints only).
     pub tier3_judge_approves: bool,
     /// Whether the derivation touches an evaluation probe — the
-    /// anti-contamination check that rejects outright (paper §VI, [7]).
+    /// anti-contamination check that rejects outright (paper §VI, ref. 7).
     pub touches_probe: bool,
 }
 

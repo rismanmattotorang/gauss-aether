@@ -33,6 +33,37 @@
 //! * [`fusion`] — Algorithm 2 fusion stage: reciprocal-rank fusion supplying
 //!   the premise-recall factor `r_L`.
 //!
+//! ## Phase 2 — KnowledgeGraph state
+//!
+//! * [`kg`] — the materialized state `x = (K, S)`: typed `claim` / `skill` /
+//!   `concept` / `model` models, provenance, the verbatim Appendix A
+//!   SurrealQL schema, and a [`kg::KnowledgeStore`] with knn / beam /
+//!   synergy-count / cascade-quarantine / watermark rollback.
+//!
+//! ## Phase 3 — DualRAG retrieval
+//!
+//! * [`dualrag`] — Algorithm 2: vector path + graph path → RRF fusion →
+//!   premises-first packing.
+//!
+//! ## Phase 4 — verification + critique
+//!
+//! * [`verify`] — the tiered VerifierAgent (Assumption 1), cross-family
+//!   quorum, and PAC skill certification (Proposition 1, Eq. 11).
+//! * [`critic`] — self-consistency `p̂`, the frontier-band curriculum filter,
+//!   and the re-audit sampler (Proposition 2).
+//!
+//! ## Phase 5 — RSI Loop Engine
+//!
+//! * [`engine`] — [`engine::RsiEngine`] iterates the operator Φ end-to-end
+//!   (Algorithm 1): route → retrieve → generate → critique → verify → admit /
+//!   checkpoint → drift gate → convergence detector.
+//!
+//! ## Phase 6 — surfaces + evaluation
+//!
+//! * [`eval`] — the pre-registered protocol (paper §VI): the `ΔK/ΔS` metric,
+//!   systems under test, ablations, and the H decision rule.
+//! * [`surface`] — REST/WS and TUI panel DTOs (Appendices D and E).
+//!
 //! Every public item is `#[non_exhaustive]` where future fields are expected,
 //! the crate is `unsafe`-free (workspace `unsafe_code = forbid`), and all
 //! algorithms are deterministic and unit-tested so the conformance suite can
@@ -47,6 +78,7 @@ pub mod converge;
 pub mod critic;
 pub mod dualrag;
 pub mod engine;
+pub mod eval;
 pub mod event;
 pub mod fusion;
 pub mod gdi;
@@ -54,6 +86,7 @@ pub mod kg;
 pub mod productivity;
 pub mod router;
 pub mod state;
+pub mod surface;
 pub mod verify;
 
 pub use converge::{cycles_to_tolerance, expected_gap, ConvergenceDetector, RhoEstimator};
@@ -63,7 +96,12 @@ pub use engine::{
     CandidateClaim, CandidateSkill, CycleInput, CycleReport, EngineConfig, Expert, ExpertOutput,
     Query, RsiEngine,
 };
+pub use eval::{
+    evaluate_hypothesis, knowledge_skill_delta, Ablations, BenchmarkScores, HypothesisOutcome,
+    KnowledgeSkillDelta, SystemUnderTest, Telemetry,
+};
 pub use event::CycleEvent;
+pub use surface::{Answer, ControlVerb, CycleStatus, ExpertAttribution, TuiPanel};
 pub use fusion::{pack_premises_first, reciprocal_rank_fusion, RankedList, DEFAULT_RRF_K};
 pub use gdi::{DriftComponents, DriftGate, DriftVerdict, DriftWeights};
 pub use kg::{

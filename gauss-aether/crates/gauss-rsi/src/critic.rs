@@ -7,14 +7,14 @@
 //! [`crate::gdi`]; this module supplies the remaining critic signals.
 //!
 //! The frontier filter concentrates cycles where `|p̂ − 0.5| ≤ δ`, exactly the
-//! informative band Agent0 trains on [4] — these are the tasks whose
+//! informative band Agent0 trains on (ref. 4) — these are the tasks whose
 //! admission probability, hence the productivity `ρ` (Lemma 1, factor `β`), is
 //! highest.
 
 use serde::{Deserialize, Serialize};
 
 /// Self-consistency `p̂` over a candidate set: the fraction of candidates that
-/// agree with the modal (majority) answer (paper §IV.F, [62], [4]).
+/// agree with the modal (majority) answer (paper §IV.F, refs. 62, 4).
 ///
 /// `answers` are opaque answer keys; the modal key's share is `p̂`. Returns
 /// `0.0` for an empty set.
