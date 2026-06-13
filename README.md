@@ -14,11 +14,18 @@ Every tool call passes a capability check before it runs. Every turn is
 signed and chained. Every export of training data carries a tamper-proof
 receipt. Migration from Hermes is one command.
 
+And it gets better over time *without touching a single model weight*.
+The new **Gauss-Agent0** engine accumulates capability in an external,
+verifiable knowledge-and-skill store composed from a pool of frozen
+frontier models — a self-improvement loop with a convergence proof, a
+verification gate on every fact it learns, and one-operation rollback.
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
 [![One static binary](https://img.shields.io/badge/runtime-static%20Rust-orange.svg)]()
 [![Hermes parity](https://img.shields.io/badge/Hermes-byte--equal%20replay-brightgreen.svg)]()
 [![Sandbox](https://img.shields.io/badge/sandbox-4--layer-blue.svg)]()
 [![Receipts](https://img.shields.io/badge/audit-Ed25519%20%2B%20Merkle-blueviolet.svg)]()
+[![Agent0 RSI](https://img.shields.io/badge/Agent0-weight--frozen%20RSI-ff69b4.svg)]()
 [![Docs](https://img.shields.io/badge/docs-website-blue.svg)](website/)
 
 ---
@@ -88,6 +95,43 @@ context, searches its past conversations with full-text and vector
 recall together, and builds a model of who you are across sessions.
 
 Hybrid recall miss rate: **≤ 1.5 %**. Hermes baseline: **8 %**.
+
+### 🔁 It improves itself — and proves every step (Gauss-Agent0)
+
+Most "self-improving" agents retrain model weights: expensive,
+unauditable, easy to contaminate, hard to undo. GaussClaw's
+**Gauss-Agent0** engine does the opposite. It keeps the models *frozen*
+and accumulates everything it learns in an external, inspectable
+knowledge-and-skill store — so improvement is a database you can read,
+diff, and roll back, not a black box of shifted parameters.
+
+Each improvement cycle:
+
+- **routes** the task to the best subset of a heterogeneous model pool
+  with a cost-aware contextual-bandit router (it beats its own best
+  single model when the pool disagrees);
+- **retrieves** supporting facts along two paths at once — a vector
+  (semantic) path and a graph (premise-chain) path — and fuses them, so
+  it can *compose* knowledge no single model held alone;
+- **verifies** every candidate before admitting it: executable claims
+  are run, factual claims must win a cross-provider quorum, and skills
+  are admitted only with a statistical (PAC) competence guarantee;
+- **gates on drift**: a goal-drift index is checked every cycle, and any
+  regression rolls the store back to the last checkpoint in one
+  operation.
+
+The loop has a **convergence proof** (the knowledge gap contracts
+geometrically), a **synergy guarantee** (under cross-model
+complementarity the composed store strictly dominates every individual
+model), and a **no-regret routing bound** — and every one of those
+guarantees is a live, monitored number on the dashboard. Every admitted
+fact carries provenance (which models, which premises, which verifier
+tier, which cycle), so a self-improving agent finally has an audit trail.
+
+This is the loop GaussClaw's memory system was always missing. See
+[`AGENT0_INTEGRATION.md`](AGENT0_INTEGRATION.md) for the architecture and
+the paper [`Gauss-Agent0-PaperV1.0.pdf`](Gauss-Agent0-PaperV1.0.pdf) for
+the theory.
 
 ### 🛡️ Tools that can't go rogue
 
@@ -196,6 +240,8 @@ See [`gauss-aether/README.md`](gauss-aether/README.md) and
 | Provider swap | manual retest | **Polyhedral equivalence verified in CI** |
 | Trajectory exports | raw JSONL | **Cryptographic envelope, downstream-verifiable** |
 | Hybrid recall miss rate | ~8 % | **≤ 1.5 %** |
+| Self-improvement | weight retraining (or none) | **Weight-frozen RSI: verified knowledge/skill store, convergence-proven, rollback-able** |
+| Learned facts auditability | n/a | **Per-item provenance: models, premises, verifier tier, cycle** |
 | Code signing on desktop | unsigned | **Signed + notarised on 3 OSes** |
 | Migration from Hermes | n/a | **One command** |
 
@@ -209,9 +255,10 @@ crates; the full workspace suite — ~1,400 tests — re-runs on every PR.
 GaussClaw is the agent. **Gauss-Aether** is the engine.
 
 The repository ships both: 26 `gaussclaw-*` crates (the agent surfaces,
-channels, tools, providers, exporters) on top of 28 `gauss-*` crates
+channels, tools, providers, exporters) on top of 29 `gauss-*` crates
 (the kernel, the turn engine, the memory store, the audit chain, the
-sandbox, the verifier).
+sandbox, the verifier, and `gauss-rsi` — the Gauss-Agent0
+self-improvement engine).
 
 If you want to know the agent's user-facing capabilities:
 **[`gaussclaw/README.md`](gaussclaw/README.md)**.
@@ -229,6 +276,7 @@ property-test harness — start with
 
 ## Documentation
 
+- [`AGENT0_INTEGRATION.md`](AGENT0_INTEGRATION.md) — the Gauss-Agent0 self-improvement engine: assessment, phased strategy, and `gauss-rsi` module map.
 - [`docs/QUICKSTART.md`](docs/QUICKSTART.md) — embed walkthrough.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — crate-by-crate tour.
 - [`docs/SECURITY.md`](docs/SECURITY.md) — threat model and disclosure.
