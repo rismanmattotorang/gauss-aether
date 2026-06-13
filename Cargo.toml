@@ -25,6 +25,7 @@ members = [
     "gauss-aether/crates/gauss-cron",
     "gauss-aether/crates/gauss-checkpoint",
     "gauss-aether/crates/gauss-curator",
+    "gauss-aether/crates/gauss-rsi",
     "gauss-aether/crates/gauss-exec",
     "gauss-aether/crates/gauss-worktree",
     "gauss-aether/crates/gauss-conformance",
@@ -93,6 +94,7 @@ gauss-robust    = { path = "gauss-aether/crates/gauss-robust",    version = "0.0
 gauss-cron      = { path = "gauss-aether/crates/gauss-cron",      version = "0.0.1" }
 gauss-checkpoint = { path = "gauss-aether/crates/gauss-checkpoint", version = "0.0.1" }
 gauss-curator    = { path = "gauss-aether/crates/gauss-curator",    version = "0.0.1" }
+gauss-rsi        = { path = "gauss-aether/crates/gauss-rsi",        version = "0.0.1" }
 gauss-exec       = { path = "gauss-aether/crates/gauss-exec",       version = "0.0.1" }
 gauss-worktree   = { path = "gauss-aether/crates/gauss-worktree",   version = "0.0.1" }
 gauss-hooks      = { path = "gauss-aether/crates/gauss-hooks",      version = "0.0.1" }

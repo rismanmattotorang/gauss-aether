@@ -1,0 +1,20 @@
+[package]
+name        = "gauss-rsi"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+description = "Gauss-Agent0 weight-frozen recursive self-improvement engine — state operator Φ, productivity/convergence theory, SAHOO drift gate, LinUCB router, and DualRAG fusion."
+
+[lints]
+workspace = true
+
+[dependencies]
+gauss-core   = { workspace = true }
+serde        = { workspace = true }
+thiserror    = { workspace = true }
+
+[dev-dependencies]
+serde_json   = { workspace = true }
