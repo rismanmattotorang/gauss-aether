@@ -28,7 +28,7 @@ pub struct LinUcbStrategy {
 
 impl LinUcbStrategy {
     /// Build over an ordered slug catalogue. The router is sized to one arm
-    /// per slug, with context dimension [`FEATURE_DIM`].
+    /// per slug, with a fixed context dimension.
     #[must_use]
     pub fn new(arms: Vec<String>, alpha: f64, epsilon_x: f64) -> Self {
         let n = arms.len().max(1);
