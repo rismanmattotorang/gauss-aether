@@ -44,6 +44,7 @@
 #![allow(clippy::doc_markdown, clippy::missing_const_for_fn)]
 
 pub mod converge;
+pub mod dualrag;
 pub mod event;
 pub mod fusion;
 pub mod gdi;
@@ -53,6 +54,7 @@ pub mod router;
 pub mod state;
 
 pub use converge::{cycles_to_tolerance, expected_gap, ConvergenceDetector, RhoEstimator};
+pub use dualrag::{retrieve, DualRagParams, PackedContext};
 pub use event::CycleEvent;
 pub use fusion::{pack_premises_first, reciprocal_rank_fusion, RankedList, DEFAULT_RRF_K};
 pub use gdi::{DriftComponents, DriftGate, DriftVerdict, DriftWeights};
